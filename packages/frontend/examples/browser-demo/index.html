@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Traceway Frontend Demo</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 2rem;
+        background: #f5f5f5;
+      }
+
+      h1 {
+        color: #333;
+        margin-bottom: 0.5rem;
+      }
+
+      .subtitle {
+        color: #666;
+        margin-bottom: 2rem;
+      }
+
+      .config-section {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+
+      label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+        color: #333;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        padding: 0.75rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 0.875rem;
+        font-family: monospace;
+      }
+
+      input[type="text"]:focus {
+        outline: none;
+        border-color: #0066cc;
+        box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.2);
+      }
+
+      .hint {
+        font-size: 0.75rem;
+        color: #888;
+        margin-top: 0.5rem;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-bottom: 1.5rem;
+      }
+
+      button {
+        padding: 0.75rem 1.25rem;
+        border: none;
+        border-radius: 6px;
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background-color 0.15s, transform 0.1s;
+      }
+
+      button:active {
+        transform: scale(0.98);
+      }
+
+      .btn-init {
+        background: #0066cc;
+        color: white;
+      }
+
+      .btn-init:hover {
+        background: #0052a3;
+      }
+
+      .btn-exception {
+        background: #dc3545;
+        color: white;
+      }
+
+      .btn-exception:hover {
+        background: #c82333;
+      }
+
+      .btn-message {
+        background: #28a745;
+        color: white;
+      }
+
+      .btn-message:hover {
+        background: #218838;
+      }
+
+      .btn-flush {
+        background: #6c757d;
+        color: white;
+      }
+
+      .btn-flush:hover {
+        background: #5a6268;
+      }
+
+      .btn-unhandled {
+        background: #fd7e14;
+        color: white;
+      }
+
+      .btn-unhandled:hover {
+        background: #e96b02;
+      }
+
+      .log-section {
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+      }
+
+      .log-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid #eee;
+      }
+
+      .log-header h2 {
+        margin: 0;
+        font-size: 1rem;
+        color: #333;
+      }
+
+      .clear-btn {
+        background: transparent;
+        border: 1px solid #ddd;
+        color: #666;
+        padding: 0.4rem 0.75rem;
+        font-size: 0.75rem;
+      }
+
+      .clear-btn:hover {
+        background: #f5f5f5;
+      }
+
+      #log {
+        padding: 1rem 1.5rem;
+        font-family: monospace;
+        font-size: 0.8rem;
+        max-height: 400px;
+        overflow-y: auto;
+        background: #fafafa;
+      }
+
+      .log-entry {
+        padding: 0.5rem 0;
+        border-bottom: 1px solid #eee;
+      }
+
+      .log-entry:last-child {
+        border-bottom: none;
+      }
+
+      .log-time {
+        color: #888;
+        margin-right: 0.5rem;
+      }
+
+      .log-info {
+        color: #0066cc;
+      }
+
+      .log-error {
+        color: #dc3545;
+      }
+
+      .log-success {
+        color: #28a745;
+      }
+
+      .status {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 500;
+        margin-left: 1rem;
+      }
+
+      .status-ready {
+        background: #d4edda;
+        color: #155724;
+      }
+
+      .status-not-ready {
+        background: #f8d7da;
+        color: #721c24;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Traceway Frontend Demo <span id="status" class="status status-not-ready">Not initialized</span></h1>
+    <p class="subtitle">Test the @traceway/frontend SDK connection to your backend</p>
+
+    <div class="config-section">
+      <label for="connection-string">Connection String</label>
+      <input
+        type="text"
+        id="connection-string"
+        placeholder="your-token@https://your-traceway-server.com/api/report"
+        value=""
+      />
+      <p class="hint">Format: token@endpoint (e.g., abc123@https://api.example.com/report)</p>
+    </div>
+
+    <div class="actions">
+      <button id="btn-init" class="btn-init">Initialize SDK</button>
+      <button id="btn-exception" class="btn-exception" disabled>Capture Exception</button>
+      <button id="btn-message" class="btn-message" disabled>Capture Message</button>
+      <button id="btn-unhandled" class="btn-unhandled" disabled>Throw Unhandled Error</button>
+      <button id="btn-flush" class="btn-flush" disabled>Flush</button>
+    </div>
+
+    <div class="log-section">
+      <div class="log-header">
+        <h2>Event Log</h2>
+        <button id="btn-clear" class="clear-btn">Clear</button>
+      </div>
+      <div id="log"></div>
+    </div>
+
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>
