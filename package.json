@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "packages/core",
-    "packages/frontend"
+    "packages/frontend",
+    "packages/react"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
