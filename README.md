@@ -7,12 +7,81 @@ A monorepo containing JavaScript/TypeScript SDKs for Traceway error tracking.
 | Package | Description |
 |---------|-------------|
 | [`@traceway/core`](./packages/core) | Core types and utilities |
+| [`@traceway/backend`](./packages/backend) | Node.js backend SDK with AsyncLocalStorage context |
+| [`@traceway/nestjs`](./packages/nestjs) | NestJS integration with module, middleware, and decorators |
 | [`@traceway/frontend`](./packages/frontend) | Browser SDK with global error handlers |
 | [`@traceway/react`](./packages/react) | React integration with Provider and ErrorBoundary |
 | [`@traceway/vue`](./packages/vue) | Vue.js integration with plugin and composable |
 | [`@traceway/svelte`](./packages/svelte) | Svelte integration with context setup |
 
 ## Quick Start
+
+### NestJS
+
+```ts
+// app.module.ts
+import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
+import { APP_FILTER } from "@nestjs/core";
+import {
+  TracewayModule,
+  TracewayMiddleware,
+  TracewayExceptionFilter,
+} from "@traceway/nestjs";
+
+@Module({
+  imports: [
+    TracewayModule.forRoot({
+      connectionString: "your-token@https://your-server.com/api/report",
+      debug: true,
+      onErrorRecording: ["url", "query", "body", "headers"],
+    }),
+  ],
+  providers: [
+    {
+      provide: APP_FILTER,
+      useClass: TracewayExceptionFilter,
+    },
+  ],
+})
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(TracewayMiddleware).forRoutes("*");
+  }
+}
+```
+
+```ts
+// Using TracewayService and @Span decorator
+import { Injectable } from "@nestjs/common";
+import { TracewayService, Span } from "@traceway/nestjs";
+
+@Injectable()
+export class UsersService {
+  constructor(private readonly traceway: TracewayService) {}
+
+  @Span("db.users.findAll")
+  async findAll() {
+    // Automatically creates a span for this method
+    return this.userRepository.find();
+  }
+
+  async doSomething() {
+    // Manual span creation
+    const span = this.traceway.startSpan("custom.operation");
+    try {
+      await someOperation();
+    } finally {
+      this.traceway.endSpan(span);
+    }
+
+    // Manual exception capture
+    this.traceway.captureException(new Error("Something went wrong"));
+
+    // Set trace attributes
+    this.traceway.setTraceAttribute("userId", "123");
+  }
+}
+```
 
 ### React
 
@@ -156,6 +225,99 @@ Core types and utilities shared across all packages.
 
 ```ts
 import { nowISO, type ExceptionStackTrace, type ReportRequest } from "@traceway/core";
+```
+
+### @traceway/backend
+
+Node.js backend SDK with AsyncLocalStorage-based context propagation:
+
+```ts
+import {
+  init,
+  shutdown,
+  captureException,
+  captureMessage,
+  startSpan,
+  endSpan,
+  measureTask,
+  withTraceContext,
+  setTraceAttribute,
+  setTraceResponseInfo,
+  captureCurrentTrace,
+} from "@traceway/backend";
+
+// Initialize once at app startup
+init("your-token@https://your-server.com/api/report", {
+  debug: true,
+  version: "1.0.0",
+  serverName: "api-server-1",
+  sampleRate: 1.0,
+  errorSampleRate: 1.0,
+});
+
+// Wrap HTTP requests with trace context
+withTraceContext({ endpoint: "GET /api/users", clientIP: "127.0.0.1" }, async () => {
+  // Create spans for operations
+  const span = startSpan("db.query");
+  await db.query("SELECT * FROM users");
+  endSpan(span);
+
+  // Set response info and capture trace
+  setTraceResponseInfo(200, 1024);
+  captureCurrentTrace();
+});
+
+// Measure background tasks
+measureTask("process-emails", async () => {
+  await processEmails();
+});
+
+// Graceful shutdown
+await shutdown();
+```
+
+### @traceway/nestjs
+
+NestJS integration with module, middleware, exception filter, and decorators:
+
+- `TracewayModule.forRoot(options)` - Initialize with static configuration
+- `TracewayModule.forRootAsync(options)` - Initialize with async configuration
+- `TracewayMiddleware` - Request tracing middleware
+- `TracewayExceptionFilter` - Global exception filter with error recording
+- `TracewayService` - Injectable service for manual operations
+- `@Span(name?)` - Decorator for automatic span creation
+
+**Configuration Options:**
+
+```ts
+interface TracewayModuleOptions {
+  connectionString: string;        // Required: token@endpoint
+  debug?: boolean;                 // Log debug info
+  version?: string;                // App version
+  serverName?: string;             // Server identifier
+  sampleRate?: number;             // Trace sampling rate (0-1)
+  errorSampleRate?: number;        // Error trace sampling rate (0-1)
+  ignoredRoutes?: string[];        // Routes to skip tracing
+  onErrorRecording?: Array<"url" | "query" | "body" | "headers">;
+}
+```
+
+**Async Configuration:**
+
+```ts
+@Module({
+  imports: [
+    TracewayModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (config: ConfigService) => ({
+        connectionString: config.get("TRACEWAY_CONNECTION_STRING"),
+        debug: config.get("NODE_ENV") !== "production",
+      }),
+      inject: [ConfigService],
+    }),
+  ],
+})
+export class AppModule {}
 ```
 
 ### @traceway/frontend
