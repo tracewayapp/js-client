@@ -3,13 +3,13 @@ import {
   parseConnectionString,
   nowISO,
   msToNanoseconds,
-} from "@traceway/core";
+} from "@tracewayapp/core";
 import type {
   TracewayOptions,
   ExceptionStackTrace,
   Trace,
   Span,
-} from "@traceway/core";
+} from "@tracewayapp/core";
 import { CollectionFrameStore } from "./collection-frame-store.js";
 import { formatErrorStackTrace } from "./stack-trace.js";
 import {

@@ -6,9 +6,9 @@ export default defineConfig({
   plugins: [svelte()],
   resolve: {
     alias: {
-      "@traceway/svelte": path.resolve(__dirname, "../../src/index.ts"),
-      "@traceway/frontend": path.resolve(__dirname, "../../../frontend/src/index.ts"),
-      "@traceway/core": path.resolve(__dirname, "../../../core/src/index.ts"),
+      "@tracewayapp/svelte": path.resolve(__dirname, "../../src/index.ts"),
+      "@tracewayapp/frontend": path.resolve(__dirname, "../../../frontend/src/index.ts"),
+      "@tracewayapp/core": path.resolve(__dirname, "../../../core/src/index.ts"),
     },
   },
 });

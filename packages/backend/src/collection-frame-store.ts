@@ -3,7 +3,7 @@ import {
   nowISO,
   generateUUID,
   msToNanoseconds,
-} from "@traceway/core";
+} from "@tracewayapp/core";
 import { TypedRing } from "./typed-ring.js";
 import type {
   CollectionFrame,
@@ -12,7 +12,7 @@ import type {
   Trace,
   Span,
   ReportRequest,
-} from "@traceway/core";
+} from "@tracewayapp/core";
 import { collectMetrics } from "./metrics.js";
 
 export interface CollectionFrameStoreOptions {

@@ -1,5 +1,5 @@
 import type { App, InjectionKey } from "vue";
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 import type { TracewayPluginOptions, TracewayContextValue } from "./types.js";
 
 export const TracewayKey: InjectionKey<TracewayContextValue> = Symbol("traceway");

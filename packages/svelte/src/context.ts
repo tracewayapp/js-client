@@ -1,5 +1,5 @@
 import { setContext, onMount } from "svelte";
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 import type { TracewayOptions, TracewayContextValue } from "./types.js";
 
 export const TRACEWAY_KEY = Symbol("traceway");

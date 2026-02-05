@@ -1,11 +1,11 @@
-# @traceway/backend
+# @tracewayapp/backend
 
 Traceway SDK for Node.js backends. Core telemetry collection library.
 
 ## Quick Start
 
 ```ts
-import * as traceway from "@traceway/backend";
+import * as traceway from "@tracewayapp/backend";
 
 traceway.init("your-token@https://your-traceway-server.com/api/report", {
   version: "1.0.0",
@@ -71,7 +71,7 @@ The SDK supports both **manual** and **automatic** context propagation:
 The SDK uses Node.js `AsyncLocalStorage` to automatically propagate trace context through async operations:
 
 ```ts
-import * as traceway from "@traceway/backend";
+import * as traceway from "@tracewayapp/backend";
 
 traceway.init("token@https://api.traceway.io/api/report");
 
@@ -124,7 +124,7 @@ The context API makes it easy to build framework-specific middleware:
 
 ```ts
 // Express middleware
-import * as traceway from "@traceway/backend";
+import * as traceway from "@tracewayapp/backend";
 
 export function tracewayMiddleware() {
   return (req, res, next) => {
@@ -171,7 +171,7 @@ app.get("/api/users", async (req, res) => {
 
 ```ts
 // Fastify plugin
-import * as traceway from "@traceway/backend";
+import * as traceway from "@tracewayapp/backend";
 
 export const tracewayPlugin = (fastify, opts, done) => {
   fastify.addHook("onRequest", (request, reply, done) => {
@@ -199,8 +199,8 @@ export const tracewayPlugin = (fastify, opts, done) => {
 You can still use explicit parameter passing if preferred:
 
 ```ts
-import * as traceway from "@traceway/backend";
-import { generateUUID } from "@traceway/core";
+import * as traceway from "@tracewayapp/backend";
+import { generateUUID } from "@tracewayapp/core";
 
 const traceId = generateUUID();
 const spans: Span[] = [];

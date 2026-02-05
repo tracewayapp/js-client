@@ -1,4 +1,4 @@
-# @traceway/svelte
+# @tracewayapp/svelte
 
 Svelte integration for Traceway. Provides context setup and a helper function to capture errors.
 
@@ -8,7 +8,7 @@ Call `setupTraceway` in your root component (e.g., `App.svelte`) to initialize T
 
 ```svelte
 <script>
-  import { setupTraceway } from "@traceway/svelte";
+  import { setupTraceway } from "@tracewayapp/svelte";
 
   setupTraceway({
     connectionString: "your-token@https://your-server.com/api/report",
@@ -25,7 +25,7 @@ Access capture methods from any child component.
 
 ```svelte
 <script>
-  import { getTraceway } from "@traceway/svelte";
+  import { getTraceway } from "@tracewayapp/svelte";
 
   const { captureException, captureMessage } = getTraceway();
 
@@ -69,4 +69,4 @@ For Svelte-specific error handling, you can use Svelte's `onError` lifecycle fun
 ## Requirements
 
 - Svelte >= 4.0
-- `@traceway/frontend` (installed automatically as dependency)
+- `@tracewayapp/frontend` (installed automatically as dependency)

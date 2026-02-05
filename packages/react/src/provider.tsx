@@ -1,6 +1,6 @@
 import React, { createContext, useEffect, useMemo } from "react";
-import * as traceway from "@traceway/frontend";
-import type { TracewayFrontendOptions } from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
+import type { TracewayFrontendOptions } from "@tracewayapp/frontend";
 
 export interface TracewayContextValue {
   captureException: typeof traceway.captureException;

@@ -46,4 +46,4 @@ export type {
   CollectionFrame,
   ReportRequest,
   TracewayOptions,
-} from "@traceway/core";
+} from "@tracewayapp/core";

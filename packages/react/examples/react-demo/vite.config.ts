@@ -6,9 +6,9 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      "@traceway/react": path.resolve(__dirname, "../../src/index.ts"),
-      "@traceway/frontend": path.resolve(__dirname, "../../../frontend/src/index.ts"),
-      "@traceway/core": path.resolve(__dirname, "../../../core/src/index.ts"),
+      "@tracewayapp/react": path.resolve(__dirname, "../../src/index.ts"),
+      "@tracewayapp/frontend": path.resolve(__dirname, "../../../frontend/src/index.ts"),
+      "@tracewayapp/core": path.resolve(__dirname, "../../../core/src/index.ts"),
     },
   },
 });

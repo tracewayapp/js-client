@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { setupTraceway } from "@traceway/svelte";
-  import * as traceway from "@traceway/frontend";
+  import { setupTraceway } from "@tracewayapp/svelte";
+  import * as traceway from "@tracewayapp/frontend";
 
   export let connectionString: string;
 
@@ -131,7 +131,7 @@
     Traceway Svelte Demo
     <span class="status status-ready">Initialized</span>
   </h1>
-  <p class="subtitle">Test various Svelte error scenarios with @traceway/svelte</p>
+  <p class="subtitle">Test various Svelte error scenarios with @tracewayapp/svelte</p>
 
   <!-- Error Scenarios -->
   <div class="error-section">

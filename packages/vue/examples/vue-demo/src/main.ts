@@ -1,5 +1,5 @@
 import { createApp, ref } from "vue";
-import { createTracewayPlugin } from "@traceway/vue";
+import { createTracewayPlugin } from "@tracewayapp/vue";
 import App from "./App.vue";
 import "./style.css";
 

@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import { render } from "@testing-library/react";
 import { TracewayProvider, TracewayContext } from "./provider.js";
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 
-vi.mock("@traceway/frontend", () => ({
+vi.mock("@tracewayapp/frontend", () => ({
   captureException: vi.fn(),
   captureExceptionWithAttributes: vi.fn(),
   captureMessage: vi.fn(),

@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "vue": "^3.4.0",
-    "@traceway/vue": "*"
+    "@tracewayapp/vue": "*"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",

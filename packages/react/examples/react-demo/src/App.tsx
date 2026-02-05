@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { useTraceway, TracewayErrorBoundary } from "@traceway/react";
-import * as traceway from "@traceway/frontend";
+import { useTraceway, TracewayErrorBoundary } from "@tracewayapp/react";
+import * as traceway from "@tracewayapp/frontend";
 
 // Component that throws during render
 function BrokenRenderComponent({ shouldThrow }: { shouldThrow: boolean }) {
@@ -166,7 +166,7 @@ export default function App() {
         Traceway React Demo
         <span className="status status-ready">Initialized</span>
       </h1>
-      <p className="subtitle">Test various React error scenarios with @traceway/react</p>
+      <p className="subtitle">Test various React error scenarios with @tracewayapp/react</p>
 
       {/* Error Scenarios */}
       <div className="error-section">

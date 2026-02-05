@@ -1,4 +1,4 @@
-# @traceway/vue
+# @tracewayapp/vue
 
 Vue.js integration for Traceway. Provides a plugin with automatic error handling and a composable hook.
 
@@ -6,7 +6,7 @@ Vue.js integration for Traceway. Provides a plugin with automatic error handling
 
 ```ts
 import { createApp } from "vue";
-import { createTracewayPlugin } from "@traceway/vue";
+import { createTracewayPlugin } from "@tracewayapp/vue";
 import App from "./App.vue";
 
 const app = createApp(App);
@@ -31,7 +31,7 @@ Access capture methods from any component.
 
 ```vue
 <script setup lang="ts">
-import { useTraceway } from "@traceway/vue";
+import { useTraceway } from "@tracewayapp/vue";
 
 const { captureException, captureMessage } = useTraceway();
 
@@ -69,4 +69,4 @@ Throws if used outside a Vue app with the Traceway plugin installed.
 ## Requirements
 
 - Vue >= 3.3
-- `@traceway/frontend` (installed automatically as dependency)
+- `@tracewayapp/frontend` (installed automatically as dependency)

@@ -2,14 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createApp, defineComponent, h } from "vue";
 import { createTracewayPlugin, TracewayKey } from "./plugin.js";
 
-vi.mock("@traceway/frontend", () => ({
+vi.mock("@tracewayapp/frontend", () => ({
   init: vi.fn(),
   captureException: vi.fn(),
   captureExceptionWithAttributes: vi.fn(),
   captureMessage: vi.fn(),
 }));
 
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 
 describe("createTracewayPlugin", () => {
   beforeEach(() => {

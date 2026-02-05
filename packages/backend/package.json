@@ -1,6 +1,6 @@
 {
-  "name": "@traceway/backend",
-  "version": "0.1.0",
+  "name": "@tracewayapp/backend",
+  "version": "0.2.0",
   "description": "Traceway SDK for Node.js backends",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -15,11 +15,14 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@traceway/core": "*"
+    "@tracewayapp/core": "0.2.0"
   }
 }

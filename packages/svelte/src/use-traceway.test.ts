@@ -13,8 +13,8 @@ vi.mock("svelte", () => ({
   onMount: vi.fn((fn) => fn()),
 }));
 
-// Mock @traceway/frontend to avoid deep imports
-vi.mock("@traceway/frontend", () => ({
+// Mock @tracewayapp/frontend to avoid deep imports
+vi.mock("@tracewayapp/frontend", () => ({
   init: vi.fn(),
   captureException: vi.fn(),
   captureExceptionWithAttributes: vi.fn(),

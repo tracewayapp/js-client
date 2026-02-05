@@ -3,7 +3,7 @@ import { createApp, defineComponent, h } from "vue";
 import { createTracewayPlugin } from "./plugin.js";
 import { useTraceway } from "./use-traceway.js";
 
-vi.mock("@traceway/frontend", () => ({
+vi.mock("@tracewayapp/frontend", () => ({
   init: vi.fn(),
   captureException: vi.fn(),
   captureExceptionWithAttributes: vi.fn(),

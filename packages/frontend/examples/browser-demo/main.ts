@@ -1,4 +1,4 @@
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 
 // DOM elements
 const connectionStringInput = document.getElementById("connection-string") as HTMLInputElement;

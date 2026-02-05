@@ -6,13 +6,13 @@ A monorepo containing JavaScript/TypeScript SDKs for Traceway error tracking.
 
 | Package | Description |
 |---------|-------------|
-| [`@traceway/core`](./packages/core) | Core types and utilities |
-| [`@traceway/backend`](./packages/backend) | Node.js backend SDK with AsyncLocalStorage context |
-| [`@traceway/nestjs`](./packages/nestjs) | NestJS integration with module, middleware, and decorators |
-| [`@traceway/frontend`](./packages/frontend) | Browser SDK with global error handlers |
-| [`@traceway/react`](./packages/react) | React integration with Provider and ErrorBoundary |
-| [`@traceway/vue`](./packages/vue) | Vue.js integration with plugin and composable |
-| [`@traceway/svelte`](./packages/svelte) | Svelte integration with context setup |
+| [`@tracewayapp/core`](./packages/core) | Core types and utilities |
+| [`@tracewayapp/backend`](./packages/backend) | Node.js backend SDK with AsyncLocalStorage context |
+| [`@tracewayapp/nestjs`](./packages/nestjs) | NestJS integration with module, middleware, and decorators |
+| [`@tracewayapp/frontend`](./packages/frontend) | Browser SDK with global error handlers |
+| [`@tracewayapp/react`](./packages/react) | React integration with Provider and ErrorBoundary |
+| [`@tracewayapp/vue`](./packages/vue) | Vue.js integration with plugin and composable |
+| [`@tracewayapp/svelte`](./packages/svelte) | Svelte integration with context setup |
 
 ## Quick Start
 
@@ -26,7 +26,7 @@ import {
   TracewayModule,
   TracewayMiddleware,
   TracewayExceptionFilter,
-} from "@traceway/nestjs";
+} from "@tracewayapp/nestjs";
 
 @Module({
   imports: [
@@ -53,7 +53,7 @@ export class AppModule implements NestModule {
 ```ts
 // Using TracewayService and @Span decorator
 import { Injectable } from "@nestjs/common";
-import { TracewayService, Span } from "@traceway/nestjs";
+import { TracewayService, Span } from "@tracewayapp/nestjs";
 
 @Injectable()
 export class UsersService {
@@ -86,7 +86,7 @@ export class UsersService {
 ### React
 
 ```tsx
-import { TracewayProvider, TracewayErrorBoundary, useTraceway } from "@traceway/react";
+import { TracewayProvider, TracewayErrorBoundary, useTraceway } from "@tracewayapp/react";
 
 function App() {
   return (
@@ -118,7 +118,7 @@ function MyComponent() {
 ```ts
 // main.ts
 import { createApp } from "vue";
-import { createTracewayPlugin } from "@traceway/vue";
+import { createTracewayPlugin } from "@tracewayapp/vue";
 import App from "./App.vue";
 
 const app = createApp(App);
@@ -135,7 +135,7 @@ app.mount("#app");
 ```vue
 <!-- Component.vue -->
 <script setup lang="ts">
-import { useTraceway } from "@traceway/vue";
+import { useTraceway } from "@tracewayapp/vue";
 
 const { captureException, captureMessage } = useTraceway();
 
@@ -158,7 +158,7 @@ function handleClick() {
 ```svelte
 <!-- App.svelte (root component) -->
 <script>
-  import { setupTraceway } from "@traceway/svelte";
+  import { setupTraceway } from "@tracewayapp/svelte";
 
   setupTraceway({
     connectionString: "your-token@https://your-server.com/api/report",
@@ -171,7 +171,7 @@ function handleClick() {
 ```svelte
 <!-- Component.svelte -->
 <script>
-  import { getTraceway } from "@traceway/svelte";
+  import { getTraceway } from "@tracewayapp/svelte";
 
   const { captureException, captureMessage } = getTraceway();
 
@@ -190,7 +190,7 @@ function handleClick() {
 ### Vanilla JavaScript
 
 ```ts
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 
 // Initialize once at app startup
 traceway.init("your-token@https://your-server.com/api/report", {
@@ -219,15 +219,15 @@ await traceway.flush();
 
 ## Package Details
 
-### @traceway/core
+### @tracewayapp/core
 
 Core types and utilities shared across all packages.
 
 ```ts
-import { nowISO, type ExceptionStackTrace, type ReportRequest } from "@traceway/core";
+import { nowISO, type ExceptionStackTrace, type ReportRequest } from "@tracewayapp/core";
 ```
 
-### @traceway/backend
+### @tracewayapp/backend
 
 Node.js backend SDK with AsyncLocalStorage-based context propagation:
 
@@ -244,7 +244,7 @@ import {
   setTraceAttribute,
   setTraceResponseInfo,
   captureCurrentTrace,
-} from "@traceway/backend";
+} from "@tracewayapp/backend";
 
 // Initialize once at app startup
 init("your-token@https://your-server.com/api/report", {
@@ -276,7 +276,7 @@ measureTask("process-emails", async () => {
 await shutdown();
 ```
 
-### @traceway/nestjs
+### @tracewayapp/nestjs
 
 NestJS integration with module, middleware, exception filter, and decorators:
 
@@ -320,7 +320,7 @@ interface TracewayModuleOptions {
 export class AppModule {}
 ```
 
-### @traceway/frontend
+### @tracewayapp/frontend
 
 Browser SDK that provides:
 - `init(connectionString, options?)` - Initialize the SDK
@@ -333,21 +333,21 @@ Automatically installs global handlers for:
 - `window.onerror` - Uncaught exceptions
 - `window.onunhandledrejection` - Unhandled promise rejections
 
-### @traceway/react
+### @tracewayapp/react
 
 React-specific integration:
 - `TracewayProvider` - Context provider that initializes the SDK
 - `TracewayErrorBoundary` - Error boundary that auto-captures render errors
 - `useTraceway()` - Hook to access capture methods
 
-### @traceway/vue
+### @tracewayapp/vue
 
 Vue.js integration:
 - `createTracewayPlugin(options)` - Vue plugin for initialization
 - `useTraceway()` - Composable to access capture methods
 - Automatic `app.config.errorHandler` for Vue component errors
 
-### @traceway/svelte
+### @tracewayapp/svelte
 
 Svelte integration:
 - `setupTraceway(options)` - Initialize and provide context

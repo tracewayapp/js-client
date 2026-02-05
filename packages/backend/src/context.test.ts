@@ -12,7 +12,7 @@ import {
   getTraceDuration,
   forkTraceContext,
 } from "./context.js";
-import type { Span } from "@traceway/core";
+import type { Span } from "@tracewayapp/core";
 
 describe("context", () => {
   describe("withTraceContext", () => {

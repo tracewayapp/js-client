@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "async_hooks";
-import { generateUUID } from "@traceway/core";
-import type { Span } from "@traceway/core";
+import { generateUUID } from "@tracewayapp/core";
+import type { Span } from "@tracewayapp/core";
 
 /**
  * Trace context stored in AsyncLocalStorage.

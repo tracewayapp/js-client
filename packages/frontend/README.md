@@ -1,11 +1,11 @@
-# @traceway/frontend
+# @tracewayapp/frontend
 
 Traceway SDK for browser environments. Reports exceptions and messages only (no traces or metrics).
 
 ## Quick Start
 
 ```ts
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 
 traceway.init("your-token@https://your-traceway-server.com/api/report");
 

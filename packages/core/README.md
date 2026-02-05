@@ -1,4 +1,4 @@
-# @traceway/core
+# @tracewayapp/core
 
 Shared types and utilities for all Traceway JavaScript SDKs. Zero runtime dependencies.
 

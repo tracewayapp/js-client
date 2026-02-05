@@ -1,5 +1,5 @@
-import type { TracewayFrontendOptions } from "@traceway/frontend";
-import * as traceway from "@traceway/frontend";
+import type { TracewayFrontendOptions } from "@tracewayapp/frontend";
+import * as traceway from "@tracewayapp/frontend";
 
 export interface TracewayOptions {
   connectionString: string;

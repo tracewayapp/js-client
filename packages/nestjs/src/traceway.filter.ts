@@ -11,7 +11,7 @@ import {
   captureExceptionWithAttributes,
   getTraceId,
   getTraceContext,
-} from "@traceway/backend";
+} from "@tracewayapp/backend";
 import { TRACEWAY_MODULE_OPTIONS } from "./traceway.constants.js";
 import type { TracewayModuleOptions } from "./traceway.interfaces.js";
 

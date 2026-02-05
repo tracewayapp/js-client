@@ -2,8 +2,8 @@ import type {
   ExceptionStackTrace,
   ReportRequest,
   CollectionFrame,
-} from "@traceway/core";
-import { parseConnectionString, nowISO } from "@traceway/core";
+} from "@tracewayapp/core";
+import { parseConnectionString, nowISO } from "@tracewayapp/core";
 import { sendReport } from "./transport.js";
 
 export interface TracewayFrontendOptions {

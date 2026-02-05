@@ -1,4 +1,4 @@
-import { startSpan, endSpan } from "@traceway/backend";
+import { startSpan, endSpan } from "@tracewayapp/backend";
 
 export function Span(name?: string): MethodDecorator {
   return function (

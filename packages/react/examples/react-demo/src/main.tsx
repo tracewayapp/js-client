@@ -1,6 +1,6 @@
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { TracewayProvider } from "@traceway/react";
+import { TracewayProvider } from "@tracewayapp/react";
 import App from "./App";
 import "./index.css";
 

@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "svelte": "^4.2.0",
-    "@traceway/svelte": "*"
+    "@tracewayapp/svelte": "*"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^3.0.0",

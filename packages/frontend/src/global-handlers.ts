@@ -1,6 +1,6 @@
 import type { TracewayFrontendClient } from "./client.js";
 import { formatBrowserStackTrace } from "./stack-trace.js";
-import { nowISO } from "@traceway/core";
+import { nowISO } from "@tracewayapp/core";
 
 export function installGlobalHandlers(client: TracewayFrontendClient): void {
   const prevOnError = window.onerror;

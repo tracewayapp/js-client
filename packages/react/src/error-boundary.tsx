@@ -1,5 +1,5 @@
 import React, { Component } from "react";
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 
 export interface TracewayErrorBoundaryProps {
   children: React.ReactNode;

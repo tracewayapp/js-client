@@ -6,7 +6,7 @@ vi.mock("svelte", () => ({
   onMount: vi.fn((fn) => fn()),
 }));
 
-vi.mock("@traceway/frontend", () => ({
+vi.mock("@tracewayapp/frontend", () => ({
   init: vi.fn(),
   captureException: vi.fn(),
   captureExceptionWithAttributes: vi.fn(),
@@ -14,7 +14,7 @@ vi.mock("@traceway/frontend", () => ({
 }));
 
 import { setContext, onMount } from "svelte";
-import * as traceway from "@traceway/frontend";
+import * as traceway from "@tracewayapp/frontend";
 
 describe("setupTraceway", () => {
   beforeEach(() => {

@@ -1,5 +1,5 @@
-import { nowISO } from "@traceway/core";
-import type { ExceptionStackTrace } from "@traceway/core";
+import { nowISO } from "@tracewayapp/core";
+import type { ExceptionStackTrace } from "@tracewayapp/core";
 import {
   TracewayFrontendClient,
   type TracewayFrontendOptions,
@@ -67,4 +67,4 @@ export type {
   ExceptionStackTrace,
   CollectionFrame,
   ReportRequest,
-} from "@traceway/core";
+} from "@tracewayapp/core";

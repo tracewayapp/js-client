@@ -1,11 +1,11 @@
-# @traceway/react
+# @tracewayapp/react
 
 React integration for Traceway. Provides a context provider, error boundary, and hook.
 
 ## Setup
 
 ```tsx
-import { TracewayProvider } from "@traceway/react";
+import { TracewayProvider } from "@tracewayapp/react";
 
 function App() {
   return (
@@ -21,7 +21,7 @@ function App() {
 Catches React render errors and reports them to Traceway.
 
 ```tsx
-import { TracewayErrorBoundary } from "@traceway/react";
+import { TracewayErrorBoundary } from "@tracewayapp/react";
 
 function App() {
   return (
@@ -42,7 +42,7 @@ function App() {
 Access capture methods from any component inside the provider.
 
 ```tsx
-import { useTraceway } from "@traceway/react";
+import { useTraceway } from "@tracewayapp/react";
 
 function MyComponent() {
   const { captureException, captureMessage } = useTraceway();
@@ -86,4 +86,4 @@ Throws if used outside a `TracewayProvider`.
 ## Requirements
 
 - React >= 18
-- `@traceway/frontend` (installed automatically as dependency)
+- `@tracewayapp/frontend` (installed automatically as dependency)

@@ -1,7 +1,7 @@
 import * as os from "os";
-import { METRIC_MEM_USED, METRIC_MEM_TOTAL, METRIC_CPU_USED_PCNT } from "@traceway/core";
-import type { MetricRecord } from "@traceway/core";
-import { nowISO } from "@traceway/core";
+import { METRIC_MEM_USED, METRIC_MEM_TOTAL, METRIC_CPU_USED_PCNT } from "@tracewayapp/core";
+import type { MetricRecord } from "@tracewayapp/core";
+import { nowISO } from "@tracewayapp/core";
 
 let prevCpuUsage: NodeJS.CpuUsage | null = null;
 let prevCpuTime: number | null = null;

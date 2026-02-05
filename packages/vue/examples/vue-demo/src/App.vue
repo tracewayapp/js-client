@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { useTraceway } from "@traceway/vue";
-import * as traceway from "@traceway/frontend";
+import { useTraceway } from "@tracewayapp/vue";
+import * as traceway from "@tracewayapp/frontend";
 
 const { captureException, captureExceptionWithAttributes, captureMessage } =
   useTraceway();
@@ -141,7 +141,7 @@ if (triggerComponentError.value) {
       <span class="status status-ready">Initialized</span>
     </h1>
     <p class="subtitle">
-      Test various Vue error scenarios with @traceway/vue
+      Test various Vue error scenarios with @tracewayapp/vue
     </p>
 
     <!-- Error Scenarios -->
