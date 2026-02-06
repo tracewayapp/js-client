@@ -1,23 +1,36 @@
 # @tracewayapp/frontend
 
-Traceway SDK for browser environments. Reports exceptions and messages only (no traces or metrics).
+Traceway SDK for browser environments. Captures exceptions and messages with automatic batching and retry.
+
+## Installation
+
+```bash
+npm install @tracewayapp/frontend
+```
 
 ## Quick Start
 
-```ts
-import * as traceway from "@tracewayapp/frontend";
+```typescript
+import { init, captureException, captureMessage, flush } from "@tracewayapp/frontend";
 
-traceway.init("your-token@https://your-traceway-server.com/api/report");
+// Initialize once at app startup
+init("your-token@https://traceway.example.com/api/report");
 
-// Capture an error
-traceway.captureException(new Error("something broke"));
+// Capture errors
+try {
+  riskyOperation();
+} catch (error) {
+  captureException(error);
+}
 
-// Capture a message
-traceway.captureMessage("User completed onboarding");
+// Capture custom messages
+captureMessage("User completed checkout");
 
-// Flush pending exceptions immediately
-await traceway.flush();
+// Force-send all pending exceptions
+await flush();
 ```
+
+`init()` automatically installs `window.onerror` and `window.onunhandledrejection` handlers to capture uncaught errors.
 
 ## API
 
@@ -29,7 +42,7 @@ await traceway.flush();
 | `captureMessage(msg)` | Capture an informational message |
 | `flush()` | Force-send all pending exceptions immediately |
 
-## Options
+## Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -37,53 +50,7 @@ await traceway.flush();
 | `debounceMs` | `number` | `1500` | Debounce interval before sending |
 | `version` | `string` | `""` | Application version |
 
-## Sync Queue Behavior
-
-```
-captureException()
-    |
-    v
-pendingExceptions[]  -->  scheduleSync() (1.5s debounce)
-                              |
-                              v  (debounce fires)
-                          doSync()
-                              |
-                    +---------+---------+
-                    |                   |
-              isSyncing?            send batch
-                    |                   |
-                  return          +-----+-----+
-                              success     failure
-                                |           |
-                              done    re-queue batch
-                                           |
-                                    if pending > 0
-                                           |
-                                    doSync() again
-```
-
-- Only one sync at a time (no concurrent fetches)
-- New exceptions during an in-flight request are queued for the next batch
-- On failure, the batch is re-queued at the front of the pending list
-- On success after re-queue, any new pending items trigger an immediate sync
-
-## Global Error Handlers
-
-`init()` automatically installs `window.onerror` and `window.onunhandledrejection` handlers. Previous handlers are chained and called after Traceway captures the error.
-
-## Browser Requirements
+## Requirements
 
 - `fetch` API
-- `CompressionStream` API (gzip) — available in Chrome 80+, Firefox 113+, Safari 16.4+
-
-## Stack Trace Format
-
-Handles both V8 format (`at func (file:line:col)`) and Firefox format (`func@file:line:col`), producing Go-like output:
-
-```
-TypeError: Cannot read properties of null
-handleClick()
-    app.js:42
-render()
-    component.js:15
-```
+- `CompressionStream` API (gzip) — Chrome 80+, Firefox 113+, Safari 16.4+

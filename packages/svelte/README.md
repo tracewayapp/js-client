@@ -1,44 +1,88 @@
 # @tracewayapp/svelte
 
-Svelte integration for Traceway. Provides context setup and a helper function to capture errors.
+Svelte integration for Traceway. Provides context-based setup and a helper to capture errors.
+
+## Installation
+
+```bash
+npm install @tracewayapp/svelte
+```
 
 ## Setup
 
-Call `setupTraceway` in your root component (e.g., `App.svelte`) to initialize Traceway and provide context to child components.
+Call `setupTraceway` in your root component:
 
 ```svelte
 <script>
   import { setupTraceway } from "@tracewayapp/svelte";
 
   setupTraceway({
-    connectionString: "your-token@https://your-server.com/api/report",
-    options: { debug: true }, // optional
+    connectionString: "your-token@https://traceway.example.com/api/report",
   });
 </script>
 
 <slot />
 ```
 
-## getTraceway Helper
+## Capture Errors in Components
 
-Access capture methods from any child component.
+Use `getTraceway` in child components:
 
 ```svelte
 <script>
   import { getTraceway } from "@tracewayapp/svelte";
 
-  const { captureException, captureMessage } = getTraceway();
+  const { captureException } = getTraceway();
 
-  function handleClick() {
+  async function handleSubmit() {
     try {
-      doSomething();
-    } catch (err) {
-      captureException(err);
+      await submitForm();
+    } catch (error) {
+      captureException(error);
     }
   }
 </script>
 
-<button on:click={handleClick}>Do Something</button>
+<button on:click={handleSubmit}>Submit</button>
+```
+
+## With Options
+
+```svelte
+<script>
+  import { setupTraceway } from "@tracewayapp/svelte";
+
+  setupTraceway({
+    connectionString: "your-token@https://traceway.example.com/api/report",
+    options: {
+      debug: true,
+      version: "1.0.0",
+    },
+  });
+</script>
+
+<slot />
+```
+
+## SvelteKit Setup
+
+For SvelteKit, set up Traceway in your root layout:
+
+```svelte
+<!-- src/routes/+layout.svelte -->
+<script>
+  import { setupTraceway } from "@tracewayapp/svelte";
+  import { browser } from "$app/environment";
+
+  // Only initialize on client
+  if (browser) {
+    setupTraceway({
+      connectionString: "your-token@https://traceway.example.com/api/report",
+    });
+  }
+</script>
+
+<slot />
 ```
 
 ## API
@@ -59,12 +103,6 @@ Returns `{ captureException, captureExceptionWithAttributes, captureMessage }`.
 Returns `{ captureException, captureExceptionWithAttributes, captureMessage }`.
 
 Throws if used outside a component tree where `setupTraceway` has been called.
-
-## Global Error Handling
-
-Traceway automatically installs global error handlers (`window.onerror` and `onunhandledrejection`) when initialized. These capture uncaught errors and unhandled promise rejections.
-
-For Svelte-specific error handling, you can use Svelte's `onError` lifecycle function or wrap error-prone code in try/catch blocks using `captureException`.
 
 ## Requirements
 

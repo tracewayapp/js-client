@@ -1,52 +1,67 @@
 # @tracewayapp/vue
 
-Vue.js integration for Traceway. Provides a plugin with automatic error handling and a composable hook.
+Vue 3 integration for Traceway. Provides a plugin with automatic error handling and a composable.
+
+## Installation
+
+```bash
+npm install @tracewayapp/vue
+```
 
 ## Setup
 
-```ts
+Install the Traceway plugin in your Vue application:
+
+```typescript
 import { createApp } from "vue";
 import { createTracewayPlugin } from "@tracewayapp/vue";
 import App from "./App.vue";
 
 const app = createApp(App);
 
-app.use(
-  createTracewayPlugin({
-    connectionString: "your-token@https://your-server.com/api/report",
-    options: { debug: true }, // optional
-  })
-);
+app.use(createTracewayPlugin({
+  connectionString: "your-token@https://traceway.example.com/api/report",
+}));
 
 app.mount("#app");
 ```
 
-## Automatic Error Handling
-
-The plugin automatically installs a global error handler (`app.config.errorHandler`) that captures all Vue component errors and reports them to Traceway.
+The plugin automatically installs a global error handler that captures uncaught errors.
 
 ## useTraceway Composable
 
-Access capture methods from any component.
+Use the `useTraceway` composable to capture errors in components:
 
 ```vue
-<script setup lang="ts">
+<script setup>
 import { useTraceway } from "@tracewayapp/vue";
 
-const { captureException, captureMessage } = useTraceway();
+const { captureException } = useTraceway();
 
-function handleClick() {
+async function handleSubmit() {
   try {
-    doSomething();
-  } catch (err) {
-    captureException(err as Error);
+    await submitForm();
+  } catch (error) {
+    captureException(error);
   }
 }
 </script>
 
 <template>
-  <button @click="handleClick">Do Something</button>
+  <button @click="handleSubmit">Submit</button>
 </template>
+```
+
+## With Options
+
+```typescript
+app.use(createTracewayPlugin({
+  connectionString: "your-token@https://traceway.example.com/api/report",
+  options: {
+    debug: true,
+    version: "1.0.0",
+  },
+}));
 ```
 
 ## API

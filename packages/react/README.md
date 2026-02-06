@@ -2,61 +2,82 @@
 
 React integration for Traceway. Provides a context provider, error boundary, and hook.
 
+## Installation
+
+```bash
+npm install @tracewayapp/react
+```
+
 ## Setup
+
+Wrap your application with `TracewayProvider`:
 
 ```tsx
 import { TracewayProvider } from "@tracewayapp/react";
 
 function App() {
   return (
-    <TracewayProvider connectionString="your-token@https://your-server.com/api/report">
-      <MyApp />
+    <TracewayProvider connectionString="your-token@https://traceway.example.com/api/report">
+      <YourApp />
     </TracewayProvider>
   );
 }
+
+export default App;
 ```
 
 ## Error Boundary
 
-Catches React render errors and reports them to Traceway.
+Wrap components that might throw errors:
 
 ```tsx
-import { TracewayErrorBoundary } from "@tracewayapp/react";
+import { TracewayProvider, TracewayErrorBoundary } from "@tracewayapp/react";
 
 function App() {
   return (
-    <TracewayErrorBoundary
-      fallback={<div>Something went wrong</div>}
-      onError={(error, errorInfo) => {
-        console.log("Caught:", error.message);
-      }}
-    >
-      <MyPage />
-    </TracewayErrorBoundary>
+    <TracewayProvider connectionString="your-token@https://traceway.example.com/api/report">
+      <TracewayErrorBoundary fallback={<ErrorPage />}>
+        <YourApp />
+      </TracewayErrorBoundary>
+    </TracewayProvider>
   );
 }
 ```
 
 ## useTraceway Hook
 
-Access capture methods from any component inside the provider.
+Use the `useTraceway` hook to capture errors manually:
 
 ```tsx
 import { useTraceway } from "@tracewayapp/react";
 
 function MyComponent() {
-  const { captureException, captureMessage } = useTraceway();
+  const { captureException } = useTraceway();
 
-  function handleClick() {
+  async function handleSubmit() {
     try {
-      doSomething();
-    } catch (err) {
-      captureException(err as Error);
+      await submitForm();
+    } catch (error) {
+      captureException(error);
     }
   }
 
-  return <button onClick={handleClick}>Do Something</button>;
+  return <button onClick={handleSubmit}>Submit</button>;
 }
+```
+
+## With Options
+
+```tsx
+<TracewayProvider
+  connectionString="your-token@https://traceway.example.com/api/report"
+  options={{
+    debug: true,
+    version: "1.0.0",
+  }}
+>
+  <YourApp />
+</TracewayProvider>
 ```
 
 ## API

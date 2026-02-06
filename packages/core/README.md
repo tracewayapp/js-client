@@ -2,6 +2,12 @@
 
 Shared types and utilities for all Traceway JavaScript SDKs. Zero runtime dependencies.
 
+## Installation
+
+```bash
+npm install @tracewayapp/core
+```
+
 ## Types
 
 | Type | Description |
