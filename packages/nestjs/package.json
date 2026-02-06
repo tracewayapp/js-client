@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/nestjs",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Traceway NestJS integration with module, middleware, and decorators",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -23,7 +23,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/backend": "0.2.0"
+    "@tracewayapp/backend": "0.3.0"
   },
   "peerDependencies": {
     "@nestjs/common": "^10.0.0",
