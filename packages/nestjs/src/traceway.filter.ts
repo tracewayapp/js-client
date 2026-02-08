@@ -4,8 +4,8 @@ import {
   HttpException,
   HttpStatus,
   Inject,
+  ExceptionFilter,
 } from "@nestjs/common";
-import { BaseExceptionFilter } from "@nestjs/core";
 import type { Request, Response } from "express";
 import {
   captureExceptionWithAttributes,
@@ -18,36 +18,54 @@ import type { TracewayModuleOptions } from "./traceway.interfaces.js";
 const BODY_LIMIT = 64 * 1024;
 
 @Catch()
-export class TracewayExceptionFilter extends BaseExceptionFilter {
+export class TracewayExceptionFilter implements ExceptionFilter {
   constructor(
     @Inject(TRACEWAY_MODULE_OPTIONS)
     private readonly options: TracewayModuleOptions,
-  ) {
-    super();
-  }
+  ) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const request = ctx.getRequest<Request>();
     const response = ctx.getResponse<Response>();
 
-    const status =
-      exception instanceof HttpException
-        ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
+    const httpException = this.asHttpException(exception);
+    const status = httpException
+      ? httpException.getStatus()
+      : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    if (status >= 500 || !(exception instanceof HttpException)) {
+    if (status >= 500 || !httpException) {
       this.captureError(exception, request);
     }
 
-    if (exception instanceof Error) {
-      super.catch(exception, host);
-    } else {
-      response.status(status).json({
-        statusCode: status,
-        message: "Internal server error",
-      });
+    if (!response.headersSent) {
+      if (httpException) {
+        const body = httpException.getResponse();
+        response.status(status).json(
+          typeof body === "string" ? { statusCode: status, message: body } : body,
+        );
+      } else {
+        response.status(status).json({
+          statusCode: status,
+          message: "Internal server error",
+        });
+      }
     }
+  }
+
+  private asHttpException(exception: unknown): HttpException | null {
+    if (exception instanceof HttpException) {
+      return exception;
+    }
+    if (
+      exception !== null &&
+      typeof exception === "object" &&
+      typeof (exception as HttpException).getStatus === "function" &&
+      typeof (exception as HttpException).getResponse === "function"
+    ) {
+      return exception as HttpException;
+    }
+    return null;
   }
 
   private captureError(exception: unknown, request: Request): void {

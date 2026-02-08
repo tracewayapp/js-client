@@ -2,8 +2,10 @@ import { Inject, Injectable, NestMiddleware } from "@nestjs/common";
 import type { Request, Response, NextFunction } from "express";
 import {
   withTraceContext,
+  getTraceContext,
   setTraceResponseInfo,
   captureCurrentTrace,
+  hasTraceContext,
 } from "@tracewayapp/backend";
 import { TRACEWAY_MODULE_OPTIONS } from "./traceway.constants.js";
 import type { TracewayModuleOptions } from "./traceway.interfaces.js";
@@ -18,15 +20,19 @@ export class TracewayMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction): void {
     const routePath = req.route?.path || req.path;
 
-    if (this.options.ignoredRoutes?.includes(routePath)) {
+    if (this.options.ignoredRoutes?.includes(routePath) || hasTraceContext()) {
       return next();
     }
 
-    const endpoint = `${req.method} ${routePath}`;
     const clientIP = this.getClientIP(req);
 
-    withTraceContext({ endpoint, clientIP }, () => {
+    withTraceContext({ endpoint: "", clientIP }, () => {
       res.on("finish", () => {
+        const routePath = req.route?.path || req.path;
+        const ctx = getTraceContext();
+        if (ctx) {
+          ctx.endpoint = `${req.method} ${routePath}`;
+        }
         const bodySize = parseInt(res.get("content-length") || "0", 10);
         setTraceResponseInfo(res.statusCode, bodySize);
         captureCurrentTrace();
