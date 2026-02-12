@@ -2,15 +2,19 @@ import type {
   ExceptionStackTrace,
   ReportRequest,
   CollectionFrame,
+  SessionRecordingPayload,
 } from "@tracewayapp/core";
-import { parseConnectionString, nowISO } from "@tracewayapp/core";
+import { parseConnectionString, generateUUID } from "@tracewayapp/core";
 import { sendReport } from "./transport.js";
+import { SessionRecorder } from "./session-recorder.js";
 
 export interface TracewayFrontendOptions {
   debug?: boolean;
   debounceMs?: number;
   retryDelayMs?: number;
   version?: string;
+  sessionRecording?: boolean;
+  sessionRecordingSegmentDuration?: number;
 }
 
 export class TracewayFrontendClient {
@@ -22,9 +26,12 @@ export class TracewayFrontendClient {
   private version: string;
 
   private pendingExceptions: ExceptionStackTrace[] = [];
+  private pendingRecordings: SessionRecordingPayload[] = [];
   private isSyncing = false;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private recorder: SessionRecorder | null = null;
 
   constructor(connectionString: string, options: TracewayFrontendOptions = {}) {
     const { token, apiUrl } = parseConnectionString(connectionString);
@@ -34,9 +41,24 @@ export class TracewayFrontendClient {
     this.debounceMs = options.debounceMs ?? 1500;
     this.retryDelayMs = options.retryDelayMs ?? 10000;
     this.version = options.version ?? "";
+
+    if (options.sessionRecording !== false && typeof window !== "undefined") {
+      this.recorder = new SessionRecorder({
+        segmentDuration: options.sessionRecordingSegmentDuration,
+      });
+      this.recorder.start();
+    }
   }
 
   addException(exception: ExceptionStackTrace): void {
+    if (this.recorder && this.recorder.hasSegments()) {
+      const segments = this.recorder.getSegments();
+      const allEvents = segments.flatMap((s) => s.events);
+      const exceptionId = generateUUID();
+      exception.sessionRecordingId = exceptionId;
+      this.pendingRecordings.push({ exceptionId, events: allEvents });
+    }
+
     this.pendingExceptions.push(exception);
     this.scheduleSync();
   }
@@ -57,11 +79,13 @@ export class TracewayFrontendClient {
 
     this.isSyncing = true;
     const batch = this.pendingExceptions.splice(0);
+    const recordings = this.pendingRecordings.splice(0);
 
     const frame: CollectionFrame = {
       stackTraces: batch,
       metrics: [],
       traces: [],
+      sessionRecordings: recordings.length > 0 ? recordings : undefined,
     };
 
     const payload: ReportRequest = {
@@ -80,6 +104,7 @@ export class TracewayFrontendClient {
       if (!success) {
         failed = true;
         this.pendingExceptions.unshift(...batch);
+        this.pendingRecordings.unshift(...recordings);
         if (this.debug) {
           console.error("Traceway: sync failed, re-queued exceptions");
         }
@@ -87,6 +112,7 @@ export class TracewayFrontendClient {
     } catch (err) {
       failed = true;
       this.pendingExceptions.unshift(...batch);
+      this.pendingRecordings.unshift(...recordings);
       if (this.debug) {
         console.error("Traceway: sync error:", err);
       }
@@ -94,10 +120,8 @@ export class TracewayFrontendClient {
       this.isSyncing = false;
       if (this.pendingExceptions.length > 0) {
         if (failed) {
-          // On failure, wait before retrying to avoid hammering the server
           this.scheduleRetry();
         } else {
-          // On success, process remaining items immediately
           this.doSync();
         }
       }
@@ -105,7 +129,7 @@ export class TracewayFrontendClient {
   }
 
   private scheduleRetry(): void {
-    if (this.retryTimer !== null) return; // Already scheduled
+    if (this.retryTimer !== null) return;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       this.doSync();
@@ -120,6 +144,9 @@ export class TracewayFrontendClient {
     if (this.retryTimer !== null) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
+    }
+    if (this.recorder) {
+      this.recorder.stop();
     }
     await this.doSync();
   }

@@ -4,6 +4,7 @@ export type {
   Span,
   Trace,
   CollectionFrame,
+  SessionRecordingPayload,
   ReportRequest,
   TracewayOptions,
 } from "./types.js";

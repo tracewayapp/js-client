@@ -5,6 +5,7 @@ export interface ExceptionStackTrace {
   recordedAt: string;
   attributes?: Record<string, string>;
   isMessage: boolean;
+  sessionRecordingId?: string | null;
 }
 
 export interface MetricRecord {
@@ -37,6 +38,12 @@ export interface CollectionFrame {
   stackTraces: ExceptionStackTrace[];
   metrics: MetricRecord[];
   traces: Trace[];
+  sessionRecordings?: SessionRecordingPayload[];
+}
+
+export interface SessionRecordingPayload {
+  exceptionId: string;
+  events: unknown[];
 }
 
 export interface ReportRequest {

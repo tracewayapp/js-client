@@ -23,6 +23,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/core": "0.3.0"
+    "@tracewayapp/core": "0.3.0",
+    "rrweb": "^2.0.0-alpha.18"
   }
 }
