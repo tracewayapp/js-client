@@ -7,40 +7,40 @@ export function formatBrowserStackTrace(error: Error): string {
     const stackLines = error.stack.split("\n");
     for (const line of stackLines) {
       // V8 format: "    at funcName (file:line:col)"
-      const v8Match = line.match(/^\s+at\s+(.+?)\s+\((.+):(\d+):\d+\)$/);
+      const v8Match = line.match(/^\s+at\s+(.+?)\s+\((.+):(\d+):(\d+)\)$/);
       if (v8Match) {
         const funcName = shortenFunctionName(v8Match[1]);
         const file = shortenFilePath(v8Match[2]);
         lines.push(`${funcName}()`);
-        lines.push(`    ${file}:${v8Match[3]}`);
+        lines.push(`    ${file}:${v8Match[3]}:${v8Match[4]}`);
         continue;
       }
 
       // V8 anonymous: "    at file:line:col"
-      const v8AnonMatch = line.match(/^\s+at\s+(.+):(\d+):\d+$/);
+      const v8AnonMatch = line.match(/^\s+at\s+(.+):(\d+):(\d+)$/);
       if (v8AnonMatch) {
         const file = shortenFilePath(v8AnonMatch[1]);
         lines.push(`<anonymous>()`);
-        lines.push(`    ${file}:${v8AnonMatch[2]}`);
+        lines.push(`    ${file}:${v8AnonMatch[2]}:${v8AnonMatch[3]}`);
         continue;
       }
 
       // Firefox format: "funcName@file:line:col"
-      const ffMatch = line.match(/^(.+)@(.+):(\d+):\d+$/);
+      const ffMatch = line.match(/^(.+)@(.+):(\d+):(\d+)$/);
       if (ffMatch) {
         const funcName = shortenFunctionName(ffMatch[1]) || "<anonymous>";
         const file = shortenFilePath(ffMatch[2]);
         lines.push(`${funcName}()`);
-        lines.push(`    ${file}:${ffMatch[3]}`);
+        lines.push(`    ${file}:${ffMatch[3]}:${ffMatch[4]}`);
         continue;
       }
 
       // Firefox anonymous: "@file:line:col"
-      const ffAnonMatch = line.match(/^@(.+):(\d+):\d+$/);
+      const ffAnonMatch = line.match(/^@(.+):(\d+):(\d+)$/);
       if (ffAnonMatch) {
         const file = shortenFilePath(ffAnonMatch[1]);
         lines.push(`<anonymous>()`);
-        lines.push(`    ${file}:${ffAnonMatch[2]}`);
+        lines.push(`    ${file}:${ffAnonMatch[2]}:${ffAnonMatch[3]}`);
         continue;
       }
     }

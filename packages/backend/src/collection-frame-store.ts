@@ -194,7 +194,7 @@ export class CollectionFrameStore {
     }
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(timeoutMs?: number): Promise<void> {
     if (this.collectionTimer !== null) {
       clearInterval(this.collectionTimer);
       this.collectionTimer = null;
@@ -209,33 +209,44 @@ export class CollectionFrameStore {
     const frames = this.sendQueue.readAll();
     if (frames.length === 0) return;
 
-    const payload: ReportRequest = {
-      collectionFrames: frames,
-      appVersion: this.version,
-      serverName: this.serverName,
-    };
+    const uploadPromise = (async () => {
+      const payload: ReportRequest = {
+        collectionFrames: frames,
+        appVersion: this.version,
+        serverName: this.serverName,
+      };
 
-    try {
-      const jsonData = JSON.stringify(payload);
-      const gzipped = new Uint8Array(zlib.gzipSync(Buffer.from(jsonData)));
+      try {
+        const jsonData = JSON.stringify(payload);
+        const gzipped = new Uint8Array(zlib.gzipSync(Buffer.from(jsonData)));
 
-      const resp = await fetch(this.apiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Encoding": "gzip",
-          Authorization: `Bearer ${this.token}`,
-        },
-        body: gzipped as unknown as BodyInit,
-      });
+        const resp = await fetch(this.apiUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+            Authorization: `Bearer ${this.token}`,
+          },
+          body: gzipped as unknown as BodyInit,
+        });
 
-      if (resp.status === 200) {
-        this.sendQueue.remove(frames);
+        if (resp.status === 200) {
+          this.sendQueue.remove(frames);
+        }
+      } catch (err) {
+        if (this.debug) {
+          console.error("Traceway: shutdown upload failed:", err);
+        }
       }
-    } catch (err) {
-      if (this.debug) {
-        console.error("Traceway: shutdown upload failed:", err);
-      }
+    })();
+
+    if (timeoutMs !== undefined) {
+      await Promise.race([
+        uploadPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+    } else {
+      await uploadPromise;
     }
   }
 }

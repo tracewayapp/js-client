@@ -136,7 +136,7 @@ export class TracewayFrontendClient {
     }, this.retryDelayMs);
   }
 
-  async flush(): Promise<void> {
+  async flush(timeoutMs?: number): Promise<void> {
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -148,6 +148,16 @@ export class TracewayFrontendClient {
     if (this.recorder) {
       this.recorder.stop();
     }
-    await this.doSync();
+
+    const syncPromise = this.doSync();
+
+    if (timeoutMs !== undefined) {
+      await Promise.race([
+        syncPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+    } else {
+      await syncPromise;
+    }
   }
 }

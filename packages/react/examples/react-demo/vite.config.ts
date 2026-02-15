@@ -4,6 +4,9 @@ import path from "path";
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    sourcemap: true,
+  },
   resolve: {
     alias: {
       "@tracewayapp/react": path.resolve(__dirname, "../../src/index.ts"),

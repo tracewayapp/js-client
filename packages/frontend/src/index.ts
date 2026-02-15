@@ -53,9 +53,9 @@ export function captureMessage(msg: string): void {
   });
 }
 
-export async function flush(): Promise<void> {
+export async function flush(timeoutMs?: number): Promise<void> {
   if (!client) return;
-  await client.flush();
+  await client.flush(timeoutMs);
 }
 
 export { TracewayFrontendClient } from "./client.js";

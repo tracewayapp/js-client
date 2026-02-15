@@ -320,9 +320,9 @@ export function measureTask(
   }
 }
 
-export async function shutdown(): Promise<void> {
+export async function shutdown(timeoutMs?: number): Promise<void> {
   if (!store) return;
   const s = store;
   store = null;
-  await s.shutdown();
+  await s.shutdown(timeoutMs);
 }

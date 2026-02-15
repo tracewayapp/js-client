@@ -8,7 +8,8 @@
     "packages/react",
     "packages/vue",
     "packages/svelte",
-    "packages/nestjs"
+    "packages/nestjs",
+    "packages/sourcemap-upload"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
