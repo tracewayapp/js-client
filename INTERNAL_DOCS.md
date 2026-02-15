@@ -13,6 +13,7 @@ A monorepo containing JavaScript/TypeScript SDKs for Traceway error tracking.
 | [`@tracewayapp/react`](./packages/react) | React integration with Provider and ErrorBoundary |
 | [`@tracewayapp/vue`](./packages/vue) | Vue.js integration with plugin and composable |
 | [`@tracewayapp/svelte`](./packages/svelte) | Svelte integration with context setup |
+| [`@tracewayapp/sourcemap-upload`](./packages/sourcemap-upload) | CLI tool for uploading source maps |
 
 ## Quick Start
 
@@ -333,6 +334,23 @@ Automatically installs global handlers for:
 - `window.onerror` - Uncaught exceptions
 - `window.onunhandledrejection` - Unhandled promise rejections
 
+#### Session Replay
+
+The frontend SDK includes built-in session replay powered by [rrweb](https://github.com/rrweb-io/rrweb) (`^2.0.0-alpha.18`).
+
+- **Enabled by default** — controlled by the `sessionRecording` option (defaults to `true`). Only activates when `window` is available.
+- **Segment rotation** — DOM events are recorded into segments that rotate every 10 seconds (configurable via `sessionRecordingSegmentDuration` in ms).
+- **Buffering** — The recorder keeps at most 2 segments in memory (the current segment and the previous one).
+- **Exception attachment** — When an exception is captured, the recorder's segments are automatically attached to it via a `sessionRecordingId` field, so the replay can be viewed alongside the error in the Traceway dashboard.
+- **Flush behavior** — On sync, pending recordings are sent with the exception batch. Calling `flush()` stops the recorder and sends all remaining data.
+
+```ts
+traceway.init("token@https://traceway.example.com/api/report", {
+  sessionRecording: true,               // default
+  sessionRecordingSegmentDuration: 10000, // default: 10s
+});
+```
+
 ### @tracewayapp/react
 
 React-specific integration:
@@ -352,6 +370,43 @@ Vue.js integration:
 Svelte integration:
 - `setupTraceway(options)` - Initialize and provide context
 - `getTraceway()` - Get capture methods from context
+
+### @tracewayapp/sourcemap-upload
+
+CLI tool for uploading JavaScript source maps to the Traceway backend so that stack traces can be deobfuscated.
+
+**CLI command:** `traceway-sourcemaps`
+
+**Flags:**
+
+| Flag | Description | Required |
+|------|-------------|----------|
+| `--url <url>` | Traceway backend URL | Yes (or `TRACEWAY_URL` env var) |
+| `--token <token>` | Source map upload token | Yes (or `TRACEWAY_SOURCEMAP_TOKEN` env var) |
+| `--version <version>` | App version to associate with the maps | Yes |
+| `--directory <dir>` | Directory to search for `.map` files (default: `.`) | No |
+
+**How it works:**
+- Recursively finds all `.map` files in the target directory using glob (`**/*.map`)
+- Validates each file is under the **50 MB** size limit
+- Uploads all files in a single multipart `POST` request to `{url}/api/sourcemaps/upload` with a `Bearer` token header
+- The `version` field is included in the form data so the backend can associate maps with a release
+
+**Usage example:**
+
+```bash
+# Using flags
+traceway-sourcemaps \
+  --url https://traceway.example.com \
+  --token sm_abc123 \
+  --version 1.2.0 \
+  --directory ./dist
+
+# Using environment variables
+TRACEWAY_URL=https://traceway.example.com \
+TRACEWAY_SOURCEMAP_TOKEN=sm_abc123 \
+traceway-sourcemaps --version 1.2.0 --directory ./dist
+```
 
 ## Error Handling Patterns
 
@@ -412,6 +467,55 @@ async function handleClick() {
 The SDK automatically captures:
 - Uncaught exceptions (`window.onerror`)
 - Unhandled promise rejections (`window.onunhandledrejection`)
+
+## Flush & Shutdown Timeout
+
+Both the frontend and backend SDKs expose a graceful-shutdown method that drains pending data before returning. Each accepts an optional `timeoutMs` parameter — when provided, the method races the upload against a `setTimeout` and resolves as soon as either completes (via `Promise.race`).
+
+### Frontend — `flush(timeoutMs?)`
+
+1. Clears the debounce timer and retry timer so no further delayed syncs fire.
+2. Stops the session recorder (if active).
+3. Sends all pending exceptions and session recordings in a single sync call.
+
+**Default timers:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `debounceMs` | `1500` | Delay before batching and sending exceptions |
+| `retryDelayMs` | `10000` | Delay before retrying a failed sync |
+
+```ts
+// Wait for flush to complete (no timeout)
+await traceway.flush();
+
+// Wait at most 3 seconds, then give up
+await traceway.flush(3000);
+```
+
+### Backend — `shutdown(timeoutMs?)`
+
+1. Clears the collection interval and metrics interval timers.
+2. Rotates the current collection frame into the send queue.
+3. Gzips and uploads all remaining frames.
+
+All background timers use `.unref()` so they do not prevent the Node.js process from exiting naturally.
+
+**Default timers:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `collectionInterval` | `5000` | How often frames are rotated and queued for upload |
+| `uploadThrottle` | `2000` | Minimum interval between upload attempts |
+| `metricsInterval` | `30000` | How often system metrics are collected |
+
+```ts
+// Wait for shutdown to complete (no timeout)
+await shutdown();
+
+// Wait at most 5 seconds, then give up
+await shutdown(5000);
+```
 
 ## Development
 
