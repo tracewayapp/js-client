@@ -1,3 +1,4 @@
+import * as zlib from "zlib";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   init,
@@ -6,6 +7,7 @@ import {
   captureExceptionWithAttributes,
   captureMessage,
   captureMetric,
+  captureMetricWithTags,
   captureTrace,
   captureTask,
   captureCurrentTrace,
@@ -61,6 +63,9 @@ describe("traceway", () => {
     expect(() => captureException(new Error("test"))).not.toThrow();
     expect(() => captureMessage("hello")).not.toThrow();
     expect(() => captureMetric("test", 42)).not.toThrow();
+    expect(() =>
+      captureMetricWithTags("test", 42, { region: "us-east" }),
+    ).not.toThrow();
   });
 
   it("should return false from shouldSample when not initialized", () => {
@@ -226,6 +231,38 @@ describe("traceway", () => {
     it("should not capture when sample rate is 0", () => {
       init("test-token@https://example.com/api/report", { sampleRate: 0 });
       measureTask("unsampled-task", () => {});
+    });
+  });
+
+  describe("captureMetricWithTags", () => {
+    it("should include tags in the report payload", async () => {
+      init("test-token@https://example.com/api/report", {
+        collectionInterval: 50,
+        uploadThrottle: 0,
+      });
+      captureMetricWithTags("request.duration", 150, {
+        region: "us-east",
+        service: "api",
+      });
+      await shutdown();
+
+      expect(fetch).toHaveBeenCalled();
+      const call = (fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+        (c: unknown[]) =>
+          typeof c[0] === "string" && c[0].includes("/report"),
+      );
+      expect(call).toBeDefined();
+      const decompressed = zlib.gunzipSync(Buffer.from(call![1].body));
+      const body = JSON.parse(decompressed.toString());
+      const metrics = body.collectionFrames.flatMap(
+        (f: { metrics: unknown[] }) => f.metrics,
+      );
+      const tagged = metrics.find(
+        (m: { name: string }) => m.name === "request.duration",
+      );
+      expect(tagged).toBeDefined();
+      expect(tagged.value).toBe(150);
+      expect(tagged.tags).toEqual({ region: "us-east", service: "api" });
     });
   });
 

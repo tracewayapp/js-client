@@ -120,6 +120,20 @@ export function captureMetric(name: string, value: number): void {
   });
 }
 
+export function captureMetricWithTags(
+  name: string,
+  value: number,
+  tags: Record<string, string>,
+): void {
+  if (!store) return;
+  store.addMetric({
+    name,
+    value,
+    recordedAt: nowISO(),
+    tags,
+  });
+}
+
 export function captureTrace(
   traceId: string,
   endpoint: string,

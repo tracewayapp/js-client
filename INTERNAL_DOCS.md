@@ -238,6 +238,8 @@ import {
   shutdown,
   captureException,
   captureMessage,
+  captureMetric,
+  captureMetricWithTags,
   startSpan,
   endSpan,
   measureTask,

@@ -5,6 +5,8 @@ import {
   captureException,
   captureExceptionWithAttributes,
   captureMessage,
+  captureMetric,
+  captureMetricWithTags,
   startSpan,
   endSpan,
   measureTask,
@@ -54,6 +56,18 @@ export class TracewayService {
 
   captureMessage(msg: string, attributes?: Record<string, string>): void {
     captureMessage(msg, attributes);
+  }
+
+  captureMetric(name: string, value: number): void {
+    captureMetric(name, value);
+  }
+
+  captureMetricWithTags(
+    name: string,
+    value: number,
+    tags: Record<string, string>,
+  ): void {
+    captureMetricWithTags(name, value, tags);
   }
 
   startSpan(name: string): SpanHandle {

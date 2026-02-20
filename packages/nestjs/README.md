@@ -121,6 +121,17 @@ export class UsersService {
       throw error;
     }
   }
+
+  async recordMetrics() {
+    // Capture a simple metric
+    this.traceway.captureMetric("request.duration", 150);
+
+    // Capture a metric with tags
+    this.traceway.captureMetricWithTags("request.duration", 150, {
+      region: "us-east",
+      service: "users",
+    });
+  }
 }
 ```
 

@@ -12,6 +12,7 @@ export interface MetricRecord {
   name: string;
   value: number;
   recordedAt: string;
+  tags?: Record<string, string>;
 }
 
 export interface Span {

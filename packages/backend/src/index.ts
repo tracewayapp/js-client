@@ -4,6 +4,7 @@ export {
   captureExceptionWithAttributes,
   captureMessage,
   captureMetric,
+  captureMetricWithTags,
   captureTrace,
   captureTask,
   captureCurrentTrace,

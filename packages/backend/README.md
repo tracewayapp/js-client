@@ -72,6 +72,7 @@ process.on("SIGTERM", async () => {
 | `captureExceptionWithAttributes(error, attrs?, traceId?)` | Capture with explicit context |
 | `captureMessage(msg, attrs?)` | Capture message (auto-detects trace context) |
 | `captureMetric(name, value)` | Capture a custom metric |
+| `captureMetricWithTags(name, value, tags)` | Capture a metric with key-value tags |
 | `captureTrace(...)` | Capture HTTP trace (manual mode) |
 | `captureTask(...)` | Capture background task (manual mode) |
 | `captureCurrentTrace()` | Capture trace from current context |

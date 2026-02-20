@@ -13,7 +13,7 @@ npm install @tracewayapp/core
 | Type | Description |
 |------|-------------|
 | `ExceptionStackTrace` | Exception/message record matching the Traceway protocol |
-| `MetricRecord` | Metric data point (`name`, `value`, `recordedAt`) |
+| `MetricRecord` | Metric data point (`name`, `value`, `recordedAt`, optional `tags`) |
 | `Span` | Sub-operation span within a trace |
 | `Trace` | Endpoint or task trace |
 | `CollectionFrame` | Batch of stack traces, metrics, and traces |
