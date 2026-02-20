@@ -60,6 +60,8 @@ done
 # --- 6. Sync package-lock.json ---
 echo ""
 echo "Running npm install to sync package-lock.json..."
+rm -f package-lock.json
+rm -rf packages/*/node_modules
 npm install
 
 # --- 7. Build all workspaces ---

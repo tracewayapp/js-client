@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/backend",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Traceway SDK for Node.js backends",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -23,6 +23,6 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/core": "1.0.0"
+    "@tracewayapp/core": "1.0.1"
   }
 }
