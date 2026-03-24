@@ -6,6 +6,7 @@ export interface ExceptionStackTrace {
   attributes?: Record<string, string>;
   isMessage: boolean;
   sessionRecordingId?: string | null;
+  distributedTraceId?: string | null;
 }
 
 export interface MetricRecord {
@@ -33,6 +34,7 @@ export interface Trace {
   attributes?: Record<string, string>;
   spans?: Span[];
   isTask?: boolean;
+  distributedTraceId?: string;
 }
 
 export interface CollectionFrame {

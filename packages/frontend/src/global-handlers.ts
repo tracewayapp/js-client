@@ -1,6 +1,7 @@
 import type { TracewayFrontendClient } from "./client.js";
 import { formatBrowserStackTrace } from "./stack-trace.js";
 import { nowISO } from "@tracewayapp/core";
+import { getActiveDistributedTraceId } from "./fetch-instrumentation.js";
 
 export function installGlobalHandlers(client: TracewayFrontendClient): void {
   const prevOnError = window.onerror;
@@ -11,6 +12,7 @@ export function installGlobalHandlers(client: TracewayFrontendClient): void {
         stackTrace: formatBrowserStackTrace(error),
         recordedAt: nowISO(),
         isMessage: false,
+        distributedTraceId: getActiveDistributedTraceId(),
       });
     } else {
       client.addException({
@@ -18,6 +20,7 @@ export function installGlobalHandlers(client: TracewayFrontendClient): void {
         stackTrace: String(message),
         recordedAt: nowISO(),
         isMessage: false,
+        distributedTraceId: getActiveDistributedTraceId(),
       });
     }
     if (typeof prevOnError === "function") {
@@ -35,6 +38,7 @@ export function installGlobalHandlers(client: TracewayFrontendClient): void {
         stackTrace: formatBrowserStackTrace(reason),
         recordedAt: nowISO(),
         isMessage: false,
+        distributedTraceId: getActiveDistributedTraceId(),
       });
     } else {
       client.addException({
@@ -42,6 +46,7 @@ export function installGlobalHandlers(client: TracewayFrontendClient): void {
         stackTrace: String(reason),
         recordedAt: nowISO(),
         isMessage: false,
+        distributedTraceId: getActiveDistributedTraceId(),
       });
     }
     if (typeof prevOnUnhandledRejection === "function") {

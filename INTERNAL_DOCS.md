@@ -331,10 +331,71 @@ Browser SDK that provides:
 - `captureExceptionWithAttributes(error, attributes)` - Capture with metadata
 - `captureMessage(message)` - Capture a message
 - `flush()` - Force send buffered events
+- `createAxiosInterceptor()` - Returns an Axios request interceptor for distributed tracing
+- `getActiveDistributedTraceId()` - Returns the active distributed trace ID (if a fetch is in-flight)
+- `DISTRIBUTED_TRACE_HEADER` - The header name used for distributed tracing (`traceway-trace-id`)
 
 Automatically installs global handlers for:
 - `window.onerror` - Uncaught exceptions
 - `window.onunhandledrejection` - Unhandled promise rejections
+
+Automatically instruments:
+- `window.fetch` - Injects `traceway-trace-id` header on same-origin requests for distributed tracing
+
+#### Distributed Tracing (Frontend ↔ Backend)
+
+The frontend SDK can correlate browser errors with the backend requests that caused them by propagating a `traceway-trace-id` header.
+
+##### With fetch (automatic)
+
+When you call `init()`, the SDK monkey-patches `window.fetch` to automatically inject a `traceway-trace-id` header on **same-origin** requests. Cross-origin requests are left untouched.
+
+If an error occurs during the lifecycle of a fetch call (in a `.then()` handler or anywhere synchronously after), the SDK automatically tags the captured exception with the distributed trace ID.
+
+```ts
+import * as traceway from "@tracewayapp/frontend";
+
+traceway.init("token@https://traceway.example.com/api/report");
+
+// fetch calls are automatically instrumented — no extra code needed
+const res = await fetch("/api/orders", { method: "POST", body: JSON.stringify(order) });
+```
+
+##### With Axios (manual interceptor)
+
+For Axios, add the interceptor to your instance:
+
+```ts
+import axios from "axios";
+import { createAxiosInterceptor } from "@tracewayapp/frontend";
+
+const api = axios.create({ baseURL: "/api" });
+api.interceptors.request.use(createAxiosInterceptor());
+
+// All requests through this instance will include the traceway-trace-id header
+const res = await api.post("/orders", order);
+```
+
+**Note:** The Axios interceptor injects the header but does not set the module-level active trace ID. Automatic exception correlation (for global error handlers) only works with `fetch`. For Axios, pass the distributed trace ID explicitly if needed:
+
+```ts
+try {
+  await api.post("/orders", order);
+} catch (err) {
+  traceway.captureException(err, {
+    distributedTraceId: err.config?.headers?.["traceway-trace-id"],
+  });
+}
+```
+
+##### Backend Setup
+
+On the backend, the NestJS middleware (and any middleware using `@tracewayapp/backend`) automatically:
+1. Reads the `traceway-trace-id` header from incoming requests
+2. Echoes it back in the response header
+3. Stores it in the trace context — all traces and exceptions captured during that request are tagged with the distributed trace ID
+
+This lets you click on an error in the Traceway dashboard and see the corresponding backend request, or vice versa.
 
 #### Session Replay
 

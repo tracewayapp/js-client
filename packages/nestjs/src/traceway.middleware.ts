@@ -25,8 +25,13 @@ export class TracewayMiddleware implements NestMiddleware {
     }
 
     const clientIP = this.getClientIP(req);
+    const distributedTraceId = req.headers["traceway-trace-id"] as string | undefined;
 
-    withTraceContext({ endpoint: "", clientIP }, () => {
+    if (distributedTraceId) {
+      res.setHeader("traceway-trace-id", distributedTraceId);
+    }
+
+    withTraceContext({ endpoint: "", clientIP, distributedTraceId }, () => {
       res.on("finish", () => {
         const routePath = req.route?.path || req.path;
         const ctx = getTraceContext();

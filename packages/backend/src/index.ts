@@ -22,6 +22,7 @@ export {
   runWithTraceContext,
   getTraceContext,
   getTraceId,
+  getDistributedTraceId,
   hasTraceContext,
   addSpanToContext,
   setTraceAttribute,

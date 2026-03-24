@@ -15,6 +15,7 @@ import { formatErrorStackTrace } from "./stack-trace.js";
 import {
   getTraceContext,
   getTraceId,
+  getDistributedTraceId,
   addSpanToContext,
   type TraceContext,
 } from "./context.js";
@@ -87,6 +88,7 @@ export function captureExceptionWithAttributes(
     recordedAt: nowISO(),
     attributes: resolvedAttrs,
     isMessage: false,
+    distributedTraceId: ctx?.distributedTraceId ?? null,
   });
 }
 
@@ -108,6 +110,7 @@ export function captureMessage(
     recordedAt: nowISO(),
     attributes: resolvedAttrs,
     isMessage: true,
+    distributedTraceId: ctx?.distributedTraceId ?? null,
   });
 }
 
@@ -264,6 +267,7 @@ export function captureCurrentTrace(): void {
       attributes: Object.keys(ctx.attributes).length > 0 ? ctx.attributes : undefined,
       spans: ctx.spans.length > 0 ? ctx.spans : undefined,
       isTask: true,
+      distributedTraceId: ctx.distributedTraceId,
     });
   } else {
     store.addTrace({
@@ -276,6 +280,7 @@ export function captureCurrentTrace(): void {
       clientIP: ctx.clientIP ?? "",
       attributes: Object.keys(ctx.attributes).length > 0 ? ctx.attributes : undefined,
       spans: ctx.spans.length > 0 ? ctx.spans : undefined,
+      distributedTraceId: ctx.distributedTraceId,
     });
   }
 }

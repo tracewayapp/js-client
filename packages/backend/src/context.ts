@@ -25,6 +25,8 @@ export interface TraceContext {
   bodySize?: number;
   /** For HTTP traces: client IP address */
   clientIP?: string;
+  /** Distributed trace ID for cross-service correlation */
+  distributedTraceId?: string;
 }
 
 /**
@@ -41,6 +43,8 @@ export interface TraceContextOptions {
   endpoint?: string;
   /** Client IP address */
   clientIP?: string;
+  /** Distributed trace ID from incoming request header */
+  distributedTraceId?: string;
 }
 
 // The AsyncLocalStorage instance for trace context
@@ -59,6 +63,13 @@ export function getTraceContext(): TraceContext | undefined {
  */
 export function getTraceId(): string | undefined {
   return asyncLocalStorage.getStore()?.traceId;
+}
+
+/**
+ * Get the distributed trace ID from the current trace context, if any.
+ */
+export function getDistributedTraceId(): string | undefined {
+  return asyncLocalStorage.getStore()?.distributedTraceId;
 }
 
 /**
@@ -99,6 +110,7 @@ export function withTraceContext<T>(
     attributes: options.attributes ?? {},
     endpoint: options.endpoint,
     clientIP: options.clientIP,
+    distributedTraceId: options.distributedTraceId,
   };
   return asyncLocalStorage.run(context, fn);
 }
