@@ -10,6 +10,7 @@ import {
   installFetchInstrumentation,
   getActiveDistributedTraceId,
 } from "./fetch-instrumentation.js";
+import { installXhrInstrumentation } from "./xhr-instrumentation.js";
 
 let client: TracewayFrontendClient | null = null;
 
@@ -21,6 +22,7 @@ export function init(
   if (typeof window !== "undefined") {
     installGlobalHandlers(client);
     installFetchInstrumentation();
+    installXhrInstrumentation();
   }
 }
 

@@ -1,0 +1,28 @@
+{
+  "name": "@tracewayapp/jquery",
+  "version": "1.0.2",
+  "description": "Traceway jQuery integration with automatic AJAX error capture and distributed tracing",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "@tracewayapp/frontend": "1.0.2"
+  }
+}

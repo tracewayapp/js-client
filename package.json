@@ -8,6 +8,7 @@
     "packages/react",
     "packages/vue",
     "packages/svelte",
+    "packages/jquery",
     "packages/nestjs",
     "packages/sourcemap-upload"
   ],

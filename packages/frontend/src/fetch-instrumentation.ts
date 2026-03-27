@@ -6,6 +6,16 @@ export function getActiveDistributedTraceId(): string | null {
   return activeDistributedTraceId;
 }
 
+export function setActiveDistributedTraceId(id: string | null): void {
+  activeDistributedTraceId = id;
+}
+
+export function clearActiveDistributedTraceId(traceId: string): void {
+  if (activeDistributedTraceId === traceId) {
+    activeDistributedTraceId = null;
+  }
+}
+
 function isSameOrigin(input: RequestInfo | URL): boolean {
   try {
     const url = new URL(
