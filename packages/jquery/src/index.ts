@@ -4,6 +4,7 @@ import {
   captureExceptionWithAttributes,
   captureMessage,
   flush,
+  getActiveDistributedTraceId,
 } from "@tracewayapp/frontend";
 import type { TracewayFrontendOptions } from "@tracewayapp/frontend";
 
@@ -37,9 +38,14 @@ function installJQueryErrorHandler(): void {
     const method: string = (settings?.type || "GET").toUpperCase();
     const status: number = jqXHR?.status || 0;
 
+    const distributedTraceId =
+      jqXHR?.getResponseHeader?.("traceway-trace-id") ??
+      getActiveDistributedTraceId();
+
     captureExceptionWithAttributes(
       new Error(`${method} ${url} failed: ${status} ${message}`),
       { url, method, status: String(status) },
+      { distributedTraceId: distributedTraceId ?? undefined },
     );
   });
 }
