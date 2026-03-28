@@ -13,6 +13,7 @@ A monorepo containing JavaScript/TypeScript SDKs for Traceway error tracking.
 | [`@tracewayapp/react`](./packages/react) | React integration with Provider and ErrorBoundary |
 | [`@tracewayapp/vue`](./packages/vue) | Vue.js integration with plugin and composable |
 | [`@tracewayapp/svelte`](./packages/svelte) | Svelte integration with context setup |
+| [`@tracewayapp/jquery`](./packages/jquery) | jQuery integration with automatic AJAX error capture |
 | [`@tracewayapp/sourcemap-upload`](./packages/sourcemap-upload) | CLI tool for uploading source maps |
 
 ## Quick Start
@@ -341,6 +342,7 @@ Automatically installs global handlers for:
 
 Automatically instruments:
 - `window.fetch` - Injects `traceway-trace-id` header on same-origin requests for distributed tracing
+- `XMLHttpRequest` - Injects `traceway-trace-id` header on same-origin XHR requests (covers `$.ajax()` and other XHR-based libraries)
 
 #### Distributed Tracing (Frontend ↔ Backend)
 
@@ -433,6 +435,28 @@ Vue.js integration:
 Svelte integration:
 - `setupTraceway(options)` - Initialize and provide context
 - `getTraceway()` - Get capture methods from context
+
+### @tracewayapp/jquery
+
+jQuery integration with automatic AJAX error capture and distributed tracing:
+- `init(connectionString, options?)` - Initialize the SDK and install jQuery error handlers
+- `captureException(error)` - Capture an error
+- `captureExceptionWithAttributes(error, attributes)` - Capture with metadata
+- `captureMessage(message)` - Capture a message
+- `flush()` - Force send buffered events
+
+Calling `init()` automatically:
+1. Initializes `@tracewayapp/frontend` (global handlers, fetch/XHR instrumentation, session recording)
+2. Installs a global `$(document).ajaxError()` handler that captures AJAX failures with URL, method, status code, and distributed trace ID
+
+```js
+import { init } from "@tracewayapp/jquery";
+
+init("your-token@https://your-server.com/api/report");
+
+// AJAX errors are captured automatically — no extra code needed
+$.ajax({ url: "/api/users", method: "GET" });
+```
 
 ### @tracewayapp/sourcemap-upload
 
@@ -617,6 +641,73 @@ cd packages/vue/examples/vue-demo && npm install && npm run dev
 # Svelte
 cd packages/svelte/examples/svelte-demo && npm install && npm run dev
 ```
+
+## CDN Usage
+
+The `frontend` and `jquery` packages include IIFE builds that work in plain `<script>` tags — no bundler required. These are served automatically by jsdelivr and unpkg after publishing to npm.
+
+### Available CDN Bundles
+
+| Package | Global Variable | CDN URL |
+|---------|----------------|---------|
+| `@tracewayapp/frontend` | `window.Traceway` | `https://cdn.jsdelivr.net/npm/@tracewayapp/frontend@1/dist/traceway.iife.global.js` |
+| `@tracewayapp/jquery` | `window.TracewayJQuery` | `https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@1/dist/traceway-jquery.iife.global.js` |
+
+### Usage
+
+```html
+<!-- Framework-agnostic -->
+<script src="https://cdn.jsdelivr.net/npm/@tracewayapp/frontend@1/dist/traceway.iife.global.js"></script>
+<script>
+  Traceway.init("your-token@https://your-server.com/api/report");
+</script>
+```
+
+```html
+<!-- jQuery -->
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@1/dist/traceway-jquery.iife.global.js"></script>
+<script>
+  TracewayJQuery.init("your-token@https://your-server.com/api/report");
+</script>
+```
+
+### How It Works
+
+The IIFE builds are produced by tsup alongside the regular ESM/CJS builds. Each package's `package.json` has `unpkg` and `jsdelivr` fields pointing to the IIFE file, so the CDNs auto-serve them at the default URL. No separate CDN deployment step is needed — publishing to npm makes the files available on CDN within minutes.
+
+## Publishing
+
+### publish.sh
+
+The `publish.sh` script handles the full release process for all `@tracewayapp/*` packages:
+
+```bash
+./publish.sh
+```
+
+**What it does:**
+
+1. Reads the current version from `packages/core/package.json`
+2. Prompts for the new version (validates semver format)
+3. Checks npm authentication (prompts `npm login` if needed)
+4. Shows a summary and asks for confirmation
+5. Bumps the version in all workspace `package.json` files
+6. Updates cross-package dependency references (e.g. `@tracewayapp/core` version in `@tracewayapp/frontend`)
+7. Runs `npm install` to sync `package-lock.json`
+8. Builds all packages (`npm run build`) — this produces ESM, CJS, and IIFE bundles
+9. Publishes all packages to npm (`npm publish --workspaces`)
+10. Creates a git commit (`v<version>`) and tag (`v<version>`)
+11. Prints a reminder to `git push && git push --tags`
+
+**After publish completes:**
+- All packages are live on npm
+- IIFE bundles are available on jsdelivr/unpkg CDN (within minutes)
+- The git tag marks the release point
+
+**Requirements:**
+- Must be logged in to npm with publish access to the `@tracewayapp` scope
+- Working directory should be clean (no uncommitted changes)
 
 ## Connection String Format
 
