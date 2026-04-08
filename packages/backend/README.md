@@ -1,5 +1,7 @@
 # @tracewayapp/backend
 
+> **DEPRECATED**: This package is deprecated. For Node.js backend instrumentation, use [OpenTelemetry](https://opentelemetry.io/) instead. See the [Node.js OTel guide](https://traceway.dev/client/node-sdk) and [OTel overview](https://traceway.dev/client/otel).
+
 Traceway SDK for Node.js backends. Provides error tracking, distributed tracing, span management, and metrics collection.
 
 ## Installation

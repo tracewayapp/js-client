@@ -8,6 +8,20 @@ import { parseConnectionString, generateUUID } from "@tracewayapp/core";
 import { sendReport } from "./transport.js";
 import { SessionRecorder } from "./session-recorder.js";
 
+export const DEFAULT_IGNORE_PATTERNS: Array<string | RegExp> = [
+  // Network errors (browser-specific messages)
+  "Failed to fetch",
+  "NetworkError when attempting to fetch resource",
+  "Load failed",
+  "Network Error",
+  // Timeout / Abort
+  "The operation was aborted",
+  /timeout/i,
+  // 4xx HTTP errors (common library patterns)
+  /status code 4\d{2}/,
+  /failed: 4\d{2}/,
+];
+
 export interface TracewayFrontendOptions {
   debug?: boolean;
   debounceMs?: number;
@@ -15,6 +29,8 @@ export interface TracewayFrontendOptions {
   version?: string;
   sessionRecording?: boolean;
   sessionRecordingSegmentDuration?: number;
+  ignoreErrors?: Array<string | RegExp>;
+  beforeCapture?: (exception: ExceptionStackTrace) => boolean;
 }
 
 export class TracewayFrontendClient {
@@ -33,6 +49,11 @@ export class TracewayFrontendClient {
 
   private recorder: SessionRecorder | null = null;
 
+  private ignoreErrors: Array<string | RegExp>;
+  private beforeCapture:
+    | ((exception: ExceptionStackTrace) => boolean)
+    | null;
+
   constructor(connectionString: string, options: TracewayFrontendOptions = {}) {
     const { token, apiUrl } = parseConnectionString(connectionString);
     this.apiUrl = apiUrl;
@@ -41,6 +62,8 @@ export class TracewayFrontendClient {
     this.debounceMs = options.debounceMs ?? 1500;
     this.retryDelayMs = options.retryDelayMs ?? 10000;
     this.version = options.version ?? "";
+    this.ignoreErrors = options.ignoreErrors ?? DEFAULT_IGNORE_PATTERNS;
+    this.beforeCapture = options.beforeCapture ?? null;
 
     if (options.sessionRecording !== false && typeof window !== "undefined") {
       this.recorder = new SessionRecorder({
@@ -51,6 +74,16 @@ export class TracewayFrontendClient {
   }
 
   addException(exception: ExceptionStackTrace): void {
+    if (this.shouldIgnore(exception)) {
+      if (this.debug) {
+        console.debug(
+          "Traceway: exception suppressed by filter",
+          exception.stackTrace.slice(0, 120),
+        );
+      }
+      return;
+    }
+
     if (this.recorder && this.recorder.hasSegments()) {
       const segments = this.recorder.getSegments();
       const allEvents = segments.flatMap((s) => s.events);
@@ -61,6 +94,33 @@ export class TracewayFrontendClient {
 
     this.pendingExceptions.push(exception);
     this.scheduleSync();
+  }
+
+  private shouldIgnore(exception: ExceptionStackTrace): boolean {
+    if (this.ignoreErrors.length > 0) {
+      const text = exception.stackTrace;
+      for (const pattern of this.ignoreErrors) {
+        if (typeof pattern === "string") {
+          if (text.includes(pattern)) return true;
+        } else {
+          pattern.lastIndex = 0;
+          if (pattern.test(text)) return true;
+        }
+      }
+    }
+
+    if (this.beforeCapture !== null) {
+      try {
+        const result = this.beforeCapture(exception);
+        if (result === false) return true;
+      } catch (err) {
+        if (this.debug) {
+          console.error("Traceway: beforeCapture callback threw:", err);
+        }
+      }
+    }
+
+    return false;
   }
 
   private scheduleSync(): void {

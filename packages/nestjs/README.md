@@ -1,5 +1,7 @@
 # @tracewayapp/nestjs
 
+> **DEPRECATED**: This package is deprecated. For NestJS instrumentation, use [OpenTelemetry](https://opentelemetry.io/) instead. See the [NestJS OTel guide](https://traceway.dev/client/nestjs) and [OTel overview](https://traceway.dev/client/otel).
+
 NestJS integration for Traceway. Provides a module, middleware, exception filter, service, and decorators for request tracing and error capture.
 
 ## Installation

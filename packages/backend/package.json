@@ -1,7 +1,8 @@
 {
   "name": "@tracewayapp/backend",
   "version": "1.0.3",
-  "description": "Traceway SDK for Node.js backends",
+  "deprecated": "This package is deprecated. Use OpenTelemetry for Node.js backend instrumentation. See https://traceway.dev/client/node-sdk",
+  "description": "DEPRECATED — Use OpenTelemetry instead. See https://traceway.dev/client/node-sdk",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",

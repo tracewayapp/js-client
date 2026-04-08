@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-PACKAGES=(core backend frontend react vue svelte jquery nestjs sourcemap-upload)
-PACKAGE_DIRS=(packages/core packages/backend packages/frontend packages/react packages/vue packages/svelte packages/jquery packages/nestjs packages/sourcemap-upload)
+PACKAGES=(core frontend react vue svelte jquery sourcemap-upload)
+PACKAGE_DIRS=(packages/core packages/frontend packages/react packages/vue packages/svelte packages/jquery packages/sourcemap-upload)
 
 # --- 1. Read current version from packages/core/package.json ---
 CURRENT_VERSION=$(node -p "require('./packages/core/package.json').version")

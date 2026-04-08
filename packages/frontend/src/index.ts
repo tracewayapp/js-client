@@ -73,7 +73,7 @@ export async function flush(timeoutMs?: number): Promise<void> {
   await client.flush(timeoutMs);
 }
 
-export { TracewayFrontendClient } from "./client.js";
+export { TracewayFrontendClient, DEFAULT_IGNORE_PATTERNS } from "./client.js";
 export type { TracewayFrontendOptions } from "./client.js";
 export { formatBrowserStackTrace } from "./stack-trace.js";
 export { installGlobalHandlers } from "./global-handlers.js";

@@ -1,7 +1,8 @@
 {
   "name": "@tracewayapp/nestjs",
   "version": "1.0.3",
-  "description": "Traceway NestJS integration with module, middleware, and decorators",
+  "deprecated": "This package is deprecated. Use OpenTelemetry for NestJS instrumentation. See https://traceway.dev/client/nestjs",
+  "description": "DEPRECATED — Use OpenTelemetry instead. See https://traceway.dev/client/nestjs",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
