@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/react",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Traceway React integration with ErrorBoundary and hooks",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -23,7 +23,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/frontend": "1.0.3"
+    "@tracewayapp/frontend": "1.0.4"
   },
   "peerDependencies": {
     "react": ">=18.0.0",

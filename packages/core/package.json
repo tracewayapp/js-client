@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/core",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Shared types and utilities for Traceway SDKs",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
