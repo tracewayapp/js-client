@@ -46,6 +46,24 @@ Use `getTraceway` in child components:
 <button on:click={handleSubmit}>Submit</button>
 ```
 
+## Logs, Actions, and Session Recordings
+
+`setupTraceway` calls `init()` from `@tracewayapp/frontend` on mount, so the underlying timeline instrumentation is set up automatically:
+
+- **Logs** — `console.{debug, log, info, warn, error}` mirrored into a rolling buffer (toggle with `captureLogs`).
+- **Actions** — `fetch` / `XHR` and History API navigations recorded as breadcrumbs (toggle with `captureNetwork`, `captureNavigation`). SvelteKit's client-side routing flows through the History API and is captured automatically.
+- **Session recordings** — rrweb-based replay of the seconds leading up to each exception (toggle with `sessionRecording`).
+
+Each captured exception ships with the buffered logs, actions, and replay frames.
+
+To record a custom action breadcrumb, import `recordAction` directly from `@tracewayapp/frontend` (it's not on the context surface):
+
+```ts
+import { recordAction } from "@tracewayapp/frontend";
+
+recordAction("checkout", "payment_submitted", { amount: 42 });
+```
+
 ## With Options
 
 ```svelte
@@ -57,12 +75,20 @@ Use `getTraceway` in child components:
     options: {
       debug: true,
       version: "1.0.0",
+      captureLogs: true,
+      captureNetwork: true,
+      captureNavigation: true,
+      sessionRecording: true,
+      eventsWindowMs: 10_000,
+      eventsMaxCount: 200,
     },
   });
 </script>
 
 <slot />
 ```
+
+See [`@tracewayapp/frontend`](../frontend/README.md) for the full options reference.
 
 ## SvelteKit Setup
 
@@ -94,7 +120,7 @@ Initializes Traceway and provides context to the component tree. Must be called 
 | Option | Type | Description |
 |--------|------|-------------|
 | `connectionString` | `string` | Traceway connection string (`token@url`) |
-| `options` | `TracewayFrontendOptions` | Optional SDK configuration |
+| `options` | `TracewayFrontendOptions` | Optional SDK configuration (logs / actions / recording toggles, sampling, etc.) |
 
 Returns `{ captureException, captureExceptionWithAttributes, captureMessage }`.
 

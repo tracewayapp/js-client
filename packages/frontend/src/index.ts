@@ -11,6 +11,8 @@ import {
   getActiveDistributedTraceId,
 } from "./fetch-instrumentation.js";
 import { installXhrInstrumentation } from "./xhr-instrumentation.js";
+import { installConsoleInstrumentation } from "./console-instrumentation.js";
+import { installNavigationInstrumentation } from "./navigation-instrumentation.js";
 
 let client: TracewayFrontendClient | null = null;
 
@@ -21,8 +23,14 @@ export function init(
   client = new TracewayFrontendClient(connectionString, options);
   if (typeof window !== "undefined") {
     installGlobalHandlers(client);
-    installFetchInstrumentation();
-    installXhrInstrumentation();
+    installFetchInstrumentation(client);
+    installXhrInstrumentation(client);
+    if (client.captureLogs) {
+      installConsoleInstrumentation(client);
+    }
+    if (client.captureNavigation) {
+      installNavigationInstrumentation(client);
+    }
   }
 }
 
@@ -68,6 +76,20 @@ export function captureMessage(msg: string): void {
   });
 }
 
+/**
+ * Records a custom user-defined breadcrumb. Use to log any app-level action
+ * that should ride along with the next exception ("user_tapped_pay",
+ * "cart_synced", etc.).
+ */
+export function recordAction(
+  category: string,
+  name: string,
+  data?: Record<string, unknown>,
+): void {
+  if (!client) return;
+  client.recordAction(category, name, data);
+}
+
 export async function flush(timeoutMs?: number): Promise<void> {
   if (!client) return;
   await client.flush(timeoutMs);
@@ -77,11 +99,19 @@ export { TracewayFrontendClient, DEFAULT_IGNORE_PATTERNS } from "./client.js";
 export type { TracewayFrontendOptions } from "./client.js";
 export { formatBrowserStackTrace } from "./stack-trace.js";
 export { installGlobalHandlers } from "./global-handlers.js";
+export { installConsoleInstrumentation } from "./console-instrumentation.js";
+export { installNavigationInstrumentation } from "./navigation-instrumentation.js";
 
 export type {
   ExceptionStackTrace,
   CollectionFrame,
   ReportRequest,
+  SessionRecordingPayload,
+  TracewayEvent,
+  LogEvent,
+  NetworkEvent,
+  NavigationEvent,
+  CustomEvent,
 } from "@tracewayapp/core";
 
 export const DISTRIBUTED_TRACE_HEADER = "traceway-trace-id";

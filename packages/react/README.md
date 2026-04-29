@@ -66,6 +66,24 @@ function MyComponent() {
 }
 ```
 
+## Logs, Actions, and Session Recordings
+
+`TracewayProvider` calls `init()` from `@tracewayapp/frontend`, so the underlying timeline instrumentation is set up automatically:
+
+- **Logs** — `console.{debug, log, info, warn, error}` mirrored into a rolling buffer (toggle with `captureLogs`).
+- **Actions** — `fetch` / `XHR` and History API navigations recorded as breadcrumbs (toggle with `captureNetwork`, `captureNavigation`).
+- **Session recordings** — rrweb-based replay of the seconds leading up to each exception (toggle with `sessionRecording`).
+
+Each captured exception ships with the buffered logs, actions, and replay frames — so the dashboard shows you what the user saw and did right before the error.
+
+To record a custom action breadcrumb, import `recordAction` directly from `@tracewayapp/frontend` (it's not on the hook surface):
+
+```tsx
+import { recordAction } from "@tracewayapp/frontend";
+
+recordAction("checkout", "payment_submitted", { amount: 42 });
+```
+
 ## With Options
 
 ```tsx
@@ -74,11 +92,19 @@ function MyComponent() {
   options={{
     debug: true,
     version: "1.0.0",
+    captureLogs: true,
+    captureNetwork: true,
+    captureNavigation: true,
+    sessionRecording: true,
+    eventsWindowMs: 10_000,
+    eventsMaxCount: 200,
   }}
 >
   <YourApp />
 </TracewayProvider>
 ```
+
+See [`@tracewayapp/frontend`](../frontend/README.md) for the full options reference.
 
 ## API
 
@@ -87,7 +113,7 @@ function MyComponent() {
 | Prop | Type | Description |
 |------|------|-------------|
 | `connectionString` | `string` | Traceway connection string (`token@url`) |
-| `options` | `TracewayFrontendOptions` | Optional SDK configuration |
+| `options` | `TracewayFrontendOptions` | Optional SDK configuration (logs / actions / recording toggles, sampling, etc.) |
 | `children` | `ReactNode` | Child components |
 
 ### TracewayErrorBoundary

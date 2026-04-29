@@ -7,6 +7,12 @@ export type {
   SessionRecordingPayload,
   ReportRequest,
   TracewayOptions,
+  TracewayEvent,
+  TracewayEventBase,
+  LogEvent,
+  NetworkEvent,
+  NavigationEvent,
+  CustomEvent,
 } from "./types.js";
 
 export {
@@ -22,3 +28,6 @@ export {
   METRIC_MEM_TOTAL,
   METRIC_CPU_USED_PCNT,
 } from "./constants.js";
+
+export { EventBuffer } from "./event-buffer.js";
+export type { EventBufferOptions } from "./event-buffer.js";

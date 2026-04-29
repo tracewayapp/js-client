@@ -3,10 +3,59 @@ import type {
   ReportRequest,
   CollectionFrame,
   SessionRecordingPayload,
+  LogEvent,
+  NetworkEvent,
+  NavigationEvent,
+  CustomEvent,
+  TracewayEvent,
 } from "@tracewayapp/core";
-import { parseConnectionString, generateUUID } from "@tracewayapp/core";
+import { parseConnectionString, generateUUID, EventBuffer, nowISO } from "@tracewayapp/core";
 import { sendReport } from "./transport.js";
 import { SessionRecorder } from "./session-recorder.js";
+
+interface RrwebLikeEvent {
+  timestamp?: number;
+}
+
+function epochMsToISO(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+/**
+ * Computes the wall-clock window covered by a recording. Prefers rrweb events
+ * (each carries a `timestamp` epoch ms); falls back to the timestamp range of
+ * the buffered logs/actions when there's no replay data — that path is what
+ * fires when `sessionRecording: false` but logs/actions are still being kept.
+ */
+function computeRecordingAnchors(
+  recorderEvents: unknown[],
+  logs: LogEvent[],
+  actions: Array<NetworkEvent | NavigationEvent | CustomEvent>,
+): { startedAt?: string; endedAt?: string } {
+  if (recorderEvents.length > 0) {
+    const stamps: number[] = [];
+    for (const e of recorderEvents) {
+      const ts = (e as RrwebLikeEvent)?.timestamp;
+      if (typeof ts === "number" && Number.isFinite(ts)) stamps.push(ts);
+    }
+    if (stamps.length > 0) {
+      return {
+        startedAt: epochMsToISO(Math.min(...stamps)),
+        endedAt: epochMsToISO(Math.max(...stamps)),
+      };
+    }
+  }
+
+  const eventStamps = [
+    ...logs.map((e) => Date.parse(e.timestamp)),
+    ...actions.map((e) => Date.parse(e.timestamp)),
+  ].filter((n) => Number.isFinite(n));
+  if (eventStamps.length === 0) return {};
+  return {
+    startedAt: epochMsToISO(Math.min(...eventStamps)),
+    endedAt: epochMsToISO(Math.max(...eventStamps)),
+  };
+}
 
 export const DEFAULT_IGNORE_PATTERNS: Array<string | RegExp> = [
   // Network errors (browser-specific messages)
@@ -31,6 +80,16 @@ export interface TracewayFrontendOptions {
   sessionRecordingSegmentDuration?: number;
   ignoreErrors?: Array<string | RegExp>;
   beforeCapture?: (exception: ExceptionStackTrace) => boolean;
+  /** Mirror console.{log,info,warn,error,debug} into the rolling log buffer. Default true. */
+  captureLogs?: boolean;
+  /** Record fetch / XHR requests as network actions. Default true. */
+  captureNetwork?: boolean;
+  /** Record History API push/replace/pop as navigation actions. Default true. */
+  captureNavigation?: boolean;
+  /** Window kept in the rolling log/action buffers. Default 10_000ms. */
+  eventsWindowMs?: number;
+  /** Hard cap applied independently to logs and actions. Default 200. */
+  eventsMaxCount?: number;
 }
 
 export class TracewayFrontendClient {
@@ -54,6 +113,12 @@ export class TracewayFrontendClient {
     | ((exception: ExceptionStackTrace) => boolean)
     | null;
 
+  readonly captureLogs: boolean;
+  readonly captureNetwork: boolean;
+  readonly captureNavigation: boolean;
+  private readonly logs: EventBuffer<LogEvent>;
+  private readonly actions: EventBuffer<NetworkEvent | NavigationEvent | CustomEvent>;
+
   constructor(connectionString: string, options: TracewayFrontendOptions = {}) {
     const { token, apiUrl } = parseConnectionString(connectionString);
     this.apiUrl = apiUrl;
@@ -65,6 +130,17 @@ export class TracewayFrontendClient {
     this.ignoreErrors = options.ignoreErrors ?? DEFAULT_IGNORE_PATTERNS;
     this.beforeCapture = options.beforeCapture ?? null;
 
+    this.captureLogs = options.captureLogs ?? true;
+    this.captureNetwork = options.captureNetwork ?? true;
+    this.captureNavigation = options.captureNavigation ?? true;
+
+    const bufferOpts = {
+      windowMs: options.eventsWindowMs ?? 10_000,
+      maxSize: options.eventsMaxCount ?? 200,
+    };
+    this.logs = new EventBuffer<LogEvent>(bufferOpts);
+    this.actions = new EventBuffer<NetworkEvent | NavigationEvent | CustomEvent>(bufferOpts);
+
     if (options.sessionRecording !== false && typeof window !== "undefined") {
       this.recorder = new SessionRecorder({
         segmentDuration: options.sessionRecordingSegmentDuration,
@@ -72,6 +148,66 @@ export class TracewayFrontendClient {
       this.recorder.start();
     }
   }
+
+  // ── Timeline event recording ────────────────────────────────────────────
+
+  recordLog(level: LogEvent["level"], message: string): void {
+    if (!this.captureLogs) return;
+    this.logs.add({ type: "log", timestamp: nowISO(), level, message });
+  }
+
+  recordNetworkEvent(event: Omit<NetworkEvent, "type" | "timestamp"> & { timestamp?: string }): void {
+    if (!this.captureNetwork) return;
+    this.actions.add({
+      type: "network",
+      timestamp: event.timestamp ?? nowISO(),
+      method: event.method,
+      url: event.url,
+      durationMs: event.durationMs,
+      statusCode: event.statusCode,
+      requestBytes: event.requestBytes,
+      responseBytes: event.responseBytes,
+      error: event.error,
+    });
+  }
+
+  recordNavigationEvent(event: Omit<NavigationEvent, "type" | "timestamp"> & { timestamp?: string }): void {
+    if (!this.captureNavigation) return;
+    this.actions.add({
+      type: "navigation",
+      timestamp: event.timestamp ?? nowISO(),
+      action: event.action,
+      from: event.from,
+      to: event.to,
+    });
+  }
+
+  /**
+   * Records a custom user-defined breadcrumb. Use to log any app-level action
+   * that should ride along with the next exception ("user_tapped_pay",
+   * "cart_synced", etc.). Always recorded — there is no per-category opt-out.
+   */
+  recordAction(category: string, name: string, data?: Record<string, unknown>): void {
+    this.actions.add({
+      type: "custom",
+      timestamp: nowISO(),
+      category,
+      name,
+      data,
+    });
+  }
+
+  /** @internal — exposed for tests. */
+  bufferedLogs(): LogEvent[] {
+    return this.logs.snapshot();
+  }
+
+  /** @internal — exposed for tests. */
+  bufferedActions(): TracewayEvent[] {
+    return this.actions.snapshot();
+  }
+
+  // ── Exception lifecycle ─────────────────────────────────────────────────
 
   addException(exception: ExceptionStackTrace): void {
     if (this.shouldIgnore(exception)) {
@@ -84,12 +220,34 @@ export class TracewayFrontendClient {
       return;
     }
 
-    if (this.recorder && this.recorder.hasSegments()) {
-      const segments = this.recorder.getSegments();
-      const allEvents = segments.flatMap((s) => s.events);
+    const recorderEvents =
+      this.recorder && this.recorder.hasSegments()
+        ? this.recorder.getSegments().flatMap((s) => s.events)
+        : [];
+    const logSnapshot = this.logs.snapshot();
+    const actionSnapshot = this.actions.snapshot();
+    const hasTimelineData =
+      recorderEvents.length > 0 ||
+      logSnapshot.length > 0 ||
+      actionSnapshot.length > 0;
+
+    if (hasTimelineData) {
       const exceptionId = generateUUID();
       exception.sessionRecordingId = exceptionId;
-      this.pendingRecordings.push({ exceptionId, events: allEvents });
+      const payload: SessionRecordingPayload = {
+        exceptionId,
+        events: recorderEvents,
+      };
+      const anchors = computeRecordingAnchors(
+        recorderEvents,
+        logSnapshot,
+        actionSnapshot,
+      );
+      if (anchors.startedAt) payload.startedAt = anchors.startedAt;
+      if (anchors.endedAt) payload.endedAt = anchors.endedAt;
+      if (logSnapshot.length > 0) payload.logs = logSnapshot;
+      if (actionSnapshot.length > 0) payload.actions = actionSnapshot;
+      this.pendingRecordings.push(payload);
     }
 
     this.pendingExceptions.push(exception);
