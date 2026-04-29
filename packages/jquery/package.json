@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/jquery",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Traceway jQuery integration with automatic AJAX error capture and distributed tracing",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -25,6 +25,6 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/frontend": "1.0.4"
+    "@tracewayapp/frontend": "1.0.5"
   }
 }
