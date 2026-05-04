@@ -1,0 +1,28 @@
+{
+  "name": "traceway-expo-demo",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --clear",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@tracewayapp/core": "file:../../../core",
+    "@tracewayapp/react-native": "file:../..",
+    "fflate": "^0.8.2",
+    "expo": "~54.0.34",
+    "expo-constants": "~18.0.13",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@types/react": "~19.1.0",
+    "babel-preset-expo": "~54.0.10",
+    "typescript": "~5.9.2"
+  }
+}
