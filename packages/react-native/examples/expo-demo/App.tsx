@@ -8,6 +8,7 @@ import {
   StatusBar,
 } from "react-native";
 import Constants from "expo-constants";
+import { gzipSync, strToU8 } from "fflate";
 import {
   TracewayProvider,
   TracewayErrorBoundary,
@@ -15,9 +16,27 @@ import {
   flush,
 } from "@tracewayapp/react-native";
 
-const DSN =
-  (Constants.expoConfig?.extra?.tracewayDsn as string | undefined) ??
-  "PLACEHOLDER_TOKEN@http://localhost:8082/api/report";
+const RAW_DSN = Constants.expoConfig?.extra?.tracewayDsn as string | undefined;
+const DSN = RAW_DSN ?? "PLACEHOLDER_TOKEN@http://localhost:8082/api/report";
+
+function parseDsn(dsn: string): { token: string; apiUrl: string } | null {
+  const at = dsn.lastIndexOf("@");
+  if (at <= 0 || at === dsn.length - 1) return null;
+  const token = dsn.slice(0, at);
+  const apiUrl = dsn.slice(at + 1);
+  if (!/^https?:\/\//.test(apiUrl)) return null;
+  return { token, apiUrl };
+}
+
+function maskToken(t: string): string {
+  if (t.length <= 12) return t;
+  return `${t.slice(0, 6)}…${t.slice(-4)} (len=${t.length})`;
+}
+
+const PARSED = parseDsn(DSN);
+const DSN_FROM_ENV = Boolean(RAW_DSN);
+const DSN_VALID = Boolean(PARSED);
+const IS_PLACEHOLDER = !DSN_FROM_ENV;
 
 type LogEntry = { time: string; message: string; kind: "info" | "ok" | "err" };
 
@@ -35,21 +54,92 @@ function Demo() {
   const log = useCallback(
     (message: string, kind: LogEntry["kind"] = "info") => {
       const time = new Date().toLocaleTimeString();
-      setLogs((prev) => [{ time, message, kind }, ...prev].slice(0, 50));
+      setLogs((prev) => [{ time, message, kind }, ...prev].slice(0, 80));
     },
     [],
   );
 
   useEffect(() => {
     log("Traceway initialized via TracewayProvider", "ok");
+    if (!DSN_FROM_ENV) {
+      log(
+        "TRACEWAY_DSN env var was NOT set — using placeholder. Reports won't reach a real backend.",
+        "err",
+      );
+    } else if (!DSN_VALID) {
+      log(
+        "DSN env var is set but couldn't be parsed (expected token@http(s)://host/path).",
+        "err",
+      );
+    } else if (PARSED) {
+      log(`apiUrl resolved to ${PARSED.apiUrl}`, "info");
+      log(`token: ${maskToken(PARSED.token)}`, "info");
+    }
   }, [log]);
 
-  const handleEventError = () => {
+  const handleTestRawPost = async () => {
+    if (!PARSED) {
+      log("Cannot run raw POST — DSN didn't parse", "err");
+      return;
+    }
+    log(`Raw POST → ${PARSED.apiUrl}`, "info");
+    const minimalReport = {
+      collectionFrames: [
+        {
+          stackTraces: [
+            {
+              traceId: null,
+              stackTrace: `Raw POST diagnostic at ${new Date().toISOString()}`,
+              recordedAt: new Date().toISOString(),
+              isMessage: true,
+            },
+          ],
+          metrics: [],
+          traces: [],
+        },
+      ],
+      appVersion: "1.0.0",
+      serverName: "",
+    };
+    const t0 = Date.now();
+    try {
+      const compressed = gzipSync(strToU8(JSON.stringify(minimalReport)));
+      const resp = await fetch(PARSED.apiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Encoding": "gzip",
+          Authorization: `Bearer ${PARSED.token}`,
+        },
+        // RN's fetch polyfill accepts Uint8Array at runtime; the TS lib types
+        // are stricter, so we route around them.
+        body: compressed as unknown as BodyInit,
+      });
+      const dur = Date.now() - t0;
+      const text = await resp.text().catch(() => "<no body>");
+      const snippet = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+      log(
+        `Raw POST → HTTP ${resp.status} in ${dur}ms${snippet ? ` · body: ${snippet}` : ""}`,
+        resp.status === 200 ? "ok" : "err",
+      );
+    } catch (err) {
+      const dur = Date.now() - t0;
+      log(`Raw POST failed in ${dur}ms: ${(err as Error).message}`, "err");
+    }
+  };
+
+  const handleEventError = async () => {
     try {
       throw new Error("Event handler error: onPress threw");
     } catch (err) {
       captureException(err as Error);
-      log("Captured event handler error", "ok");
+      log("Captured event handler error — flushing now", "info");
+      try {
+        await flush();
+        log("flush() resolved (request issued)", "ok");
+      } catch (e) {
+        log(`flush() rejected: ${(e as Error).message}`, "err");
+      }
     }
   };
 
@@ -93,7 +183,7 @@ function Demo() {
 
   const handleCaptureMessage = () => {
     captureMessage(`User reached checkout at ${new Date().toISOString()}`);
-    log("Captured a manual message", "ok");
+    log("Captured a manual message (will ship on next flush/debounce)", "ok");
   };
 
   const handleRecordAction = () => {
@@ -124,9 +214,43 @@ function Demo() {
         dashboard.
       </Text>
 
+      <View
+        style={[
+          styles.diagBox,
+          IS_PLACEHOLDER || !DSN_VALID
+            ? styles.diagBoxBad
+            : styles.diagBoxGood,
+        ]}
+      >
+        <Text style={styles.diagLabel}>DSN source</Text>
+        <Text style={styles.diagValue}>
+          {DSN_FROM_ENV
+            ? "process.env.TRACEWAY_DSN (read by app.config.ts)"
+            : "PLACEHOLDER (env var not set when expo started)"}
+        </Text>
+
+        <Text style={styles.diagLabel}>API URL</Text>
+        <Text style={styles.diagValue} selectable>
+          {PARSED?.apiUrl ?? "(unparseable)"}
+        </Text>
+
+        <Text style={styles.diagLabel}>Token</Text>
+        <Text style={styles.diagValue} selectable>
+          {PARSED ? maskToken(PARSED.token) : "(unparseable)"}
+        </Text>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Diagnose connectivity</Text>
+        <Button
+          label="Send raw POST to apiUrl (bypasses SDK)"
+          onPress={handleTestRawPost}
+        />
+      </View>
+
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Errors</Text>
-        <Button label="Caught exception" onPress={handleEventError} />
+        <Button label="Caught exception (auto-flush)" onPress={handleEventError} />
         <Button label="Uncaught throw (ErrorUtils)" onPress={handleUncaughtThrow} />
         <Button
           label="Unhandled rejection (ErrorUtils)"
@@ -224,7 +348,29 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: "#0b0b0f" },
   container: { padding: 20, paddingTop: 60, paddingBottom: 60 },
   title: { color: "#f5f5f7", fontSize: 28, fontWeight: "700" },
-  subtitle: { color: "#8a8a92", marginTop: 6, marginBottom: 24, lineHeight: 20 },
+  subtitle: { color: "#8a8a92", marginTop: 6, marginBottom: 18, lineHeight: 20 },
+  diagBox: {
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 24,
+    borderWidth: 1,
+  },
+  diagBoxGood: { backgroundColor: "#11221a", borderColor: "#1f5a3a" },
+  diagBoxBad: { backgroundColor: "#2a1414", borderColor: "#5a1f1f" },
+  diagLabel: {
+    color: "#8a8a92",
+    fontSize: 11,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginTop: 6,
+  },
+  diagValue: {
+    color: "#f5f5f7",
+    fontSize: 13,
+    fontFamily: "Courier",
+    marginTop: 2,
+  },
   section: { marginBottom: 24 },
   sectionTitle: {
     color: "#c7c7d1",

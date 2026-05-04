@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { gunzipSync, strFromU8 } from "fflate";
 import { TracewayReactNativeClient } from "./client.js";
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function decodeBody(body: BodyInit | null | undefined): unknown {
+  if (!(body instanceof Uint8Array)) {
+    throw new Error("expected Uint8Array body, got " + typeof body);
+  }
+  return JSON.parse(strFromU8(gunzipSync(body)));
 }
 
 describe("TracewayReactNativeClient", () => {
@@ -39,10 +47,10 @@ describe("TracewayReactNativeClient", () => {
     const headers = (init as RequestInit).headers as Record<string, string>;
     expect(headers["Content-Type"]).toBe("application/json");
     expect(headers["Authorization"]).toBe("Bearer test-token");
-    expect(headers["Content-Encoding"]).toBeUndefined();
+    expect(headers["Content-Encoding"]).toBe("gzip");
   });
 
-  it("sends the body as plain JSON (no gzip)", async () => {
+  it("sends the body as gzipped JSON", async () => {
     const client = createClient(20);
     client.addException({
       traceId: null,
@@ -55,8 +63,12 @@ describe("TracewayReactNativeClient", () => {
 
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = (init as RequestInit).body;
-    expect(typeof body).toBe("string");
-    const parsed = JSON.parse(body as string);
+    expect(body).toBeInstanceOf(Uint8Array);
+    const parsed = decodeBody(body) as {
+      collectionFrames: Array<{
+        stackTraces: Array<{ stackTrace: string }>;
+      }>;
+    };
     expect(parsed.collectionFrames[0].stackTraces).toHaveLength(1);
     expect(parsed.collectionFrames[0].stackTraces[0].stackTrace).toBe(
       "Error: boom\n",
@@ -78,7 +90,14 @@ describe("TracewayReactNativeClient", () => {
     await sleep(80);
 
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const parsed = JSON.parse((init as RequestInit).body as string);
+    const parsed = decodeBody((init as RequestInit).body) as {
+      collectionFrames: Array<{
+        sessionRecordings: Array<{
+          logs: Array<{ message: string }>;
+          actions: Array<{ name?: string }>;
+        }>;
+      }>;
+    };
     const recording = parsed.collectionFrames[0].sessionRecordings[0];
     expect(recording.logs).toHaveLength(1);
     expect(recording.logs[0].message).toBe("user tapped pay");

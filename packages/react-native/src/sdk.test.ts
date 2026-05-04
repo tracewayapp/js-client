@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { gunzipSync, strFromU8 } from "fflate";
 import {
   init,
   captureException,
@@ -38,7 +39,11 @@ function lastReportBody(): {
   const calls = mockFetch.mock.calls;
   const last = calls[calls.length - 1];
   const init = last[1] as RequestInit;
-  return JSON.parse(init.body as string);
+  const body = init.body;
+  if (!(body instanceof Uint8Array)) {
+    throw new Error("expected gzipped Uint8Array body");
+  }
+  return JSON.parse(strFromU8(gunzipSync(body)));
 }
 
 describe("react-native sdk facade", () => {

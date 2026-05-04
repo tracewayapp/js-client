@@ -2,7 +2,7 @@
   "name": "traceway-expo-demo",
   "version": "1.0.0",
   "private": true,
-  "main": "node_modules/expo/AppEntry.js",
+  "main": "index.ts",
   "scripts": {
     "start": "expo start --clear",
     "android": "expo start --android",
@@ -12,14 +12,17 @@
   "dependencies": {
     "@tracewayapp/core": "file:../../../core",
     "@tracewayapp/react-native": "file:../..",
-    "expo": "~51.0.0",
-    "expo-status-bar": "~1.12.1",
-    "react": "18.2.0",
-    "react-native": "0.74.5"
+    "fflate": "^0.8.2",
+    "expo": "~54.0.34",
+    "expo-constants": "~18.0.13",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
   },
   "devDependencies": {
-    "@babel/core": "^7.24.0",
-    "@types/react": "~18.2.79",
-    "typescript": "~5.3.3"
+    "@babel/core": "^7.25.2",
+    "@types/react": "~19.1.0",
+    "babel-preset-expo": "~54.0.10",
+    "typescript": "~5.9.2"
   }
 }

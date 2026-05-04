@@ -6,6 +6,7 @@ const config: ExpoConfig = {
   version: "1.0.0",
   orientation: "portrait",
   userInterfaceStyle: "automatic",
+  newArchEnabled: true,
   splash: {
     backgroundColor: "#0b0b0f",
   },
@@ -15,6 +16,7 @@ const config: ExpoConfig = {
   },
   android: {
     package: "com.tracewayapp.rndemo",
+    edgeToEdgeEnabled: true,
   },
   web: {
     bundler: "metro",
