@@ -1,0 +1,38 @@
+{
+  "name": "@tracewayapp/react-native",
+  "version": "1.0.5",
+  "description": "Traceway React Native SDK — error tracking with last-10s session context for iOS, Android and Expo apps",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run --project react-native --root ../.."
+  },
+  "dependencies": {
+    "@tracewayapp/core": "1.0.5"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-native": ">=0.72.0"
+  },
+  "peerDependenciesMeta": {
+    "react-native": {
+      "optional": true
+    }
+  }
+}

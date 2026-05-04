@@ -5,6 +5,7 @@
     "packages/core",
     "packages/frontend",
     "packages/react",
+    "packages/react-native",
     "packages/vue",
     "packages/svelte",
     "packages/jquery",
