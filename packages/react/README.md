@@ -1,6 +1,31 @@
-# @tracewayapp/react
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo%20White.png" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo.png" />
+    <img src="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo.png" alt="Traceway" width="200" />
+  </picture>
+</p>
 
-React integration for Traceway. Provides a context provider, error boundary, and hook.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@tracewayapp/react"><img src="https://img.shields.io/npm/v/@tracewayapp/react.svg" alt="npm"></a>
+  <a href="https://github.com/tracewayapp/traceway-js/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+</p>
+
+# Traceway React SDK
+
+Error tracking and session replay for React apps. Provides `<TracewayProvider>`, `<TracewayErrorBoundary>`, and a `useTraceway()` hook on top of [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend).
+
+[Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
+
+> For React Native and Expo apps, use [`@tracewayapp/react-native`](https://www.npmjs.com/package/@tracewayapp/react-native) instead — it has the same API but omits the browser-only rrweb recorder.
+
+## Features
+
+- Provider that initializes Traceway exactly once via `useEffect`
+- Error boundary that captures render-time exceptions and renders a fallback UI
+- `useTraceway()` hook for capturing exceptions and messages from any component
+- Inherits everything from [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend): rrweb session replay, console logs, network/navigation actions, gzip transport
+- Simple one-line setup
 
 ## Installation
 
@@ -8,17 +33,22 @@ React integration for Traceway. Provides a context provider, error boundary, and
 npm install @tracewayapp/react
 ```
 
-## Setup
+## Quick Start
 
 Wrap your application with `TracewayProvider`:
 
 ```tsx
-import { TracewayProvider } from "@tracewayapp/react";
+import { TracewayProvider, TracewayErrorBoundary } from "@tracewayapp/react";
 
 function App() {
   return (
-    <TracewayProvider connectionString="your-token@https://traceway.example.com/api/report">
-      <YourApp />
+    <TracewayProvider
+      connectionString="your-token@https://traceway.example.com/api/report"
+      options={{ version: "1.0.0" }}
+    >
+      <TracewayErrorBoundary fallback={<ErrorPage />}>
+        <YourApp />
+      </TracewayErrorBoundary>
     </TracewayProvider>
   );
 }
@@ -26,55 +56,27 @@ function App() {
 export default App;
 ```
 
-## Error Boundary
+That's it. The provider runs `init(...)` once, which installs `window.onerror`, `unhandledrejection`, the `console.*` mirror, the `fetch` / `XHR` instrumentation, the History API instrumentation, and the rrweb recorder.
 
-Wrap components that might throw errors:
-
-```tsx
-import { TracewayProvider, TracewayErrorBoundary } from "@tracewayapp/react";
-
-function App() {
-  return (
-    <TracewayProvider connectionString="your-token@https://traceway.example.com/api/report">
-      <TracewayErrorBoundary fallback={<ErrorPage />}>
-        <YourApp />
-      </TracewayErrorBoundary>
-    </TracewayProvider>
-  );
-}
-```
-
-## useTraceway Hook
-
-Use the `useTraceway` hook to capture errors manually:
+## Manual Capture
 
 ```tsx
 import { useTraceway } from "@tracewayapp/react";
 
-function MyComponent() {
-  const { captureException } = useTraceway();
+function CheckoutButton() {
+  const { captureException, captureMessage } = useTraceway();
 
   async function handleSubmit() {
     try {
       await submitForm();
     } catch (error) {
-      captureException(error);
+      captureException(error as Error);
     }
   }
 
   return <button onClick={handleSubmit}>Submit</button>;
 }
 ```
-
-## Logs, Actions, and Session Recordings
-
-`TracewayProvider` calls `init()` from `@tracewayapp/frontend`, so the underlying timeline instrumentation is set up automatically:
-
-- **Logs** — `console.{debug, log, info, warn, error}` mirrored into a rolling buffer (toggle with `captureLogs`).
-- **Actions** — `fetch` / `XHR` and History API navigations recorded as breadcrumbs (toggle with `captureNetwork`, `captureNavigation`).
-- **Session recordings** — rrweb-based replay of the seconds leading up to each exception (toggle with `sessionRecording`).
-
-Each captured exception ships with the buffered logs, actions, and replay frames — so the dashboard shows you what the user saw and did right before the error.
 
 To record a custom action breadcrumb, import `recordAction` directly from `@tracewayapp/frontend` (it's not on the hook surface):
 
@@ -84,53 +86,84 @@ import { recordAction } from "@tracewayapp/frontend";
 recordAction("checkout", "payment_submitted", { amount: 42 });
 ```
 
-## With Options
+## Options
 
-```tsx
-<TracewayProvider
-  connectionString="your-token@https://traceway.example.com/api/report"
-  options={{
-    debug: true,
-    version: "1.0.0",
-    captureLogs: true,
-    captureNetwork: true,
-    captureNavigation: true,
-    sessionRecording: true,
-    eventsWindowMs: 10_000,
-    eventsMaxCount: 200,
-  }}
->
-  <YourApp />
-</TracewayProvider>
-```
+`TracewayProvider`'s `options` prop forwards directly to [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend). The most-used flags:
 
-See [`@tracewayapp/frontend`](../frontend/README.md) for the full options reference.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `version` | `""` | App version string, attached to every report |
+| `debug` | `false` | Print debug info to the console |
+| `captureLogs` | `true` | Mirror `console.*` into the rolling log buffer |
+| `captureNetwork` | `true` | Record `fetch` / `XHR` as network actions |
+| `captureNavigation` | `true` | Record History API push / replace / pop as navigation actions |
+| `sessionRecording` | `true` | Enable the rrweb session recorder |
+| `eventsWindowMs` | `10000` | Rolling window kept in the log/action buffers (ms) |
+| `eventsMaxCount` | `200` | Hard cap applied independently to logs and actions |
+
+See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend) for the full options reference.
+
+## Logs & Actions
+
+Each captured exception ships with the buffered logs, actions, and replay frames — so the dashboard shows you what the user saw and did right before the error.
+
+- **Logs** — `console.{debug, log, info, warn, error}` mirrored into a rolling buffer.
+- **Actions** — `fetch` / `XHR` and History API navigations (push / replace / pop) recorded as breadcrumbs. Most React routers (React Router, Next.js client-side, Wouter, TanStack Router) flow through the History API and are captured automatically.
+- **Session recordings** — rrweb-based replay of the seconds leading up to each exception.
 
 ## API
 
-### TracewayProvider
+### `<TracewayProvider>`
 
 | Prop | Type | Description |
 |------|------|-------------|
 | `connectionString` | `string` | Traceway connection string (`token@url`) |
-| `options` | `TracewayFrontendOptions` | Optional SDK configuration (logs / actions / recording toggles, sampling, etc.) |
+| `options` | `TracewayFrontendOptions` | Forwarded to `init()` from `@tracewayapp/frontend` |
 | `children` | `ReactNode` | Child components |
 
-### TracewayErrorBoundary
+### `<TracewayErrorBoundary>`
 
 | Prop | Type | Description |
 |------|------|-------------|
 | `children` | `ReactNode` | Child components to wrap |
 | `fallback` | `ReactNode` | UI to render when an error is caught |
-| `onError` | `(error, errorInfo) => void` | Optional callback on error |
+| `onError` | `(error, errorInfo) => void` | Optional callback fired before the fallback renders |
 
-### useTraceway()
+### `useTraceway()`
 
 Returns `{ captureException, captureExceptionWithAttributes, captureMessage }`.
 
 Throws if used outside a `TracewayProvider`.
 
-## Requirements
+## Platform Support
 
-- React >= 18
-- `@tracewayapp/frontend` (installed automatically as dependency)
+| Environment | Error Tracking | Session Replay |
+|---|---|---|
+| React 18+ in any modern browser | Yes | Yes |
+| Next.js (App / Pages router) | Yes | Yes |
+| Vite / CRA / Remix | Yes | Yes |
+| React Native / Expo | Use [`@tracewayapp/react-native`](https://www.npmjs.com/package/@tracewayapp/react-native) | No (intentional) |
+
+## Running the example
+
+The repo ships a minimal example app at [`examples/react-demo/`](examples/react-demo/). From the monorepo root:
+
+```bash
+npm install
+npm run build
+cd packages/react/examples/react-demo
+npm install
+npm run dev
+```
+
+## Links
+
+- [Traceway Website](https://tracewayapp.com)
+- [Traceway GitHub](https://github.com/tracewayapp/traceway)
+- [Documentation](https://docs.tracewayapp.com)
+- [Browser SDK](https://www.npmjs.com/package/@tracewayapp/frontend)
+- [React Native SDK](https://www.npmjs.com/package/@tracewayapp/react-native)
+
+## License
+
+MIT

@@ -1,8 +1,32 @@
-# @tracewayapp/nestjs
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo%20White.png" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo.png" />
+    <img src="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo.png" alt="Traceway" width="200" />
+  </picture>
+</p>
 
-> **DEPRECATED**: This package is deprecated. For NestJS instrumentation, use [OpenTelemetry](https://opentelemetry.io/) instead. See the [NestJS OTel guide](https://traceway.dev/client/nestjs) and [OTel overview](https://traceway.dev/client/otel).
+<p align="center">
+  <a href="https://www.npmjs.com/package/@tracewayapp/nestjs"><img src="https://img.shields.io/npm/v/@tracewayapp/nestjs.svg" alt="npm"></a>
+  <a href="https://github.com/tracewayapp/traceway-js/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+</p>
 
-NestJS integration for Traceway. Provides a module, middleware, exception filter, service, and decorators for request tracing and error capture.
+# Traceway NestJS SDK
+
+> **Deprecated.** For new NestJS integrations, use [OpenTelemetry](https://opentelemetry.io/) instead — see the [NestJS OTel guide](https://docs.tracewayapp.com/client/nestjs) and the [OTel overview](https://docs.tracewayapp.com/client/otel). This package will keep receiving security fixes but is no longer the recommended path for new code.
+
+NestJS integration for Traceway. Provides a module, request-tracing middleware, exception filter, an injectable `TracewayService`, and a `@Span` decorator on top of [`@tracewayapp/backend`](https://www.npmjs.com/package/@tracewayapp/backend).
+
+[Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
+
+## Features
+
+- `TracewayModule.forRoot()` / `forRootAsync()` for static or DI-driven configuration
+- `TracewayMiddleware` records HTTP method, route, duration, status, and client IP for every request
+- `TracewayExceptionFilter` captures unhandled exceptions with full stack traces and (optionally) request URL, query, body, and headers
+- Injectable `TracewayService` for manual `captureException` / `captureMetric` / `startSpan` calls
+- `@Span("name")` method decorator that auto-wraps the call in a span
+- Inherits everything from [`@tracewayapp/backend`](https://www.npmjs.com/package/@tracewayapp/backend): distributed tracing, AsyncLocalStorage context, sampling, gzip transport
 
 ## Installation
 
@@ -10,53 +34,9 @@ NestJS integration for Traceway. Provides a module, middleware, exception filter
 npm install @tracewayapp/nestjs
 ```
 
-## Setup
+## Quick Start
 
-### 1. Import TracewayModule
-
-Add `TracewayModule.forRoot()` to your app module:
-
-```typescript
-import { Module } from "@nestjs/common";
-import { TracewayModule } from "@tracewayapp/nestjs";
-
-@Module({
-  imports: [
-    TracewayModule.forRoot({
-      connectionString: "your-token@https://traceway.example.com/api/report",
-    }),
-  ],
-})
-export class AppModule {}
-```
-
-### 2. Add Middleware for Request Tracing
-
-Apply `TracewayMiddleware` to trace all HTTP requests:
-
-```typescript
-import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
-import { TracewayModule, TracewayMiddleware } from "@tracewayapp/nestjs";
-
-@Module({
-  imports: [
-    TracewayModule.forRoot({
-      connectionString: "your-token@https://traceway.example.com/api/report",
-    }),
-  ],
-})
-export class AppModule implements NestModule {
-  configure(consumer: MiddlewareConsumer) {
-    consumer.apply(TracewayMiddleware).forRoutes("*");
-  }
-}
-```
-
-### 3. Add Exception Filter
-
-Register `TracewayExceptionFilter` globally to capture unhandled exceptions:
-
-```typescript
+```ts
 import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
 import { APP_FILTER } from "@nestjs/core";
 import {
@@ -69,7 +49,7 @@ import {
   imports: [
     TracewayModule.forRoot({
       connectionString: "your-token@https://traceway.example.com/api/report",
-      debug: true,
+      version: "1.0.0",
       onErrorRecording: ["url", "query", "body", "headers"],
     }),
   ],
@@ -87,74 +67,13 @@ export class AppModule implements NestModule {
 }
 ```
 
-## TracewayService
-
-Inject `TracewayService` to capture errors and create spans manually:
-
-```typescript
-import { Injectable } from "@nestjs/common";
-import { TracewayService, Span } from "@tracewayapp/nestjs";
-
-@Injectable()
-export class UsersService {
-  constructor(private readonly traceway: TracewayService) {}
-
-  @Span("db.users.findAll")
-  async findAll() {
-    // Span automatically created and ended
-    return this.userRepository.find();
-  }
-
-  async createUser(data: CreateUserDto) {
-    const span = this.traceway.startSpan("db.users.create");
-    try {
-      const user = await this.userRepository.save(data);
-      return user;
-    } finally {
-      this.traceway.endSpan(span);
-    }
-  }
-
-  async riskyOperation() {
-    try {
-      await this.externalApi.call();
-    } catch (error) {
-      this.traceway.captureException(error);
-      throw error;
-    }
-  }
-
-  async recordMetrics() {
-    // Capture a simple metric
-    this.traceway.captureMetric("request.duration", 150);
-
-    // Capture a metric with tags
-    this.traceway.captureMetricWithTags("request.duration", 150, {
-      region: "us-east",
-      service: "users",
-    });
-  }
-}
-```
-
-## @Span Decorator
-
-Automatically creates and ends a span for a method:
-
-```typescript
-import { Span } from "@tracewayapp/nestjs";
-
-@Span("operation-name")
-async myMethod() {
-  // span is created on entry and ended on return
-}
-```
+That's it. Every HTTP request is traced; every uncaught exception is captured with the request context attached.
 
 ## Async Configuration
 
-Use `forRootAsync` for dynamic configuration (e.g., from `ConfigService`):
+For DI-driven configuration (e.g., reading from `ConfigService`):
 
-```typescript
+```ts
 import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TracewayModule } from "@tracewayapp/nestjs";
@@ -175,31 +94,95 @@ import { TracewayModule } from "@tracewayapp/nestjs";
 export class AppModule {}
 ```
 
-## What Gets Captured
+## Manual Capture
+
+Inject `TracewayService` to capture errors and create spans manually:
+
+```ts
+import { Injectable } from "@nestjs/common";
+import { TracewayService, Span } from "@tracewayapp/nestjs";
+
+@Injectable()
+export class UsersService {
+  constructor(private readonly traceway: TracewayService) {}
+
+  @Span("db.users.findAll")
+  async findAll() {
+    return this.userRepository.find();
+  }
+
+  async createUser(data: CreateUserDto) {
+    const span = this.traceway.startSpan("db.users.create");
+    try {
+      return await this.userRepository.save(data);
+    } finally {
+      this.traceway.endSpan(span);
+    }
+  }
+
+  async riskyOperation() {
+    try {
+      await this.externalApi.call();
+    } catch (error) {
+      this.traceway.captureException(error);
+      throw error;
+    }
+  }
+
+  recordMetrics() {
+    this.traceway.captureMetric("request.duration", 150);
+    this.traceway.captureMetricWithTags("request.duration", 150, {
+      region: "us-east",
+      service: "users",
+    });
+  }
+}
+```
+
+## What Gets Captured Automatically
 
 | Data | Description |
 |------|-------------|
-| Endpoint | HTTP method and route (e.g., `GET /users/:id`) |
-| Duration | Request processing time |
-| Status Code | HTTP response status |
-| Client IP | Client IP address from headers or socket |
-| Exceptions | Unhandled errors with full stack traces |
-| Spans | Custom spans created within the request |
+| **Endpoint** | HTTP method and route (e.g., `GET /users/:id`) |
+| **Duration** | Request processing time in ms |
+| **Status code** | HTTP response status |
+| **Client IP** | From `X-Forwarded-For` / `X-Real-IP` headers, falling back to socket |
+| **Exceptions** | Unhandled errors with full stack traces |
+| **Spans** | All `@Span("name")`-decorated method calls and manual `startSpan` invocations within the request |
 
-## Configuration Options
+## Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `connectionString` | `string` | — | Traceway connection string (`token@url`) |
-| `debug` | `boolean` | `false` | Enable debug logging |
-| `version` | `string` | `""` | Application version |
-| `serverName` | `string` | hostname | Server identifier |
-| `sampleRate` | `number` | `1.0` | Normal trace sampling rate (0.0-1.0) |
-| `errorSampleRate` | `number` | `1.0` | Error trace sampling rate (0.0-1.0) |
-| `ignoredRoutes` | `string[]` | `[]` | Routes to exclude from tracing |
-| `onErrorRecording` | `ErrorRecordingField[]` | `[]` | Request data to include on errors (`"url"`, `"query"`, `"body"`, `"headers"`) |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `connectionString` | — | Traceway connection string (`token@url`) |
+| `debug` | `false` | Enable debug logging |
+| `version` | `""` | Application version |
+| `serverName` | hostname | Server identifier |
+| `sampleRate` | `1.0` | Normal trace sampling rate (0.0-1.0) |
+| `errorSampleRate` | `1.0` | Error trace sampling rate (0.0-1.0) |
+| `ignoredRoutes` | `[]` | Routes to exclude from tracing |
+| `onErrorRecording` | `[]` | Request data to attach on errors (`"url"`, `"query"`, `"body"`, `"headers"`) |
 
-## Requirements
+## Platform Support
 
-- NestJS >= 10
-- `@tracewayapp/backend` (installed automatically as dependency)
+| Environment | Status |
+|---|---|
+| NestJS ≥ 10 on Node.js ≥ 18 | Yes |
+| NestJS Fastify adapter | Yes |
+| Cloudflare Workers / Edge runtimes | No — use OTel instead |
+
+## Migration to OpenTelemetry
+
+For new code, prefer OTel — it has first-class NestJS support and is what the Traceway dashboard treats as a first-class citizen. The Traceway backend ingests OTLP/HTTP traces, metrics, and logs at `/api/otel/v1/{traces,metrics,logs}`. See the [NestJS OTel guide](https://docs.tracewayapp.com/client/nestjs) for the recommended setup.
+
+## Links
+
+- [Traceway Website](https://tracewayapp.com)
+- [Traceway GitHub](https://github.com/tracewayapp/traceway)
+- [Documentation](https://docs.tracewayapp.com)
+- [Node.js SDK](https://www.npmjs.com/package/@tracewayapp/backend)
+- [OpenTelemetry](https://opentelemetry.io/)
+
+## License
+
+MIT
