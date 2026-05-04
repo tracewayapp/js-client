@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { gunzipSync, strFromU8 } from "fflate";
+
+vi.mock("./device-info.js", () => ({
+  collectSyncDeviceInfo: () => ({
+    "os.name": "ios",
+    "os.version": "17.4",
+    "screen.resolution": "393x852",
+    "screen.density": "3.0",
+    "runtime.engine": "hermes",
+  }),
+}));
+
 import {
   init,
   captureException,
@@ -7,6 +18,7 @@ import {
   captureMessage,
   recordAction,
   recordNavigation,
+  setDeviceAttributes,
   flush,
   _resetForTesting,
   _getClient,
@@ -90,6 +102,7 @@ describe("react-native sdk facade", () => {
     init("tok@https://example.com/api/report", {
       debounceMs: 20,
       ignoreErrors: [],
+      captureDeviceInfo: false,
     });
 
     captureExceptionWithAttributes(new Error("attrs"), {
@@ -153,6 +166,58 @@ describe("react-native sdk facade", () => {
   it("flush is a no-op before init", async () => {
     await expect(flush()).resolves.toBeUndefined();
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("init auto-collects device info and attaches it to every report", async () => {
+    init("tok@https://example.com/api/report", {
+      debounceMs: 20,
+      ignoreErrors: [],
+    });
+
+    const attrs = _getClient()!.bufferedDeviceAttributes();
+    expect(attrs["os.name"]).toBe("ios");
+    expect(attrs["os.version"]).toBe("17.4");
+    expect(attrs["screen.resolution"]).toBe("393x852");
+    expect(attrs["screen.density"]).toBe("3.0");
+
+    captureException(new Error("with-device"));
+    await flush();
+
+    const trace = lastReportBody().collectionFrames[0].stackTraces[0];
+    expect(trace.attributes?.["os.name"]).toBe("ios");
+    expect(trace.attributes?.["screen.resolution"]).toBe("393x852");
+  });
+
+  it("captureDeviceInfo: false skips auto-collection at init", async () => {
+    init("tok@https://example.com/api/report", {
+      debounceMs: 20,
+      ignoreErrors: [],
+      captureDeviceInfo: false,
+    });
+
+    expect(_getClient()!.bufferedDeviceAttributes()).toEqual({});
+
+    captureException(new Error("no-device"));
+    await flush();
+
+    const trace = lastReportBody().collectionFrames[0].stackTraces[0];
+    expect(trace.attributes).toBeUndefined();
+  });
+
+  it("setDeviceAttributes from the public facade replaces the map", async () => {
+    init("tok@https://example.com/api/report", {
+      debounceMs: 20,
+      ignoreErrors: [],
+    });
+
+    setDeviceAttributes({ tenant: "acme", region: "us-east" });
+
+    captureException(new Error("custom-attrs"));
+    await flush();
+
+    const trace = lastReportBody().collectionFrames[0].stackTraces[0];
+    // The original device-collected keys are gone; replaced with our custom set.
+    expect(trace.attributes).toEqual({ tenant: "acme", region: "us-east" });
   });
 
   it("init wires the apiHost so self-reports are not re-recorded as network events", async () => {

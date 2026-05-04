@@ -14,6 +14,7 @@ import {
   TracewayErrorBoundary,
   useTraceway,
   flush,
+  collectSyncDeviceInfo,
 } from "@tracewayapp/react-native";
 
 const RAW_DSN = Constants.expoConfig?.extra?.tracewayDsn as string | undefined;
@@ -37,6 +38,7 @@ const PARSED = parseDsn(DSN);
 const DSN_FROM_ENV = Boolean(RAW_DSN);
 const DSN_VALID = Boolean(PARSED);
 const IS_PLACEHOLDER = !DSN_FROM_ENV;
+const DEVICE_INFO = collectSyncDeviceInfo();
 
 type LogEntry = { time: string; message: string; kind: "info" | "ok" | "err" };
 
@@ -46,7 +48,8 @@ function BrokenRender({ shouldThrow }: { shouldThrow: boolean }) {
 }
 
 function Demo() {
-  const { captureException, captureMessage, recordAction } = useTraceway();
+  const { captureException, captureMessage, recordAction, setDeviceAttributes } =
+    useTraceway();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [renderError, setRenderError] = useState(false);
   const [renderKey, setRenderKey] = useState(0);
@@ -191,6 +194,27 @@ function Demo() {
     log("Recorded a custom action (will ride along the next exception)", "ok");
   };
 
+  const handleAddCustomAttributes = async () => {
+    const merged = {
+      ...collectSyncDeviceInfo(),
+      tenant: "acme-corp",
+      build_channel: "demo",
+      session_id: `sess-${Math.floor(Math.random() * 100_000)}`,
+    };
+    setDeviceAttributes(merged);
+    log(
+      `Device attributes updated (${Object.keys(merged).length} keys including tenant/build_channel/session_id)`,
+      "ok",
+    );
+    captureMessage("Attribute test — sent right after setDeviceAttributes");
+    try {
+      await flush();
+      log("flush() resolved — check the dashboard for the attached attributes", "ok");
+    } catch (e) {
+      log(`flush() rejected: ${(e as Error).message}`, "err");
+    }
+  };
+
   const handleFlush = async () => {
     log("Flushing pending events…", "info");
     try {
@@ -238,6 +262,17 @@ function Demo() {
         <Text style={styles.diagValue} selectable>
           {PARSED ? maskToken(PARSED.token) : "(unparseable)"}
         </Text>
+
+        <Text style={styles.diagLabel}>Auto-collected device attributes</Text>
+        {Object.entries(DEVICE_INFO).length === 0 ? (
+          <Text style={styles.diagValue}>(none)</Text>
+        ) : (
+          Object.entries(DEVICE_INFO).map(([k, v]) => (
+            <Text key={k} style={styles.diagValue} selectable>
+              {k}={v}
+            </Text>
+          ))
+        )}
       </View>
 
       <View style={styles.section}>
@@ -269,6 +304,10 @@ function Demo() {
         <Text style={styles.sectionTitle}>Manual</Text>
         <Button label="captureMessage" onPress={handleCaptureMessage} />
         <Button label="recordAction" onPress={handleRecordAction} />
+        <Button
+          label="setDeviceAttributes (+tenant/build/session) & ship"
+          onPress={handleAddCustomAttributes}
+        />
         <Button label="flush" onPress={handleFlush} kind="muted" />
       </View>
 

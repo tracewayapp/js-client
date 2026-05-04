@@ -148,6 +148,90 @@ describe("TracewayReactNativeClient", () => {
     expect(calls).toBe(2);
   });
 
+  it("merges device attributes into every captured exception", async () => {
+    const client = createClient(20);
+    client.setDeviceAttributes({
+      "os.name": "ios",
+      "os.version": "17.4",
+      "screen.resolution": "394x852",
+    });
+
+    client.addException({
+      traceId: null,
+      stackTrace: "Error: with-device\n",
+      recordedAt: new Date().toISOString(),
+      isMessage: false,
+    });
+
+    await sleep(80);
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const parsed = decodeBody((init as RequestInit).body) as {
+      collectionFrames: Array<{
+        stackTraces: Array<{ attributes?: Record<string, string> }>;
+      }>;
+    };
+    const attrs = parsed.collectionFrames[0].stackTraces[0].attributes;
+    expect(attrs).toEqual({
+      "os.name": "ios",
+      "os.version": "17.4",
+      "screen.resolution": "394x852",
+    });
+  });
+
+  it("per-call attributes win over device attributes on key collision", async () => {
+    const client = createClient(20);
+    client.setDeviceAttributes({ "os.name": "ios", region: "device-default" });
+
+    client.addException({
+      traceId: null,
+      stackTrace: "Error: collision\n",
+      recordedAt: new Date().toISOString(),
+      attributes: { region: "user-override", tenant: "acme" },
+      isMessage: false,
+    });
+
+    await sleep(80);
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const parsed = decodeBody((init as RequestInit).body) as {
+      collectionFrames: Array<{
+        stackTraces: Array<{ attributes?: Record<string, string> }>;
+      }>;
+    };
+    const attrs = parsed.collectionFrames[0].stackTraces[0].attributes;
+    expect(attrs).toEqual({
+      "os.name": "ios",
+      region: "user-override",
+      tenant: "acme",
+    });
+  });
+
+  it("setDeviceAttributes({}) clears previously set attributes", async () => {
+    const client = createClient(20);
+    client.setDeviceAttributes({ "os.name": "ios" });
+    expect(client.bufferedDeviceAttributes()).toEqual({ "os.name": "ios" });
+    client.setDeviceAttributes({});
+    expect(client.bufferedDeviceAttributes()).toEqual({});
+
+    client.addException({
+      traceId: null,
+      stackTrace: "Error: cleared\n",
+      recordedAt: new Date().toISOString(),
+      isMessage: false,
+    });
+
+    await sleep(80);
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const parsed = decodeBody((init as RequestInit).body) as {
+      collectionFrames: Array<{
+        stackTraces: Array<{ attributes?: Record<string, string> }>;
+      }>;
+    };
+    expect(parsed.collectionFrames[0].stackTraces[0].attributes).toBeUndefined();
+  });
+
   it("flush forces a sync immediately", async () => {
     const client = createClient(60_000);
     client.addException({

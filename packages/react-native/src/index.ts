@@ -5,8 +5,11 @@ export {
   captureMessage,
   recordAction,
   recordNavigation,
+  setDeviceAttributes,
   flush,
 } from "./sdk.js";
+
+export { collectSyncDeviceInfo } from "./device-info.js";
 
 export {
   TracewayReactNativeClient,

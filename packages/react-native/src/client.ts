@@ -61,6 +61,12 @@ export interface TracewayReactNativeOptions {
   captureNetwork?: boolean;
   /** Record manual `recordNavigation()` calls into the action buffer. Default true. */
   captureNavigation?: boolean;
+  /**
+   * Auto-collect device attributes (`os.name`, `os.version`,
+   * `screen.resolution`, `screen.density`, `device.locale`, `runtime.engine`)
+   * at init and attach them to every captured exception. Default true.
+   */
+  captureDeviceInfo?: boolean;
   /** Window kept in the rolling log/action buffers. Default 10_000ms. */
   eventsWindowMs?: number;
   /** Hard cap applied independently to logs and actions. Default 200. */
@@ -89,6 +95,8 @@ export class TracewayReactNativeClient {
   readonly captureLogs: boolean;
   readonly captureNetwork: boolean;
   readonly captureNavigation: boolean;
+  readonly captureDeviceInfo: boolean;
+  private deviceAttributes: Record<string, string> = {};
   private readonly logs: EventBuffer<LogEvent>;
   private readonly actions: EventBuffer<
     NetworkEvent | NavigationEvent | CustomEvent
@@ -111,6 +119,7 @@ export class TracewayReactNativeClient {
     this.captureLogs = options.captureLogs ?? true;
     this.captureNetwork = options.captureNetwork ?? true;
     this.captureNavigation = options.captureNavigation ?? true;
+    this.captureDeviceInfo = options.captureDeviceInfo ?? true;
 
     const bufferOpts = {
       windowMs: options.eventsWindowMs ?? 10_000,
@@ -120,6 +129,25 @@ export class TracewayReactNativeClient {
     this.actions = new EventBuffer<
       NetworkEvent | NavigationEvent | CustomEvent
     >(bufferOpts);
+  }
+
+  // ── Device / global attributes ──────────────────────────────────────────
+
+  /**
+   * Replaces the auto-attached attribute map. Every subsequent
+   * `addException` merges these into the exception's attributes (per-call
+   * attributes win on key collision). Pass `{}` to clear.
+   */
+  setDeviceAttributes(attributes: Record<string, string>): void {
+    this.deviceAttributes = { ...attributes };
+    if (this.debug) {
+      console.debug("Traceway: device attributes:", this.deviceAttributes);
+    }
+  }
+
+  /** @internal — exposed for tests. */
+  bufferedDeviceAttributes(): Record<string, string> {
+    return { ...this.deviceAttributes };
   }
 
   // ── Timeline event recording ────────────────────────────────────────────
@@ -194,6 +222,14 @@ export class TracewayReactNativeClient {
         );
       }
       return;
+    }
+
+    if (Object.keys(this.deviceAttributes).length > 0) {
+      // Per-call attributes win over device-collected ones on key collision.
+      exception.attributes = {
+        ...this.deviceAttributes,
+        ...(exception.attributes ?? {}),
+      };
     }
 
     const logSnapshot = this.logs.snapshot();

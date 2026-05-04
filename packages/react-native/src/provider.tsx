@@ -6,6 +6,7 @@ import {
   captureMessage,
   recordAction,
   recordNavigation,
+  setDeviceAttributes,
 } from "./sdk.js";
 import type { TracewayReactNativeOptions } from "./client.js";
 
@@ -15,6 +16,7 @@ export interface TracewayContextValue {
   captureMessage: typeof captureMessage;
   recordAction: typeof recordAction;
   recordNavigation: typeof recordNavigation;
+  setDeviceAttributes: typeof setDeviceAttributes;
 }
 
 export const TracewayContext = createContext<TracewayContextValue | null>(null);
@@ -41,6 +43,7 @@ export function TracewayProvider({
       captureMessage,
       recordAction,
       recordNavigation,
+      setDeviceAttributes,
     }),
     [],
   );

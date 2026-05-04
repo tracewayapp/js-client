@@ -103,6 +103,7 @@ All field names mirror the browser and Android SDKs so existing config can be po
 | `captureLogs` | `true` | Mirror every `console.*` call into the rolling log buffer |
 | `captureNetwork` | `true` | Record `fetch` and `XMLHttpRequest` calls as network actions |
 | `captureNavigation` | `true` | Record manual `recordNavigation()` calls |
+| `captureDeviceInfo` | `true` | Auto-collect `os.name`, `os.version`, screen, locale, runtime engine and attach to every report |
 | `eventsWindowMs` | `10000` | Rolling window kept in the log/action buffers (ms) |
 | `eventsMaxCount` | `200` | Hard cap applied independently to logs and actions |
 
@@ -169,6 +170,46 @@ Each channel can be turned off individually via `TracewayProvider`'s `options`:
   }}
 >
 ```
+
+## Attributes (device info & globals)
+
+Every captured exception ships with a `attributes` map. Two layers contribute:
+
+1. **Device info** — auto-collected at `init()` from React Native core APIs (no native modules required, works in Expo Go). The keys mirror what the [Flutter](https://github.com/tracewayapp/traceway-flutter) and [Android](https://github.com/tracewayapp/traceway-android) SDKs emit so the dashboard renders them consistently across platforms:
+
+   | Key | Source |
+   |---|---|
+   | `os.name` | `Platform.OS` (`ios` / `android` / `web`) |
+   | `os.version` | `Platform.Version` |
+   | `screen.resolution` | `Dimensions.get("screen")` (whole pixels) |
+   | `screen.density` | `PixelRatio.get()` |
+   | `device.locale` | `Intl.DateTimeFormat().resolvedOptions().locale` |
+   | `runtime.engine` | `hermes` / `javascriptcore` |
+
+2. **Per-call attributes** via `captureExceptionWithAttributes(error, attrs)` — these win on key collision.
+
+To replace or extend the auto-collected map at runtime (e.g. add a `tenant`, `build_channel`, or info from `expo-device` / `react-native-device-info` you've installed yourself):
+
+```ts
+import { setDeviceAttributes, collectSyncDeviceInfo } from "@tracewayapp/react-native";
+import * as Device from "expo-device";
+
+setDeviceAttributes({
+  ...collectSyncDeviceInfo(),  // keep the auto-collected ones
+  "device.model": Device.modelName ?? "",
+  "device.manufacturer": Device.manufacturer ?? "",
+  tenant: "acme-corp",
+  build_channel: process.env.EXPO_PUBLIC_BUILD_CHANNEL ?? "dev",
+});
+```
+
+The same hook is exposed on `useTraceway()`:
+
+```tsx
+const { setDeviceAttributes } = useTraceway();
+```
+
+To opt out of the device info collection entirely, pass `captureDeviceInfo: false` in `options`.
 
 ## What Gets Captured Automatically
 

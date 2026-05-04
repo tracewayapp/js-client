@@ -15,6 +15,7 @@ import {
 } from "./xhr-instrumentation.js";
 import { installConsoleInstrumentation } from "./console-instrumentation.js";
 import { recordNavigationOn } from "./navigation.js";
+import { collectSyncDeviceInfo } from "./device-info.js";
 
 let client: TracewayReactNativeClient | null = null;
 
@@ -46,6 +47,14 @@ export function init(
     // just record every request including our own. Better than failing init.
   }
 
+  if (client.captureDeviceInfo) {
+    try {
+      client.setDeviceAttributes(collectSyncDeviceInfo());
+    } catch {
+      // Never let device-info collection block init.
+    }
+  }
+
   installGlobalHandlers(client);
   if (client.captureNetwork) {
     installFetchInstrumentation(client);
@@ -54,6 +63,21 @@ export function init(
   if (client.captureLogs) {
     installConsoleInstrumentation(client);
   }
+}
+
+/**
+ * Replace the auto-attached attribute map. The map is merged into every
+ * subsequent capture's `attributes`, with per-call attributes winning on key
+ * collision. Pass `{}` to clear.
+ *
+ * Use this to add app-level globals (`tenant`, `build_channel`, etc.) on top
+ * of the device info collected at init.
+ */
+export function setDeviceAttributes(
+  attributes: Record<string, string>,
+): void {
+  if (!client) return;
+  client.setDeviceAttributes(attributes);
 }
 
 export function captureException(
