@@ -1,8 +1,33 @@
-# @tracewayapp/backend
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo%20White.png" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo.png" />
+    <img src="https://raw.githubusercontent.com/tracewayapp/traceway/main/Traceway%20Logo.png" alt="Traceway" width="200" />
+  </picture>
+</p>
 
-> **DEPRECATED**: This package is deprecated. For Node.js backend instrumentation, use [OpenTelemetry](https://opentelemetry.io/) instead. See the [Node.js OTel guide](https://traceway.dev/client/node-sdk) and [OTel overview](https://traceway.dev/client/otel).
+<p align="center">
+  <a href="https://www.npmjs.com/package/@tracewayapp/backend"><img src="https://img.shields.io/npm/v/@tracewayapp/backend.svg" alt="npm"></a>
+  <a href="https://github.com/tracewayapp/traceway-js/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+</p>
 
-Traceway SDK for Node.js backends. Provides error tracking, distributed tracing, span management, and metrics collection.
+# Traceway Node.js SDK
+
+> **Deprecated.** For new Node.js / Express / Fastify integrations, use [OpenTelemetry](https://opentelemetry.io/) instead — see the [Node.js OTel guide](https://docs.tracewayapp.com/client/node-sdk) and the [OTel overview](https://docs.tracewayapp.com/client/otel). This package will keep receiving security fixes but is no longer the recommended path for new code.
+
+Error tracking, distributed tracing, span management, and metrics collection for Node.js backends.
+
+[Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
+
+## Features
+
+- Automatic capture of unhandled exceptions
+- Distributed tracing — `withTraceContext`, `startSpan`, `endSpan` API for HTTP requests and background tasks
+- AsyncLocalStorage-based context that carries trace info across `await` boundaries
+- Metric collection — built-in process metrics (`mem.used`, `cpu.used_pcnt`) plus user-defined metrics with optional tags
+- Sampling for normal vs. error traces, configurable independently
+- Gzip-compressed batched transport, retry on failure
+- Graceful `shutdown()` that flushes in-flight data before the process exits
 
 ## Installation
 
@@ -12,7 +37,7 @@ npm install @tracewayapp/backend
 
 ## Quick Start
 
-```typescript
+```ts
 import {
   init,
   captureException,
@@ -24,9 +49,12 @@ import {
 } from "@tracewayapp/backend";
 
 // Initialize once at startup
-init("your-token@https://traceway.example.com/api/report");
+init("your-token@https://traceway.example.com/api/report", {
+  version: "1.0.0",
+  serverName: "api-1",
+});
 
-// Use trace context for HTTP requests
+// Wrap each HTTP request in a trace context:
 async function handleRequest(req, res) {
   await withTraceContext(
     {
@@ -46,7 +74,7 @@ async function handleRequest(req, res) {
       } finally {
         captureCurrentTrace();
       }
-    }
+    },
   );
 }
 
@@ -57,16 +85,44 @@ process.on("SIGTERM", async () => {
 });
 ```
 
+## Manual Capture
+
+```ts
+import {
+  captureException,
+  captureExceptionWithAttributes,
+  captureMessage,
+  captureMetric,
+  captureMetricWithTags,
+} from "@tracewayapp/backend";
+
+// Capture an error (auto-detects in-flight trace context)
+captureException(error);
+
+// Capture an error with explicit attributes and trace id
+captureExceptionWithAttributes(error, { tenant: "acme" }, traceId);
+
+// Capture a message
+captureMessage("startup completed");
+
+// Capture metrics
+captureMetric("request.duration", 150);
+captureMetricWithTags("request.duration", 150, {
+  region: "us-east",
+  service: "users",
+});
+```
+
 ## API
 
-### Core Functions
+### Core
 
 | Function | Description |
 |----------|-------------|
 | `init(connectionString, options?)` | Initialize the SDK |
-| `shutdown()` | Stop timers, flush remaining data, and await final upload |
+| `shutdown()` | Stop timers, flush remaining data, await final upload |
 
-### Capture Functions
+### Capture
 
 | Function | Description |
 |----------|-------------|
@@ -79,14 +135,14 @@ process.on("SIGTERM", async () => {
 | `captureTask(...)` | Capture background task (manual mode) |
 | `captureCurrentTrace()` | Capture trace from current context |
 
-### Span Functions
+### Spans
 
 | Function | Description |
 |----------|-------------|
 | `startSpan(name)` | Start a span (returns `SpanHandle`) |
 | `endSpan(span, addToContext?)` | End span (auto-adds to context by default) |
 
-### Context API
+### Trace Context
 
 | Function | Description |
 |----------|-------------|
@@ -103,27 +159,51 @@ process.on("SIGTERM", async () => {
 | `getTraceDuration()` | Get elapsed time in ms |
 | `forkTraceContext(fn)` | Fork context for parallel ops |
 
-### Utility Functions
+### Utilities
 
 | Function | Description |
 |----------|-------------|
 | `shouldSample(isError)` | Check if trace should be recorded |
 | `measureTask(title, fn)` | Execute function as auto-captured task |
 
-## Configuration Options
+## Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `debug` | `boolean` | `false` | Enable debug logging to console |
-| `maxCollectionFrames` | `number` | `12` | Ring buffer capacity for pending frames |
-| `collectionInterval` | `number` | `5000` | Frame rotation interval (ms) |
-| `uploadThrottle` | `number` | `2000` | Minimum gap between uploads (ms) |
-| `metricsInterval` | `number` | `30000` | System metrics collection interval (ms) |
-| `version` | `string` | `""` | Application version sent with reports |
-| `serverName` | `string` | hostname | Server identifier sent with reports |
-| `sampleRate` | `number` | `1.0` | Normal trace sampling rate (0.0-1.0) |
-| `errorSampleRate` | `number` | `1.0` | Error trace sampling rate (0.0-1.0) |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `debug` | `false` | Enable debug logging to console |
+| `version` | `""` | App version string sent with reports |
+| `serverName` | hostname | Server identifier sent with reports |
+| `maxCollectionFrames` | `12` | Ring buffer capacity for pending frames |
+| `collectionInterval` | `5000` | Frame rotation interval (ms) |
+| `uploadThrottle` | `2000` | Minimum gap between uploads (ms) |
+| `metricsInterval` | `30000` | System metrics collection interval (ms) |
+| `sampleRate` | `1.0` | Normal trace sampling rate (0.0-1.0) |
+| `errorSampleRate` | `1.0` | Error trace sampling rate (0.0-1.0) |
 
-## Requirements
+## Platform Support
 
-- Node.js >= 18
+| Environment | Error Tracking | Distributed Tracing | Metrics |
+|---|---|---|---|
+| Node.js ≥ 18 | Yes | Yes | Yes |
+| Bun | Yes | Yes | Yes |
+| Deno | Partial — bring your own AsyncLocalStorage shim | Partial | Yes |
+| Cloudflare Workers / Edge runtimes | No — use OTel instead | No | No |
+
+## Migration to OpenTelemetry
+
+For new code, prefer OTel — it has wider ecosystem support, more instrumentation, and is what the Traceway dashboard treats as a first-class citizen. The Traceway backend ingests OTLP/HTTP traces, metrics, and logs at `/api/otel/v1/{traces,metrics,logs}`. See:
+
+- [Node.js OTel guide](https://docs.tracewayapp.com/client/node-sdk)
+- [NestJS OTel guide](https://docs.tracewayapp.com/client/nestjs)
+- [OTel overview](https://docs.tracewayapp.com/client/otel)
+
+## Links
+
+- [Traceway Website](https://tracewayapp.com)
+- [Traceway GitHub](https://github.com/tracewayapp/traceway)
+- [Documentation](https://docs.tracewayapp.com)
+- [OpenTelemetry](https://opentelemetry.io/)
+
+## License
+
+MIT
