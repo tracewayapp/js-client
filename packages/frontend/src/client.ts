@@ -14,6 +14,7 @@ import { parseConnectionString, generateUUID, EventBuffer, nowISO } from "@trace
 import { sendReport } from "./transport.js";
 import { SessionRecorder } from "./session-recorder.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
+import { collectDefaultAttributes } from "./default-attributes.js";
 
 interface RrwebLikeEvent {
   timestamp?: number;
@@ -128,6 +129,13 @@ export class TracewayFrontendClient {
   private sessionStartedAt: string | null = null;
   private segmentIndex = 0;
   /**
+   * App-defined attributes attached to every session and exception emitted by
+   * this client. Set via setAttribute() / setAttributes(). Auto-collected
+   * defaults take a back seat to these; per-call exception attributes win
+   * over both.
+   */
+  private globalAttributes: Record<string, string> = {};
+  /**
    * Set true once the page begins unloading (`pagehide`). Forces the next
    * sync to use fetch keepalive / sendBeacon so the closing-session payload
    * survives the navigation.
@@ -222,6 +230,82 @@ export class TracewayFrontendClient {
     this.pendingSessions.push({
       id: this.sessionId,
       startedAt: this.sessionStartedAt,
+      attributes: this.composedSessionAttributes(),
+    });
+    this.scheduleSync();
+  }
+
+  /**
+   * Merge browser defaults with whatever app-level scope was set via
+   * setAttribute(). App attrs override defaults on key collision.
+   */
+  private composedSessionAttributes(): Record<string, string> {
+    return {
+      ...collectDefaultAttributes(),
+      ...this.globalAttributes,
+    };
+  }
+
+  // ── Global scope ────────────────────────────────────────────────────────
+
+  /**
+   * Attach a key/value attribute to every subsequent session and exception
+   * emitted by this client. If a session is already open, its attributes are
+   * refreshed on the backend immediately. Setting the same key replaces the
+   * previous value.
+   */
+  setAttribute(key: string, value: string): void {
+    if (!key) return;
+    this.globalAttributes[key] = value;
+    this.refreshOpenSessionAttributes();
+  }
+
+  /**
+   * Bulk version of setAttribute. Caller's keys override existing scope.
+   * Triggers one session refresh after the merge, not one per key.
+   */
+  setAttributes(attrs: Record<string, string>): void {
+    if (!attrs) return;
+    let changed = false;
+    for (const k of Object.keys(attrs)) {
+      if (!k) continue;
+      this.globalAttributes[k] = attrs[k]!;
+      changed = true;
+    }
+    if (changed) this.refreshOpenSessionAttributes();
+  }
+
+  removeAttribute(key: string): void {
+    if (key in this.globalAttributes) {
+      delete this.globalAttributes[key];
+      this.refreshOpenSessionAttributes();
+    }
+  }
+
+  clearAttributes(): void {
+    if (Object.keys(this.globalAttributes).length === 0) return;
+    this.globalAttributes = {};
+    this.refreshOpenSessionAttributes();
+  }
+
+  /** @internal — exposed for tests. */
+  currentAttributes(): Record<string, string> {
+    return { ...this.globalAttributes };
+  }
+
+  /**
+   * When the global scope changes mid-session, push a session-refresh
+   * payload (no endedAt) so the backend's ON CONFLICT update writes the new
+   * attribute blob into the existing row. Without this the new attrs would
+   * only land at session close.
+   */
+  private refreshOpenSessionAttributes(): void {
+    if (!this.sessionId || !this.sessionStartedAt) return;
+    if (this.recordAllSessions !== true) return;
+    this.pendingSessions.push({
+      id: this.sessionId,
+      startedAt: this.sessionStartedAt,
+      attributes: this.composedSessionAttributes(),
     });
     this.scheduleSync();
   }
@@ -240,6 +324,10 @@ export class TracewayFrontendClient {
       id: this.sessionId,
       startedAt: this.sessionStartedAt,
       endedAt: nowISO(),
+      // Re-snapshot attributes so the upsert doesn't clobber the opening
+      // attribute blob with an empty map. Also picks up URL changes and any
+      // global-scope attributes set during the session.
+      attributes: this.composedSessionAttributes(),
     });
 
     // On unload paths the debounce timer never fires — flush directly so the
@@ -381,6 +469,14 @@ export class TracewayFrontendClient {
       }
       return;
     }
+
+    // Merge in browser-context defaults plus the global scope. Caller-
+    // supplied keys win over both. Order matters: defaults < global < caller.
+    exception.attributes = {
+      ...collectDefaultAttributes(),
+      ...this.globalAttributes,
+      ...(exception.attributes ?? {}),
+    };
 
     const recorderEvents =
       this.recorder && this.recorder.hasSegments()

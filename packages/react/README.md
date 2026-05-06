@@ -86,6 +86,57 @@ import { recordAction } from "@tracewayapp/frontend";
 recordAction("checkout", "payment_submitted", { amount: 42 });
 ```
 
+## Custom Attributes (global scope)
+
+Two ways to attach app-level identifiers (`userId`, `tenant`, feature flags, …) to every session and exception.
+
+**Declarative — `<TracewayAttributes>` or the `useTracewayAttributes` hook.** Pass a map; the SDK diffs against the previous map and pushes only the deltas. On unmount, every key the component owned is removed from scope.
+
+```tsx
+import { TracewayAttributes, useTracewayAttributes } from "@tracewayapp/react";
+
+// As a component — drop in wherever you have the user/tenant context:
+<TracewayAttributes attributes={{ userId: user.id, tenant: org.id }} />
+
+// Or as a hook:
+function App() {
+  useTracewayAttributes({ userId: user?.id, tenant: org?.id });
+  return <Routes />;
+}
+```
+
+The hook accepts `null` / `undefined` as "empty map" — useful while user data is still loading or after logout. New object reference with the same content does not trigger SDK calls (a fingerprint check skips no-op renders).
+
+**Imperative — `setAttribute` / `setAttributes` / `removeAttribute` / `clearAttributes`.** Persist in memory until cleared. Use these outside React component trees (background workers, init scripts):
+
+```ts
+import {
+  setAttribute,
+  setAttributes,
+  clearAttributes,
+} from "@tracewayapp/react";
+
+setAttribute("build_channel", import.meta.env.VITE_CHANNEL ?? "dev");
+setAttributes({ tenant: "acme", plan: "pro" });
+// ...later, on logout:
+clearAttributes();
+```
+
+Layering order on each event: `auto-collected defaults < global scope < per-call attributes`. Per-call exception attributes from `captureExceptionWithAttributes(err, { … })` still win over global keys on collision.
+
+## Always-on Session Recording
+
+Pass `recordAllSessions: true` in `options` to upload full sessions continuously (not just exception-bound clips):
+
+```tsx
+<TracewayProvider
+  connectionString="your-token@https://traceway.example.com/api/report"
+  options={{ recordAllSessions: true, version: "1.0.0" }}
+>
+```
+
+See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#always-on-session-recording) for the full description.
+
 ## Options
 
 `TracewayProvider`'s `options` prop forwards directly to [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend). The most-used flags:
@@ -98,6 +149,7 @@ recordAction("checkout", "payment_submitted", { amount: 42 });
 | `captureNetwork` | `true` | Record `fetch` / `XHR` as network actions |
 | `captureNavigation` | `true` | Record History API push / replace / pop as navigation actions |
 | `sessionRecording` | `true` | Enable the rrweb session recorder |
+| `recordAllSessions` | `false` | Always-on session recording (every ~30 s segment uploaded continuously) |
 | `eventsWindowMs` | `10000` | Rolling window kept in the log/action buffers (ms) |
 | `eventsMaxCount` | `200` | Hard cap applied independently to logs and actions |
 
@@ -134,6 +186,16 @@ Each captured exception ships with the buffered logs, actions, and replay frames
 Returns `{ captureException, captureExceptionWithAttributes, captureMessage }`.
 
 Throws if used outside a `TracewayProvider`.
+
+### `<TracewayAttributes>` / `useTracewayAttributes`
+
+Bind a reactive `Record<string, string>` to the global attribute scope.
+
+| Prop / arg | Type | Description |
+|---|---|---|
+| `attributes` | `Record<string, string> \| null \| undefined` | Map of keys to attach. `null`/`undefined` is treated as `{}` |
+
+Behaviour: diff-only updates (only changed keys hit the SDK), removed keys are dropped, and on unmount every key the hook currently owns is removed. The component renders nothing.
 
 ## Platform Support
 

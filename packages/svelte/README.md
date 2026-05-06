@@ -100,6 +100,66 @@ import { recordAction } from "@tracewayapp/frontend";
 recordAction("checkout", "payment_submitted", { amount: 42 });
 ```
 
+## Custom Attributes (global scope)
+
+Two ways to attach app-level identifiers (`userId`, `tenant`, feature flags, …) to every session and exception.
+
+**Declarative — `useTracewayAttributes`**, a factory that returns a sync function. Call once during component setup; invoke the returned function from `$effect` (Svelte 5) or `$:` (Svelte 4). The hook diffs the new map against the previous one and pushes only the deltas; on `onDestroy` every key it currently owns is removed.
+
+```svelte
+<!-- Svelte 5 -->
+<script>
+  import { useTracewayAttributes } from "@tracewayapp/svelte";
+  let { user, org } = $props();
+  const sync = useTracewayAttributes();
+  $effect(() => sync({ userId: user.id, tenant: org.id }));
+</script>
+```
+
+```svelte
+<!-- Svelte 4 -->
+<script>
+  import { useTracewayAttributes } from "@tracewayapp/svelte";
+  export let user; export let org;
+  const sync = useTracewayAttributes();
+  $: sync({ userId: user.id, tenant: org.id });
+</script>
+```
+
+The sync function accepts `null` / `undefined` as "empty map" — useful while user data loads or after logout. The factory must run during component init so `onDestroy` can register cleanup.
+
+**Imperative — `setAttribute` / `setAttributes` / `removeAttribute` / `clearAttributes`.** Use these outside component trees (`+layout.ts` load functions, server hooks that run client-side after hydration):
+
+```ts
+import {
+  setAttribute,
+  setAttributes,
+  clearAttributes,
+} from "@tracewayapp/svelte";
+
+setAttribute("build_channel", "canary");
+setAttributes({ tenant: "acme", plan: "pro" });
+// ...later, on logout:
+clearAttributes();
+```
+
+Layering order on each event: `auto-collected defaults < global scope < per-call attributes`. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#custom-attributes-global-scope) for the full mechanics.
+
+## Always-on Session Recording
+
+Pass `recordAllSessions: true` to upload full sessions continuously (not just exception-bound clips):
+
+```svelte
+<script>
+  setupTraceway({
+    connectionString: "your-token@https://traceway.example.com/api/report",
+    options: { recordAllSessions: true },
+  });
+</script>
+```
+
+See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#always-on-session-recording) for the full description.
+
 ## Options
 
 The `options` field forwards directly to [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend). The most-used flags:
@@ -112,6 +172,7 @@ The `options` field forwards directly to [`@tracewayapp/frontend`](https://www.n
 | `captureNetwork` | `true` | Record `fetch` / `XHR` as network actions |
 | `captureNavigation` | `true` | Record History API push / replace / pop as navigation actions |
 | `sessionRecording` | `true` | Enable the rrweb session recorder |
+| `recordAllSessions` | `false` | Always-on session recording (every ~30 s segment uploaded continuously) |
 | `eventsWindowMs` | `10000` | Rolling window kept in the log/action buffers (ms) |
 | `eventsMaxCount` | `200` | Hard cap applied independently to logs and actions |
 
@@ -143,6 +204,10 @@ Returns `{ captureException, captureExceptionWithAttributes, captureMessage }`.
 Returns `{ captureException, captureExceptionWithAttributes, captureMessage }`.
 
 Throws if used outside a component tree where `setupTraceway` has been called.
+
+### `useTracewayAttributes()`
+
+Returns a `(attrs: Record<string, string> | null | undefined) => void` setter. Call once during component init, then invoke the setter from `$effect` (Svelte 5) or a `$:` reactive statement (Svelte 4). Diffs against the last map; removes every owned key on `onDestroy`.
 
 ## Platform Support
 

@@ -6,8 +6,16 @@ export {
   recordAction,
   recordNavigation,
   setDeviceAttributes,
+  setAttribute,
+  setAttributes,
+  removeAttribute,
+  clearAttributes,
   flush,
 } from "./sdk.js";
+
+export { useTracewayAttributes } from "./use-traceway-attributes.js";
+export { TracewayAttributes } from "./traceway-attributes.js";
+export type { TracewayAttributesProps } from "./traceway-attributes.js";
 
 export { collectSyncDeviceInfo } from "./device-info.js";
 

@@ -150,6 +150,39 @@ export class TracewayReactNativeClient {
     return { ...this.deviceAttributes };
   }
 
+  /**
+   * App-defined attributes attached to every exception emitted by this
+   * client. Layered on top of the device attributes (which carry OS / app
+   * version metadata). Per-call exception attributes win over both.
+   */
+  private globalAttributes: Record<string, string> = {};
+
+  setAttribute(key: string, value: string): void {
+    if (!key) return;
+    this.globalAttributes[key] = value;
+  }
+
+  setAttributes(attrs: Record<string, string>): void {
+    if (!attrs) return;
+    for (const k of Object.keys(attrs)) {
+      if (!k) continue;
+      this.globalAttributes[k] = attrs[k]!;
+    }
+  }
+
+  removeAttribute(key: string): void {
+    delete this.globalAttributes[key];
+  }
+
+  clearAttributes(): void {
+    this.globalAttributes = {};
+  }
+
+  /** @internal — exposed for tests. */
+  currentAttributes(): Record<string, string> {
+    return { ...this.globalAttributes };
+  }
+
   // ── Timeline event recording ────────────────────────────────────────────
 
   recordLog(level: LogEvent["level"], message: string): void {
@@ -224,10 +257,14 @@ export class TracewayReactNativeClient {
       return;
     }
 
-    if (Object.keys(this.deviceAttributes).length > 0) {
-      // Per-call attributes win over device-collected ones on key collision.
+    if (
+      Object.keys(this.deviceAttributes).length > 0 ||
+      Object.keys(this.globalAttributes).length > 0
+    ) {
+      // Layering: device < global < per-call. Caller wins on key collision.
       exception.attributes = {
         ...this.deviceAttributes,
+        ...this.globalAttributes,
         ...(exception.attributes ?? {}),
       };
     }

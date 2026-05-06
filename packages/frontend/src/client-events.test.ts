@@ -349,6 +349,82 @@ describe("TracewayFrontendClient timeline events", () => {
     expect((restoredCall![1] as RequestInit).keepalive).not.toBe(true);
   });
 
+  it("setAttribute attaches scope to subsequent exceptions and to the open session", async () => {
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      {
+        debounceMs: 0,
+        recordAllSessions: true,
+        sessionRecording: false,
+        ignoreErrors: [],
+      },
+    );
+    client.setAttribute("userId", "42");
+    client.setAttributes({ tenant: "acme", flag_v2: "on" });
+
+    client.addException({
+      traceId: null,
+      stackTrace: "Error: post-scope",
+      recordedAt: new Date().toISOString(),
+      isMessage: false,
+      attributes: { userId: "override" }, // caller wins over global
+    });
+
+    await client.flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const allBodies = fetchMock.mock.calls
+      .map((c) => (c[1] as RequestInit).body)
+      .map((b) => (typeof b === "string" ? b : new TextDecoder().decode(b as Uint8Array)))
+      .map((s) => JSON.parse(s) as ReportRequest);
+
+    const allExceptions = allBodies.flatMap((b) => b.collectionFrames).flatMap((f) => f.stackTraces);
+    const ex = allExceptions.find((e) => e.stackTrace.includes("post-scope"))!;
+    expect(ex.attributes?.userId).toBe("override"); // caller win
+    expect(ex.attributes?.tenant).toBe("acme");
+    expect(ex.attributes?.flag_v2).toBe("on");
+
+    const allSessions = allBodies.flatMap((b) => b.collectionFrames).flatMap((f) => f.sessions ?? []);
+    const opening = allSessions.find((s) => !s.endedAt && s.attributes?.tenant === "acme");
+    expect(opening).toBeDefined();
+    expect(opening!.attributes?.userId).toBe("42");
+  });
+
+  it("removeAttribute and clearAttributes drop keys from subsequent payloads", async () => {
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      {
+        debounceMs: 0,
+        recordAllSessions: true,
+        sessionRecording: false,
+        ignoreErrors: [],
+      },
+    );
+    client.setAttributes({ a: "1", b: "2" });
+    client.removeAttribute("a");
+    expect(client.currentAttributes()).toEqual({ b: "2" });
+
+    client.clearAttributes();
+    expect(client.currentAttributes()).toEqual({});
+
+    client.addException({
+      traceId: null,
+      stackTrace: "Error: cleared",
+      recordedAt: new Date().toISOString(),
+      isMessage: false,
+    });
+    await client.flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const lastBody = fetchMock.mock.calls.at(-1)![1] as RequestInit;
+    const text = typeof lastBody.body === "string" ? lastBody.body : new TextDecoder().decode(lastBody.body as Uint8Array);
+    const ex = (JSON.parse(text) as ReportRequest).collectionFrames
+      .flatMap((f) => f.stackTraces)
+      .find((e) => e.stackTrace.includes("cleared"))!;
+    expect(ex.attributes?.a).toBeUndefined();
+    expect(ex.attributes?.b).toBeUndefined();
+  });
+
   it("does not record the SDK's own /api/report calls as network actions", () => {
     const client = makeClient();
 

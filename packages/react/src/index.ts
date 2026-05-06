@@ -4,6 +4,9 @@ export type {
   TracewayContextValue,
 } from "./provider.js";
 export { useTraceway } from "./use-traceway.js";
+export { useTracewayAttributes } from "./use-traceway-attributes.js";
+export { TracewayAttributes } from "./traceway-attributes.js";
+export type { TracewayAttributesProps } from "./traceway-attributes.js";
 export {
   TracewayErrorBoundary,
 } from "./error-boundary.js";

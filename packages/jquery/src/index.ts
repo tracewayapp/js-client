@@ -61,6 +61,10 @@ export {
   DISTRIBUTED_TRACE_HEADER,
   getActiveDistributedTraceId,
   createAxiosInterceptor,
+  setAttribute,
+  setAttributes,
+  removeAttribute,
+  clearAttributes,
 } from "@tracewayapp/frontend";
 
 declare global {

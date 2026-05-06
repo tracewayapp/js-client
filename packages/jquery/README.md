@@ -77,6 +77,37 @@ captureMessage("User completed checkout");
 await flush();
 ```
 
+## Custom Attributes (global scope)
+
+Attach app-level identifiers (`userId`, `tenant`, feature flags, etc.) once and have them ride along every subsequent session and exception:
+
+```ts
+import {
+  setAttribute,
+  setAttributes,
+  removeAttribute,
+  clearAttributes,
+} from "@tracewayapp/jquery";
+
+setAttribute("userId", "u_42");
+setAttributes({ tenant: "acme", plan: "pro" });
+
+// ...later, on logout / tenant switch:
+clearAttributes();
+```
+
+Layering order on each event: `auto-collected defaults < global scope < per-call attributes`. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#custom-attributes-global-scope) for the full mechanics.
+
+## Always-on Session Recording
+
+By default the SDK only ships a session-replay clip when an exception fires. Pass `recordAllSessions: true` to record every session continuously — see the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#always-on-session-recording) for the full description.
+
+```ts
+init("your-token@https://traceway.example.com/api/report", {
+  recordAllSessions: true,
+});
+```
+
 ## What Gets Captured Automatically
 
 - **`$.ajax` errors** — any AJAX call that hits jQuery's error path becomes a captured exception with `{ url, method, status }` attributes and a `${method} ${url} failed: ${status} ${message}` description
@@ -102,6 +133,7 @@ If the response to a failed `$.ajax` call contains a `traceway-trace-id` header 
 | `captureNetwork` | `true` | Record `fetch` / `XHR` as network actions |
 | `captureNavigation` | `true` | Record History API push / replace / pop as navigation actions |
 | `sessionRecording` | `true` | Enable the rrweb session recorder |
+| `recordAllSessions` | `false` | Always-on session recording (every segment uploaded continuously, full session row in the dashboard) |
 
 See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend) for the full options reference.
 

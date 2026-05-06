@@ -80,6 +80,31 @@ export function setDeviceAttributes(
   client.setDeviceAttributes(attributes);
 }
 
+/**
+ * Attach a key/value attribute to every exception emitted from here on.
+ * Persists in memory until removed. Layered above device attributes; per-call
+ * exception attributes still win.
+ */
+export function setAttribute(key: string, value: string): void {
+  if (!client) return;
+  client.setAttribute(key, value);
+}
+
+export function setAttributes(attrs: Record<string, string>): void {
+  if (!client) return;
+  client.setAttributes(attrs);
+}
+
+export function removeAttribute(key: string): void {
+  if (!client) return;
+  client.removeAttribute(key);
+}
+
+export function clearAttributes(): void {
+  if (!client) return;
+  client.clearAttributes();
+}
+
 export function captureException(
   error: Error,
   options?: { distributedTraceId?: string },

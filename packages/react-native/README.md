@@ -171,24 +171,24 @@ Each channel can be turned off individually via `TracewayProvider`'s `options`:
 >
 ```
 
-## Attributes (device info & globals)
+## Attributes
 
-Every captured exception ships with a `attributes` map. Two layers contribute:
+Every captured exception ships with an `attributes` map composed of three layers (per-call wins, then global scope, then device info):
 
-1. **Device info** — auto-collected at `init()` from React Native core APIs (no native modules required, works in Expo Go). The keys mirror what the [Flutter](https://github.com/tracewayapp/traceway-flutter) and [Android](https://github.com/tracewayapp/traceway-android) SDKs emit so the dashboard renders them consistently across platforms:
+### 1. Device info — auto-collected
 
-   | Key | Source |
-   |---|---|
-   | `os.name` | `Platform.OS` (`ios` / `android` / `web`) |
-   | `os.version` | `Platform.Version` |
-   | `screen.resolution` | `Dimensions.get("screen")` (whole pixels) |
-   | `screen.density` | `PixelRatio.get()` |
-   | `device.locale` | `Intl.DateTimeFormat().resolvedOptions().locale` |
-   | `runtime.engine` | `hermes` / `javascriptcore` |
+Auto-stamped at `init()` from React Native core APIs (no native modules required, works in Expo Go). The keys mirror what the [Flutter](https://github.com/tracewayapp/traceway-flutter) and [Android](https://github.com/tracewayapp/traceway-android) SDKs emit so the dashboard renders them consistently across platforms:
 
-2. **Per-call attributes** via `captureExceptionWithAttributes(error, attrs)` — these win on key collision.
+| Key | Source |
+|---|---|
+| `os.name` | `Platform.OS` (`ios` / `android` / `web`) |
+| `os.version` | `Platform.Version` |
+| `screen.resolution` | `Dimensions.get("screen")` (whole pixels) |
+| `screen.density` | `PixelRatio.get()` |
+| `device.locale` | `Intl.DateTimeFormat().resolvedOptions().locale` |
+| `runtime.engine` | `hermes` / `javascriptcore` |
 
-To replace or extend the auto-collected map at runtime (e.g. add a `tenant`, `build_channel`, or info from `expo-device` / `react-native-device-info` you've installed yourself):
+To replace or extend the auto-collected map at runtime (e.g. add info from `expo-device` / `react-native-device-info` you've installed yourself):
 
 ```ts
 import { setDeviceAttributes, collectSyncDeviceInfo } from "@tracewayapp/react-native";
@@ -198,18 +198,54 @@ setDeviceAttributes({
   ...collectSyncDeviceInfo(),  // keep the auto-collected ones
   "device.model": Device.modelName ?? "",
   "device.manufacturer": Device.manufacturer ?? "",
-  tenant: "acme-corp",
-  build_channel: process.env.EXPO_PUBLIC_BUILD_CHANNEL ?? "dev",
 });
 ```
 
-The same hook is exposed on `useTraceway()`:
+To opt out of device info collection entirely, pass `captureDeviceInfo: false` in `options`.
+
+### 2. Global scope — app-level identifiers
+
+Use the global scope for things tied to the **user / tenant / app state**, not the device: user id, organization id, build channel, feature flags, A/B bucket. Two ways to set it.
+
+**Declarative — `<TracewayAttributes>` or the `useTracewayAttributes` hook.** Pass a map; the SDK diffs against the previous map and pushes only the deltas. On unmount, every key the component owned is removed.
 
 ```tsx
-const { setDeviceAttributes } = useTraceway();
+import { TracewayAttributes, useTracewayAttributes } from "@tracewayapp/react-native";
+
+// As a component — drop in wherever you have user/tenant context:
+<TracewayAttributes attributes={user ? { userId: user.id, tenant: org.id } : null} />
+
+// Or as a hook:
+function App() {
+  useTracewayAttributes({ build_channel: "canary" });
+  return <RootNavigator />;
+}
 ```
 
-To opt out of the device info collection entirely, pass `captureDeviceInfo: false` in `options`.
+The hook accepts `null` / `undefined` as "empty map" — useful while user data loads or after logout.
+
+**Imperative — `setAttribute` / `setAttributes` / `removeAttribute` / `clearAttributes`.** Use these outside React component trees (auth listeners, background tasks):
+
+```ts
+import {
+  setAttribute,
+  setAttributes,
+  clearAttributes,
+} from "@tracewayapp/react-native";
+
+setAttribute("userId", "u_42");
+setAttributes({ tenant: "acme", plan: "pro" });
+// ...on logout:
+clearAttributes();
+```
+
+### 3. Per-call attributes
+
+`captureExceptionWithAttributes(error, attrs)` — wins on key collision over both layers above.
+
+### Layering
+
+For each captured exception: `device info < global scope < per-call`. The same precedence applies to sessions when always-on session recording is on.
 
 ## What Gets Captured Automatically
 

@@ -82,6 +82,59 @@ import { recordAction } from "@tracewayapp/frontend";
 recordAction("checkout", "payment_submitted", { amount: 42 });
 ```
 
+## Custom Attributes (global scope)
+
+Attach app-level identifiers (`userId`, `tenant`, feature flags, etc.) once and have them ride along every subsequent session and exception:
+
+```ts
+import {
+  setAttribute,
+  setAttributes,
+  removeAttribute,
+  clearAttributes,
+} from "@tracewayapp/vue";
+
+setAttribute("userId", "u_42");
+setAttributes({ tenant: "acme", plan: "pro" });
+
+// ...later, on logout / tenant switch:
+clearAttributes();
+```
+
+In a Vue component, drive the scope from a `watchEffect` so it tracks reactive state:
+
+```vue
+<script setup>
+import { watchEffect } from "vue";
+import { setAttributes, clearAttributes } from "@tracewayapp/vue";
+import { useUser } from "./auth";
+
+const { user, org } = useUser();
+watchEffect(() => {
+  if (user.value && org.value) {
+    setAttributes({ userId: user.value.id, tenant: org.value.id });
+  } else {
+    clearAttributes();
+  }
+});
+</script>
+```
+
+Layering order on each event: `auto-collected defaults < global scope < per-call attributes`. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#custom-attributes-global-scope) for the full mechanics.
+
+## Always-on Session Recording
+
+Pass `recordAllSessions: true` to upload full sessions continuously (not just exception-bound clips):
+
+```ts
+app.use(createTracewayPlugin({
+  connectionString: "your-token@https://traceway.example.com/api/report",
+  options: { recordAllSessions: true, version: "1.0.0" },
+}));
+```
+
+See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#always-on-session-recording) for the full description.
+
 ## Options
 
 The `options` field forwards directly to [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend). The most-used flags:
@@ -94,6 +147,7 @@ The `options` field forwards directly to [`@tracewayapp/frontend`](https://www.n
 | `captureNetwork` | `true` | Record `fetch` / `XHR` as network actions |
 | `captureNavigation` | `true` | Record History API push / replace / pop as navigation actions |
 | `sessionRecording` | `true` | Enable the rrweb session recorder |
+| `recordAllSessions` | `false` | Always-on session recording (every ~30 s segment uploaded continuously) |
 | `eventsWindowMs` | `10000` | Rolling window kept in the log/action buffers (ms) |
 | `eventsMaxCount` | `200` | Hard cap applied independently to logs and actions |
 

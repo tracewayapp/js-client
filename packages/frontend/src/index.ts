@@ -95,6 +95,35 @@ export async function flush(timeoutMs?: number): Promise<void> {
   await client.flush(timeoutMs);
 }
 
+/**
+ * Attach a key/value attribute to every session and exception emitted from
+ * here on (e.g. `setAttribute("userId", "42")`). Persists in memory until
+ * cleared. If a session is already open, the attribute lands on it via a
+ * refresh upsert.
+ */
+export function setAttribute(key: string, value: string): void {
+  if (!client) return;
+  client.setAttribute(key, value);
+}
+
+/** Bulk version of setAttribute. Caller's keys overwrite existing scope. */
+export function setAttributes(attrs: Record<string, string>): void {
+  if (!client) return;
+  client.setAttributes(attrs);
+}
+
+/** Remove a single key from the global scope. */
+export function removeAttribute(key: string): void {
+  if (!client) return;
+  client.removeAttribute(key);
+}
+
+/** Clear all attributes set via setAttribute / setAttributes. */
+export function clearAttributes(): void {
+  if (!client) return;
+  client.clearAttributes();
+}
+
 export { TracewayFrontendClient, DEFAULT_IGNORE_PATTERNS } from "./client.js";
 export type { TracewayFrontendOptions } from "./client.js";
 export { formatBrowserStackTrace } from "./stack-trace.js";
