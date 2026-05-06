@@ -19,6 +19,19 @@ export interface SessionLifecycleOptions {
   checkIntervalMs?: number;
   onSessionEnd: () => void;
   onSoftFlush?: () => void;
+  /**
+   * Fires synchronously *before* `onSessionEnd` when the page is actually
+   * unloading (`pagehide`). The client uses this to flip an `unloading`
+   * flag so the closing flush picks the keepalive transport path.
+   */
+  onUnloading?: () => void;
+  /**
+   * Fires when the page is restored from the back/forward (bfcache) — i.e.
+   * `pageshow` with `event.persisted === true`. The previous session was
+   * closed at `pagehide`; this is the SDK's signal to start a fresh one
+   * with a new sessionId.
+   */
+  onSessionRestart?: () => void;
 }
 
 export class SessionLifecycle {
@@ -27,6 +40,8 @@ export class SessionLifecycle {
   private checkIntervalMs: number;
   private onSessionEnd: () => void;
   private onSoftFlush: () => void;
+  private onUnloading: () => void;
+  private onSessionRestart: () => void;
 
   private startedAtMs: number;
   private lastActivityMs: number;
@@ -36,6 +51,7 @@ export class SessionLifecycle {
 
   private boundPagehide = () => this.handlePagehide();
   private boundVisibility = () => this.handleVisibility();
+  private boundPageshow = (e: PageTransitionEvent) => this.handlePageshow(e);
 
   constructor(options: SessionLifecycleOptions) {
     this.inactivityMs = options.inactivityMs ?? 15 * 60_000;
@@ -43,6 +59,8 @@ export class SessionLifecycle {
     this.checkIntervalMs = options.checkIntervalMs ?? 30_000;
     this.onSessionEnd = options.onSessionEnd;
     this.onSoftFlush = options.onSoftFlush ?? (() => {});
+    this.onUnloading = options.onUnloading ?? (() => {});
+    this.onSessionRestart = options.onSessionRestart ?? (() => {});
 
     const now = Date.now();
     this.startedAtMs = now;
@@ -52,6 +70,7 @@ export class SessionLifecycle {
   install(): void {
     if (this.installed || typeof window === "undefined") return;
     window.addEventListener("pagehide", this.boundPagehide);
+    window.addEventListener("pageshow", this.boundPageshow);
     document.addEventListener("visibilitychange", this.boundVisibility);
     this.timer = setInterval(() => this.tick(), this.checkIntervalMs);
     this.installed = true;
@@ -60,6 +79,7 @@ export class SessionLifecycle {
   uninstall(): void {
     if (!this.installed) return;
     window.removeEventListener("pagehide", this.boundPagehide);
+    window.removeEventListener("pageshow", this.boundPageshow);
     document.removeEventListener("visibilitychange", this.boundVisibility);
     if (this.timer !== null) {
       clearInterval(this.timer);
@@ -97,7 +117,27 @@ export class SessionLifecycle {
   }
 
   private handlePagehide(): void {
+    try {
+      this.onUnloading();
+    } catch {
+      // ignore
+    }
     this.endSession();
+  }
+
+  private handlePageshow(event: PageTransitionEvent): void {
+    // event.persisted === true means the browser restored the page from
+    // bfcache (back/forward navigation). The previous session was already
+    // closed by pagehide; the client needs a fresh one. The persisted ===
+    // false case is just the initial page load, which the SDK handled at
+    // construction time — nothing to do.
+    if (!event.persisted) return;
+    this.reset();
+    try {
+      this.onSessionRestart();
+    } catch {
+      // ignore
+    }
   }
 
   private handleVisibility(): void {

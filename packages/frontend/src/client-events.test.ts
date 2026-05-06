@@ -258,6 +258,125 @@ describe("TracewayFrontendClient timeline events", () => {
     expect(closing!.startedAt).toBeTruthy();
   });
 
+  it("pagehide flushes the closing payload via fetch keepalive", async () => {
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      {
+        debounceMs: 0,
+        recordAllSessions: true,
+        ignoreErrors: [],
+      },
+    );
+    const sid = client.currentSessionId();
+
+    // Block sendBeacon so the keepalive fetch path is exercised.
+    vi.stubGlobal("navigator", { ...navigator, sendBeacon: undefined });
+
+    window.dispatchEvent(new Event("pagehide"));
+
+    // The pagehide handler runs synchronously and dispatches an async sync;
+    // wait for the fetch promise chain to resolve.
+    await new Promise((r) => setTimeout(r, 10));
+
+    const fetchMock = vi.mocked(fetch);
+    const keepaliveCall = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.keepalive === true);
+    expect(keepaliveCall).toBeDefined();
+
+    // Keepalive path skips gzip and sends raw JSON so the fetch can dispatch
+    // synchronously inside the pagehide handler. Body should be a plain
+    // string, no Content-Encoding header.
+    const init = keepaliveCall![1] as RequestInit;
+    expect(typeof init.body).toBe("string");
+    expect((init.headers as Record<string, string>)["Content-Encoding"]).toBeUndefined();
+
+    const body = JSON.parse(init.body as string) as ReportRequest;
+    const closing = body.collectionFrames
+      .flatMap((f) => f.sessions ?? [])
+      .find((s) => s.id === sid && s.endedAt);
+    expect(closing).toBeDefined();
+
+    void client.flush();
+  });
+
+  it("bfcache restore generates a new sessionId and clears the unloading flag", async () => {
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      {
+        debounceMs: 0,
+        recordAllSessions: true,
+        ignoreErrors: [],
+      },
+    );
+    const original = client.currentSessionId();
+    expect(original).toBeTruthy();
+
+    // Close the page.
+    window.dispatchEvent(new Event("pagehide"));
+
+    // Drain microtasks so the pagehide-triggered doSync fully resolves
+    // (releases the isSyncing guard) before we restart. In a real browser
+    // the bfcache freeze gives plenty of time for this; in synchronous
+    // test code we have to wait explicitly.
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Restore from bfcache.
+    const restore = new Event("pageshow") as PageTransitionEvent;
+    Object.defineProperty(restore, "persisted", { value: true });
+    window.dispatchEvent(restore);
+
+    const restored = client.currentSessionId();
+    expect(restored).toBeTruthy();
+    expect(restored).not.toBe(original);
+
+    // Subsequent syncs after restart must go back to the gzipped
+    // (non-keepalive) path. Find any fetch call that carries the new
+    // session id and confirm it didn't use keepalive.
+    client.recordLog("info", "post-restore");
+    await client.flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const decoder = new TextDecoder();
+    const restoredCall = fetchMock.mock.calls.find((call) => {
+      const init = call[1] as RequestInit | undefined;
+      const body = init?.body;
+      const text =
+        typeof body === "string" ? body :
+        body instanceof Uint8Array ? decoder.decode(body) :
+        "";
+      return text.includes(restored!) && !text.includes(`"id":"${original}"`);
+    });
+    expect(restoredCall).toBeDefined();
+    expect((restoredCall![1] as RequestInit).keepalive).not.toBe(true);
+  });
+
+  it("does not record the SDK's own /api/report calls as network actions", () => {
+    const client = makeClient();
+
+    // App's own request — should be recorded.
+    client.recordNetworkEvent({
+      method: "GET",
+      url: "https://api.example.com/orders",
+      durationMs: 12,
+    });
+
+    // SDK self-upload — should be filtered.
+    client.recordNetworkEvent({
+      method: "POST",
+      url: "https://example.com/api/report",
+      durationMs: 80,
+    });
+    // And the same URL with a query suffix (defensive).
+    client.recordNetworkEvent({
+      method: "POST",
+      url: "https://example.com/api/report?token=abc",
+      durationMs: 80,
+    });
+
+    const actions = client.bufferedActions();
+    expect(actions).toHaveLength(1);
+    expect((actions[0] as any).url).toBe("https://api.example.com/orders");
+  });
+
   it("logs and actions are independently capped at 200 entries", () => {
     const client = makeClient();
     for (let i = 0; i < 250; i++) {

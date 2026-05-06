@@ -33,7 +33,7 @@ export class SessionRecorder {
   private onActivity: SessionRecorderOptions["onActivity"];
 
   constructor(options: SessionRecorderOptions = {}) {
-    this.segmentDuration = options.segmentDuration ?? 10_000;
+    this.segmentDuration = options.segmentDuration ?? 30_000;
     this.current = this.newSegment();
     this.onSegmentReady = options.onSegmentReady;
     this.onActivity = options.onActivity;

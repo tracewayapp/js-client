@@ -127,6 +127,12 @@ export class TracewayFrontendClient {
   private sessionId: string | null = null;
   private sessionStartedAt: string | null = null;
   private segmentIndex = 0;
+  /**
+   * Set true once the page begins unloading (`pagehide`). Forces the next
+   * sync to use fetch keepalive / sendBeacon so the closing-session payload
+   * survives the navigation.
+   */
+  private unloading = false;
 
   private ignoreErrors: Array<string | RegExp>;
   private beforeCapture:
@@ -154,9 +160,15 @@ export class TracewayFrontendClient {
     this.captureNetwork = options.captureNetwork ?? true;
     this.captureNavigation = options.captureNavigation ?? true;
 
+    // When always-on session recording is on, segments rotate every 30 s and
+    // drain the logs/actions buffers on each rotation. The window/cap need to
+    // span a full segment so we don't ship a partial slice. When always-on is
+    // off, keep the legacy 10 s / 200 cap — the rolling buffer powers the
+    // exception-bound clip and shouldn't grow unbounded.
+    const alwaysOn = options.recordAllSessions === true;
     const bufferOpts = {
-      windowMs: options.eventsWindowMs ?? 10_000,
-      maxSize: options.eventsMaxCount ?? 200,
+      windowMs: options.eventsWindowMs ?? (alwaysOn ? 30_000 : 10_000),
+      maxSize: options.eventsMaxCount ?? (alwaysOn ? 600 : 200),
     };
     this.logs = new EventBuffer<LogEvent>(bufferOpts);
     this.actions = new EventBuffer<NetworkEvent | NavigationEvent | CustomEvent>(bufferOpts);
@@ -171,7 +183,11 @@ export class TracewayFrontendClient {
     if (this.recordAllSessions && hasWindow) {
       this.beginSession();
       this.lifecycle = new SessionLifecycle({
+        onUnloading: () => {
+          this.unloading = true;
+        },
         onSessionEnd: () => this.endSession(),
+        onSessionRestart: () => this.restartSession(),
         onSoftFlush: () => {
           if (this.pendingSessions.length > 0 || this.pendingRecordings.length > 0) {
             this.scheduleSync();
@@ -226,7 +242,27 @@ export class TracewayFrontendClient {
       endedAt: nowISO(),
     });
 
-    this.scheduleSync();
+    // On unload paths the debounce timer never fires — flush directly so the
+    // closing payload rides out on fetch keepalive / sendBeacon.
+    if (this.unloading) {
+      if (this.debounceTimer !== null) {
+        clearTimeout(this.debounceTimer);
+        this.debounceTimer = null;
+      }
+      void this.doSync();
+    } else {
+      this.scheduleSync();
+    }
+  }
+
+  /**
+   * Begin a fresh session after the page came back from bfcache. The previous
+   * session was closed by `pagehide`; we generate a new sessionId and reset
+   * the unloading flag so subsequent syncs go back to the gzipped path.
+   */
+  private restartSession(): void {
+    this.unloading = false;
+    this.beginSession();
   }
 
   private handleSegmentReady(segment: { events: unknown[]; startedAt: string; endedAt: string }): void {
@@ -237,13 +273,23 @@ export class TracewayFrontendClient {
 
   private queueSegment(segment: { events: unknown[]; startedAt: string; endedAt: string }): void {
     if (!this.sessionId) return;
-    this.pendingRecordings.push({
+    // Drain the rolling logs/actions buffers and attach them to this segment.
+    // Clearing prevents segment N+1 from re-shipping the same entries.
+    const logs = this.logs.snapshot();
+    const actions = this.actions.snapshot();
+    if (logs.length > 0) this.logs.clear();
+    if (actions.length > 0) this.actions.clear();
+
+    const payload: SessionRecordingPayload = {
       sessionId: this.sessionId,
       segmentIndex: this.segmentIndex++,
       events: segment.events,
       startedAt: segment.startedAt,
       endedAt: segment.endedAt,
-    });
+    };
+    if (logs.length > 0) payload.logs = logs;
+    if (actions.length > 0) payload.actions = actions;
+    this.pendingRecordings.push(payload);
   }
 
   /** @internal — exposed for tests. */
@@ -260,6 +306,10 @@ export class TracewayFrontendClient {
 
   recordNetworkEvent(event: Omit<NetworkEvent, "type" | "timestamp"> & { timestamp?: string }): void {
     if (!this.captureNetwork) return;
+    // Don't record the SDK's own report uploads — otherwise every segment
+    // flush would be captured as a "network action" and end up in the next
+    // segment's actions buffer, creating a self-referential tail.
+    if (this.isOwnReportUrl(event.url)) return;
     this.actions.add({
       type: "network",
       timestamp: event.timestamp ?? nowISO(),
@@ -271,6 +321,16 @@ export class TracewayFrontendClient {
       responseBytes: event.responseBytes,
       error: event.error,
     });
+  }
+
+  private isOwnReportUrl(url: string): boolean {
+    if (!url) return false;
+    if (url === this.apiUrl) return true;
+    // Match URLs that start with apiUrl plus a query/fragment suffix
+    // (defensive — the keepalive path used to append `?token=` for the
+    // dropped sendBeacon fallback).
+    if (url.startsWith(this.apiUrl + "?") || url.startsWith(this.apiUrl + "#")) return true;
+    return false;
   }
 
   recordNavigationEvent(event: Omit<NavigationEvent, "type" | "timestamp"> & { timestamp?: string }): void {
@@ -435,6 +495,7 @@ export class TracewayFrontendClient {
         this.apiUrl,
         this.token,
         JSON.stringify(payload),
+        this.unloading ? { keepalive: true } : undefined,
       );
       if (!success) {
         failed = true;
