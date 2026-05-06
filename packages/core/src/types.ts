@@ -6,6 +6,13 @@ export interface ExceptionStackTrace {
   attributes?: Record<string, string>;
   isMessage: boolean;
   sessionRecordingId?: string | null;
+  /**
+   * Persistent session UUID set by the SDK when `recordAllSessions: true`. Lets
+   * the backend link the exception to the parent `sessions` row and to all
+   * segments under that session — independent of the legacy
+   * `sessionRecordingId` (which is per-exception).
+   */
+  sessionId?: string | null;
   distributedTraceId?: string | null;
 }
 
@@ -42,10 +49,34 @@ export interface CollectionFrame {
   metrics: MetricRecord[];
   traces: Trace[];
   sessionRecordings?: SessionRecordingPayload[];
+  /**
+   * Sessions started or ended in this frame. The backend upserts by id, so
+   * sending the same session twice (initial open with endedAt unset, final
+   * close with endedAt populated) is the intended pattern.
+   */
+  sessions?: SessionPayload[];
+}
+
+export interface SessionPayload {
+  /** SDK-generated session UUID; persistent for the page lifecycle. */
+  id: string;
+  startedAt: string;
+  endedAt?: string;
+  clientIP?: string;
+  attributes?: Record<string, string>;
+  distributedTraceId?: string;
 }
 
 export interface SessionRecordingPayload {
-  exceptionId: string;
+  /**
+   * Per-exception ID. Empty/unset for always-on segments that are not tied
+   * to a specific exception.
+   */
+  exceptionId?: string;
+  /** Parent session UUID — set when always-on session recording is active. */
+  sessionId?: string;
+  /** Monotonically increasing per-session segment counter starting at 0. */
+  segmentIndex?: number;
   /** Replay frames (rrweb events on the web, MP4 chunks on native). */
   events: unknown[];
   /**

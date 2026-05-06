@@ -4,6 +4,7 @@ export type {
   Span,
   Trace,
   CollectionFrame,
+  SessionPayload,
   SessionRecordingPayload,
   ReportRequest,
   TracewayOptions,

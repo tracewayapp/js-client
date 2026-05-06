@@ -162,6 +162,102 @@ describe("TracewayFrontendClient timeline events", () => {
     ]);
   });
 
+  it("recordAllSessions emits a SessionPayload with the persistent sessionId on first sync", async () => {
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      {
+        debounceMs: 0,
+        sessionRecording: false,
+        recordAllSessions: true,
+        ignoreErrors: [],
+      },
+    );
+    await client.flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const body = JSON.parse(
+      new TextDecoder().decode(
+        fetchMock.mock.calls[0]![1]!.body as Uint8Array,
+      ),
+    ) as ReportRequest;
+    const frame = body.collectionFrames[0]!;
+    expect(frame.sessions).toBeDefined();
+    expect(frame.sessions!.length).toBeGreaterThanOrEqual(1);
+    const opening = frame.sessions![0]!;
+    expect(opening.id).toBe(client.currentSessionId());
+    expect(opening.startedAt).toBeTruthy();
+  });
+
+  it("addException during always-on sessions stamps sessionId AND emits the per-exception 10s clip", async () => {
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      {
+        debounceMs: 0,
+        sessionRecording: false,
+        recordAllSessions: true,
+        ignoreErrors: [],
+      },
+    );
+    const sid = client.currentSessionId();
+    expect(sid).toBeTruthy();
+
+    // Buffer some timeline data so the legacy clip path has something to ship.
+    client.recordLog("warn", "user tapped pay");
+    client.recordAction("cart", "add_item", { sku: "SKU-1" });
+
+    client.addException({
+      traceId: null,
+      stackTrace: "Error: boom",
+      recordedAt: new Date().toISOString(),
+      isMessage: false,
+    });
+
+    await client.flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const allBodies = fetchMock.mock.calls.map((c) =>
+      JSON.parse(new TextDecoder().decode(c[1]!.body as Uint8Array)) as ReportRequest,
+    );
+    const allFrames = allBodies.flatMap((b) => b.collectionFrames);
+    const ex = allFrames.flatMap((f) => f.stackTraces).find((s) => s.stackTrace.includes("boom"))!;
+
+    // Both linkages must be present — sessionId for the dashboard link,
+    // sessionRecordingId for the per-exception 10s clip.
+    expect(ex.sessionId).toBe(sid);
+    expect(ex.sessionRecordingId).toBeTruthy();
+
+    const recordings = allFrames.flatMap((f) => f.sessionRecordings ?? []);
+    const exceptionClip = recordings.find((r) => r.exceptionId === ex.sessionRecordingId);
+    expect(exceptionClip).toBeDefined();
+    expect(exceptionClip!.logs).toBeDefined();
+  });
+
+  it("flush emits a closing SessionPayload with endedAt populated", async () => {
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      {
+        debounceMs: 0,
+        sessionRecording: false,
+        recordAllSessions: true,
+        ignoreErrors: [],
+      },
+    );
+    const sid = client.currentSessionId();
+    await client.flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const allBodies = fetchMock.mock.calls.map((c) =>
+      JSON.parse(new TextDecoder().decode(c[1]!.body as Uint8Array)) as ReportRequest,
+    );
+    const allSessions = allBodies
+      .flatMap((b) => b.collectionFrames)
+      .flatMap((f) => f.sessions ?? []);
+
+    const closing = allSessions.find((s) => s.id === sid && s.endedAt);
+    expect(closing).toBeDefined();
+    expect(closing!.startedAt).toBeTruthy();
+  });
+
   it("logs and actions are independently capped at 200 entries", () => {
     const client = makeClient();
     for (let i = 0; i < 250; i++) {

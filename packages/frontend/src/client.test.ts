@@ -81,7 +81,10 @@ describe("TracewayFrontendClient", () => {
         .mockResolvedValue({ status: 200 }),
     );
 
-    const client = createClient(0);
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      { debounceMs: 0, retryDelayMs: 10 },
+    );
     client.addException({
       traceId: null,
       stackTrace: "Error: test",
@@ -89,7 +92,7 @@ describe("TracewayFrontendClient", () => {
       isMessage: false,
     });
 
-    await sleep(50);
+    await sleep(80);
 
     expect(vi.mocked(fetch).mock.calls.length).toBe(2);
   });

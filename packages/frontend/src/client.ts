@@ -2,6 +2,7 @@ import type {
   ExceptionStackTrace,
   ReportRequest,
   CollectionFrame,
+  SessionPayload,
   SessionRecordingPayload,
   LogEvent,
   NetworkEvent,
@@ -12,6 +13,7 @@ import type {
 import { parseConnectionString, generateUUID, EventBuffer, nowISO } from "@tracewayapp/core";
 import { sendReport } from "./transport.js";
 import { SessionRecorder } from "./session-recorder.js";
+import { SessionLifecycle } from "./session-lifecycle.js";
 
 interface RrwebLikeEvent {
   timestamp?: number;
@@ -78,6 +80,18 @@ export interface TracewayFrontendOptions {
   version?: string;
   sessionRecording?: boolean;
   sessionRecordingSegmentDuration?: number;
+  /**
+   * Upload every ~10 s segment of the session regardless of whether an
+   * exception fires. Each segment becomes its own `session_recordings` row on
+   * the backend, all linked to a parent `sessions` row by `sessionId`.
+   *
+   *   - Inactivity timeout: 15 min ends the session.
+   *   - Max duration: 60 min ends the session.
+   *   - `pagehide` ends the session and triggers a final flush.
+   *
+   * Defaults to false to preserve the existing exception-only behaviour.
+   */
+  recordAllSessions?: boolean;
   ignoreErrors?: Array<string | RegExp>;
   beforeCapture?: (exception: ExceptionStackTrace) => boolean;
   /** Mirror console.{log,info,warn,error,debug} into the rolling log buffer. Default true. */
@@ -102,11 +116,17 @@ export class TracewayFrontendClient {
 
   private pendingExceptions: ExceptionStackTrace[] = [];
   private pendingRecordings: SessionRecordingPayload[] = [];
+  private pendingSessions: SessionPayload[] = [];
   private isSyncing = false;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private recorder: SessionRecorder | null = null;
+  private lifecycle: SessionLifecycle | null = null;
+  private readonly recordAllSessions: boolean;
+  private sessionId: string | null = null;
+  private sessionStartedAt: string | null = null;
+  private segmentIndex = 0;
 
   private ignoreErrors: Array<string | RegExp>;
   private beforeCapture:
@@ -141,12 +161,94 @@ export class TracewayFrontendClient {
     this.logs = new EventBuffer<LogEvent>(bufferOpts);
     this.actions = new EventBuffer<NetworkEvent | NavigationEvent | CustomEvent>(bufferOpts);
 
-    if (options.sessionRecording !== false && typeof window !== "undefined") {
-      this.recorder = new SessionRecorder({
-        segmentDuration: options.sessionRecordingSegmentDuration,
+    this.recordAllSessions = options.recordAllSessions ?? false;
+    const hasWindow = typeof window !== "undefined";
+
+    // The always-on session/lifecycle path runs even when sessionRecording is
+    // disabled — exceptions still get stamped with sessionId and the parent
+    // sessions row is still created. Without a recorder, no rrweb segments
+    // ride along, but the linkage in the dashboard remains intact.
+    if (this.recordAllSessions && hasWindow) {
+      this.beginSession();
+      this.lifecycle = new SessionLifecycle({
+        onSessionEnd: () => this.endSession(),
+        onSoftFlush: () => {
+          if (this.pendingSessions.length > 0 || this.pendingRecordings.length > 0) {
+            this.scheduleSync();
+          }
+        },
       });
+      this.lifecycle.install();
+    }
+
+    if (options.sessionRecording !== false && hasWindow) {
+      const recorderOptions: ConstructorParameters<typeof SessionRecorder>[0] = {
+        segmentDuration: options.sessionRecordingSegmentDuration,
+      };
+      if (this.recordAllSessions) {
+        recorderOptions.onSegmentReady = (seg) => this.handleSegmentReady(seg);
+        // rrweb's emit fires for every DOM mutation/input event — use it as
+        // the lifecycle's activity heartbeat so we don't double-listen on
+        // window for mousedown/keydown/scroll/etc.
+        recorderOptions.onActivity = () => this.lifecycle?.markActivity();
+      }
+      this.recorder = new SessionRecorder(recorderOptions);
       this.recorder.start();
     }
+  }
+
+  // ── Session lifecycle (always-on) ──────────────────────────────────────
+
+  private beginSession(): void {
+    this.sessionId = generateUUID();
+    this.sessionStartedAt = nowISO();
+    this.segmentIndex = 0;
+    this.pendingSessions.push({
+      id: this.sessionId,
+      startedAt: this.sessionStartedAt,
+    });
+    this.scheduleSync();
+  }
+
+  private endSession(): void {
+    if (!this.sessionId || !this.sessionStartedAt) return;
+
+    if (this.recorder) {
+      const drained = this.recorder.drainCurrent();
+      if (drained && drained.events.length > 0) {
+        this.queueSegment(drained);
+      }
+    }
+
+    this.pendingSessions.push({
+      id: this.sessionId,
+      startedAt: this.sessionStartedAt,
+      endedAt: nowISO(),
+    });
+
+    this.scheduleSync();
+  }
+
+  private handleSegmentReady(segment: { events: unknown[]; startedAt: string; endedAt: string }): void {
+    if (!this.sessionId) return;
+    this.queueSegment(segment);
+    this.scheduleSync();
+  }
+
+  private queueSegment(segment: { events: unknown[]; startedAt: string; endedAt: string }): void {
+    if (!this.sessionId) return;
+    this.pendingRecordings.push({
+      sessionId: this.sessionId,
+      segmentIndex: this.segmentIndex++,
+      events: segment.events,
+      startedAt: segment.startedAt,
+      endedAt: segment.endedAt,
+    });
+  }
+
+  /** @internal — exposed for tests. */
+  currentSessionId(): string | null {
+    return this.sessionId;
   }
 
   // ── Timeline event recording ────────────────────────────────────────────
@@ -231,6 +333,13 @@ export class TracewayFrontendClient {
       logSnapshot.length > 0 ||
       actionSnapshot.length > 0;
 
+    // Tag the exception with the parent session id (if always-on is on) so
+    // the dashboard can show a "View full session" link. Sessions and the
+    // per-exception 10 s clip are independent attachments — both ride along.
+    if (this.recordAllSessions && this.sessionId) {
+      exception.sessionId = this.sessionId;
+    }
+
     if (hasTimelineData) {
       const exceptionId = generateUUID();
       exception.sessionRecordingId = exceptionId;
@@ -293,17 +402,25 @@ export class TracewayFrontendClient {
 
   private async doSync(): Promise<void> {
     if (this.isSyncing) return;
-    if (this.pendingExceptions.length === 0) return;
+    if (
+      this.pendingExceptions.length === 0 &&
+      this.pendingRecordings.length === 0 &&
+      this.pendingSessions.length === 0
+    ) {
+      return;
+    }
 
     this.isSyncing = true;
     const batch = this.pendingExceptions.splice(0);
     const recordings = this.pendingRecordings.splice(0);
+    const sessions = this.pendingSessions.splice(0);
 
     const frame: CollectionFrame = {
       stackTraces: batch,
       metrics: [],
       traces: [],
       sessionRecordings: recordings.length > 0 ? recordings : undefined,
+      sessions: sessions.length > 0 ? sessions : undefined,
     };
 
     const payload: ReportRequest = {
@@ -323,6 +440,7 @@ export class TracewayFrontendClient {
         failed = true;
         this.pendingExceptions.unshift(...batch);
         this.pendingRecordings.unshift(...recordings);
+        this.pendingSessions.unshift(...sessions);
         if (this.debug) {
           console.error("Traceway: sync failed, re-queued exceptions");
         }
@@ -331,12 +449,17 @@ export class TracewayFrontendClient {
       failed = true;
       this.pendingExceptions.unshift(...batch);
       this.pendingRecordings.unshift(...recordings);
+      this.pendingSessions.unshift(...sessions);
       if (this.debug) {
         console.error("Traceway: sync error:", err);
       }
     } finally {
       this.isSyncing = false;
-      if (this.pendingExceptions.length > 0) {
+      if (
+        this.pendingExceptions.length > 0 ||
+        this.pendingRecordings.length > 0 ||
+        this.pendingSessions.length > 0
+      ) {
         if (failed) {
           this.scheduleRetry();
         } else {
@@ -362,6 +485,12 @@ export class TracewayFrontendClient {
     if (this.retryTimer !== null) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
+    }
+    if (this.lifecycle) {
+      this.lifecycle.uninstall();
+    }
+    if (this.recordAllSessions) {
+      this.endSession();
     }
     if (this.recorder) {
       this.recorder.stop();
