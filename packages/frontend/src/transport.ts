@@ -30,10 +30,12 @@ export async function compressGzip(data: string): Promise<Uint8Array> {
 
 export interface SendReportOptions {
   /**
-   * Set to true on session-end paths (pagehide/unload). Uses fetch keepalive
-   * so the request survives navigation, falling back to navigator.sendBeacon
-   * when keepalive isn't supported (older Safari). Bodies are capped at 64 KB
-   * by the browser in keepalive mode — fine for a closing-session payload.
+   * Set to true on session-end paths (pagehide/unload). Skips gzip and
+   * dispatches synchronously with `fetch(..., { keepalive: true })` so the
+   * request survives navigation. Body is plain JSON — the backend's gzip
+   * middleware bypasses decompression when `Content-Encoding` is absent.
+   * Browser keepalive caps bodies at 64 KB, plenty for a closing-session
+   * payload (final drained segment + closing `ClientSession` row).
    */
   keepalive?: boolean;
 }

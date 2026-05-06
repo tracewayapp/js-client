@@ -7,7 +7,8 @@ export interface SessionRecorderOptions {
    * Fires when a segment fills up and rotates out (i.e., when `current`
    * becomes `previous`). The handed-off segment is not yet uploaded — the
    * caller decides whether to flush it. Used by the always-on path to drop
-   * each completed ~10s segment onto the upload queue immediately.
+   * each completed segment onto the upload queue immediately. Segment length
+   * is set by `segmentDuration` (default 30 s).
    */
   onSegmentReady?: (segment: { events: eventWithTime[]; startedAt: string; endedAt: string }) => void;
   /**

@@ -82,9 +82,10 @@ export interface TracewayFrontendOptions {
   sessionRecording?: boolean;
   sessionRecordingSegmentDuration?: number;
   /**
-   * Upload every ~10 s segment of the session regardless of whether an
-   * exception fires. Each segment becomes its own `session_recordings` row on
-   * the backend, all linked to a parent `sessions` row by `sessionId`.
+   * Upload every segment of the session regardless of whether an exception
+   * fires. Each segment (default ~30 s, see `sessionRecordingSegmentDuration`)
+   * becomes its own `session_recordings` row on the backend, all linked to a
+   * parent `sessions` row by `sessionId`.
    *
    *   - Inactivity timeout: 15 min ends the session.
    *   - Max duration: 60 min ends the session.
@@ -137,8 +138,8 @@ export class TracewayFrontendClient {
   private globalAttributes: Record<string, string> = {};
   /**
    * Set true once the page begins unloading (`pagehide`). Forces the next
-   * sync to use fetch keepalive / sendBeacon so the closing-session payload
-   * survives the navigation.
+   * sync to dispatch via `fetch(..., { keepalive: true })` with a raw JSON
+   * body so the closing-session payload survives the navigation.
    */
   private unloading = false;
 
@@ -331,7 +332,7 @@ export class TracewayFrontendClient {
     });
 
     // On unload paths the debounce timer never fires — flush directly so the
-    // closing payload rides out on fetch keepalive / sendBeacon.
+    // closing payload rides out on fetch keepalive.
     if (this.unloading) {
       if (this.debounceTimer !== null) {
         clearTimeout(this.debounceTimer);
@@ -414,9 +415,8 @@ export class TracewayFrontendClient {
   private isOwnReportUrl(url: string): boolean {
     if (!url) return false;
     if (url === this.apiUrl) return true;
-    // Match URLs that start with apiUrl plus a query/fragment suffix
-    // (defensive — the keepalive path used to append `?token=` for the
-    // dropped sendBeacon fallback).
+    // Defensive: match URLs that start with apiUrl plus a query/fragment
+    // suffix, in case the transport ever appends one for diagnostics.
     if (url.startsWith(this.apiUrl + "?") || url.startsWith(this.apiUrl + "#")) return true;
     return false;
   }
@@ -491,7 +491,9 @@ export class TracewayFrontendClient {
 
     // Tag the exception with the parent session id (if always-on is on) so
     // the dashboard can show a "View full session" link. Sessions and the
-    // per-exception 10 s clip are independent attachments — both ride along.
+    // per-exception clip are independent attachments — both ride along. The
+    // clip captures the rolling timeline window (default 10 s; bumped to
+    // match `sessionRecordingSegmentDuration` when always-on is active).
     if (this.recordAllSessions && this.sessionId) {
       exception.sessionId = this.sessionId;
     }

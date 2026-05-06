@@ -269,9 +269,6 @@ describe("TracewayFrontendClient timeline events", () => {
     );
     const sid = client.currentSessionId();
 
-    // Block sendBeacon so the keepalive fetch path is exercised.
-    vi.stubGlobal("navigator", { ...navigator, sendBeacon: undefined });
-
     window.dispatchEvent(new Event("pagehide"));
 
     // The pagehide handler runs synchronously and dispatches an async sync;
