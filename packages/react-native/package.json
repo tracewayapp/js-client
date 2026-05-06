@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/react-native",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Traceway React Native SDK — error tracking with last-10s session context for iOS, Android and Expo apps",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -24,7 +24,7 @@
     "test": "vitest run --project react-native --root ../.."
   },
   "dependencies": {
-    "@tracewayapp/core": "1.0.6",
+    "@tracewayapp/core": "1.0.7",
     "fflate": "^0.8.2"
   },
   "peerDependencies": {

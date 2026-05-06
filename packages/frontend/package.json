@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/frontend",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Traceway SDK for browser environments",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -25,7 +25,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/core": "1.0.6",
+    "@tracewayapp/core": "1.0.7",
     "rrweb": "^2.0.0-alpha.18"
   }
 }
