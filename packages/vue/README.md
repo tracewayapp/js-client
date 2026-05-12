@@ -44,7 +44,6 @@ const app = createApp(App);
 
 app.use(createTracewayPlugin({
   connectionString: "your-token@https://traceway.example.com/api/report",
-  options: { version: "1.0.0" },
 }));
 
 app.mount("#app");

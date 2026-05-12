@@ -49,10 +49,7 @@ import { TracewayProvider } from "@tracewayapp/react-native";
 
 export default function App() {
   return (
-    <TracewayProvider
-      connectionString="your-token@https://your-traceway-instance.com/api/report"
-      options={{ version: "1.0.0" }}
-    >
+    <TracewayProvider connectionString="your-token@https://your-traceway-instance.com/api/report">
       <RootNavigator />
     </TracewayProvider>
   );

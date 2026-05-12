@@ -41,7 +41,6 @@ Call `setupTraceway` in your root component:
 
   setupTraceway({
     connectionString: "your-token@https://traceway.example.com/api/report",
-    options: { version: "1.0.0" },
   });
 </script>
 

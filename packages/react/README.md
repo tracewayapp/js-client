@@ -42,10 +42,7 @@ import { TracewayProvider } from "@tracewayapp/react";
 
 function App() {
   return (
-    <TracewayProvider
-      connectionString="your-token@https://traceway.example.com/api/report"
-      options={{ version: "1.0.0" }}
-    >
+    <TracewayProvider connectionString="your-token@https://traceway.example.com/api/report">
       <YourApp />
     </TracewayProvider>
   );

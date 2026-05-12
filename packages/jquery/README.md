@@ -47,9 +47,7 @@ Or via CDN:
 ```ts
 import { init } from "@tracewayapp/jquery";
 
-init("your-token@https://traceway.example.com/api/report", {
-  version: "1.0.0",
-});
+init("your-token@https://traceway.example.com/api/report");
 ```
 
 That's it. `init()` runs the underlying `@tracewayapp/frontend` `init(...)` (so you also get `window.onerror`, `unhandledrejection`, console mirror, `fetch` / `XHR` instrumentation, History API instrumentation, and rrweb recording), then attaches a global `$(document).ajaxError(...)` handler that captures every failed `$.ajax` call.

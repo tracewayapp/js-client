@@ -56,9 +56,7 @@ Or via CDN (no bundler):
 import { init, captureException, captureMessage, recordAction, flush } from "@tracewayapp/frontend";
 
 // Initialize once at app startup
-init("your-token@https://traceway.example.com/api/report", {
-  version: "1.0.0",
-});
+init("your-token@https://traceway.example.com/api/report");
 
 // Capture errors
 try {
