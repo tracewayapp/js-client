@@ -13,9 +13,12 @@ export function createTracewayPlugin(pluginOptions: TracewayPluginOptions) {
         captureException: traceway.captureException,
         captureExceptionWithAttributes: traceway.captureExceptionWithAttributes,
         captureMessage: traceway.captureMessage,
+        recordAction: traceway.recordAction,
       };
 
       app.provide(TracewayKey, context);
+
+      const debug = pluginOptions.options?.debug === true;
 
       app.config.errorHandler = (err, instance, info) => {
         if (err instanceof Error) {
@@ -23,9 +26,11 @@ export function createTracewayPlugin(pluginOptions: TracewayPluginOptions) {
         } else {
           traceway.captureMessage(String(err));
         }
-        console.error("[Traceway] Vue error:", err);
-        console.error("[Traceway] Component:", instance);
-        console.error("[Traceway] Info:", info);
+        if (debug) {
+          console.error("[Traceway] Vue error:", err);
+          console.error("[Traceway] Component:", instance);
+          console.error("[Traceway] Info:", info);
+        }
       };
     },
   };

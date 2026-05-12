@@ -1,4 +1,4 @@
-import React, { createContext, useEffect, useMemo } from "react";
+import React, { Component, createContext } from "react";
 import {
   init,
   captureException,
@@ -21,36 +21,49 @@ export interface TracewayContextValue {
 
 export const TracewayContext = createContext<TracewayContextValue | null>(null);
 
+const contextValue: TracewayContextValue = {
+  captureException,
+  captureExceptionWithAttributes,
+  captureMessage,
+  recordAction,
+  recordNavigation,
+  setDeviceAttributes,
+};
+
 export interface TracewayProviderProps {
   connectionString: string;
   options?: TracewayReactNativeOptions;
   children: React.ReactNode;
 }
 
-export function TracewayProvider({
-  connectionString,
-  options,
-  children,
-}: TracewayProviderProps) {
-  useEffect(() => {
-    init(connectionString, options);
-  }, [connectionString]);
+interface TracewayProviderState {
+  thrown: Error | null;
+}
 
-  const value = useMemo<TracewayContextValue>(
-    () => ({
-      captureException,
-      captureExceptionWithAttributes,
-      captureMessage,
-      recordAction,
-      recordNavigation,
-      setDeviceAttributes,
-    }),
-    [],
-  );
+export class TracewayProvider extends Component<
+  TracewayProviderProps,
+  TracewayProviderState
+> {
+  state: TracewayProviderState = { thrown: null };
 
-  return (
-    <TracewayContext.Provider value={value}>
-      {children}
-    </TracewayContext.Provider>
-  );
+  constructor(props: TracewayProviderProps) {
+    super(props);
+    init(props.connectionString, props.options);
+  }
+
+  static getDerivedStateFromError(error: Error): TracewayProviderState {
+    captureException(error);
+    return { thrown: error };
+  }
+
+  render(): React.ReactNode {
+    if (this.state.thrown) {
+      throw this.state.thrown;
+    }
+    return (
+      <TracewayContext.Provider value={contextValue}>
+        {this.props.children}
+      </TracewayContext.Provider>
+    );
+  }
 }

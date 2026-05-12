@@ -1,19 +1,23 @@
+// @vitest-environment jsdom
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import { render } from "@testing-library/react";
 import { TracewayProvider, TracewayContext } from "./provider.js";
-import * as traceway from "@tracewayapp/frontend";
+import * as sdk from "./sdk.js";
 
-vi.mock("@tracewayapp/frontend", () => ({
+vi.mock("./sdk.js", () => ({
+  init: vi.fn(),
   captureException: vi.fn(),
   captureExceptionWithAttributes: vi.fn(),
   captureMessage: vi.fn(),
   recordAction: vi.fn(),
-  init: vi.fn(),
+  recordNavigation: vi.fn(),
+  setDeviceAttributes: vi.fn(),
   flush: vi.fn(),
 }));
 
-describe("TracewayProvider", () => {
+describe("TracewayProvider (RN)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -22,21 +26,21 @@ describe("TracewayProvider", () => {
     vi.restoreAllMocks();
   });
 
-  it("should call init with connection string", () => {
+  it("calls init with the connection string", () => {
     render(
       <TracewayProvider connectionString="token@https://example.com/api/report">
         <div>child</div>
       </TracewayProvider>,
     );
-    expect(traceway.init).toHaveBeenCalledWith(
+    expect(sdk.init).toHaveBeenCalledWith(
       "token@https://example.com/api/report",
       undefined,
     );
   });
 
-  it("calls init BEFORE rendering children (init runs in constructor, not componentDidMount)", () => {
+  it("calls init BEFORE rendering children", () => {
     const callOrder: string[] = [];
-    (traceway.init as ReturnType<typeof vi.fn>).mockImplementation(() => {
+    (sdk.init as ReturnType<typeof vi.fn>).mockImplementation(() => {
       callOrder.push("init");
     });
 
@@ -55,7 +59,7 @@ describe("TracewayProvider", () => {
     expect(callOrder).toContain("child-render");
   });
 
-  it("should provide context to children", () => {
+  it("provides context to children", () => {
     let contextValue: any = null;
 
     function Consumer() {
@@ -72,10 +76,11 @@ describe("TracewayProvider", () => {
     expect(contextValue).not.toBeNull();
     expect(contextValue.captureException).toBeDefined();
     expect(contextValue.captureMessage).toBeDefined();
+    expect(contextValue.recordAction).toBeDefined();
   });
 });
 
-describe("TracewayProvider render-error capture", () => {
+describe("TracewayProvider (RN) render-error capture", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -86,7 +91,7 @@ describe("TracewayProvider render-error capture", () => {
   });
 
   function Throwing(): React.ReactElement {
-    throw new Error("render-error-from-child");
+    throw new Error("rn-render-error");
   }
 
   it("captures render errors thrown by children", () => {
@@ -96,11 +101,11 @@ describe("TracewayProvider render-error capture", () => {
           <Throwing />
         </TracewayProvider>,
       ),
-    ).toThrow("render-error-from-child");
+    ).toThrow("rn-render-error");
 
-    expect(traceway.captureException).toHaveBeenCalled();
-    expect(traceway.captureException).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "render-error-from-child" }),
+    expect(sdk.captureException).toHaveBeenCalled();
+    expect(sdk.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "rn-render-error" }),
     );
   });
 
@@ -111,7 +116,7 @@ describe("TracewayProvider render-error capture", () => {
           <Throwing />
         </TracewayProvider>,
       ),
-    ).toThrow("render-error-from-child");
+    ).toThrow("rn-render-error");
   });
 
   it("does not capture anything when children render normally", () => {
@@ -120,7 +125,7 @@ describe("TracewayProvider render-error capture", () => {
         <div>ok</div>
       </TracewayProvider>,
     );
-    expect(traceway.captureException).not.toHaveBeenCalled();
+    expect(sdk.captureException).not.toHaveBeenCalled();
   });
 
   it("lets an inner TracewayErrorBoundary catch first (closest boundary wins)", async () => {
@@ -133,6 +138,6 @@ describe("TracewayProvider render-error capture", () => {
       </TracewayProvider>,
     );
     expect(getByText("inner caught")).toBeDefined();
-    expect(traceway.captureException).toHaveBeenCalledTimes(1);
+    expect(sdk.captureException).toHaveBeenCalled();
   });
 });

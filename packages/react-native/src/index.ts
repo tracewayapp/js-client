@@ -35,6 +35,11 @@ export { useTraceway } from "./use-traceway.js";
 export { TracewayErrorBoundary } from "./error-boundary.js";
 export type { TracewayErrorBoundaryProps } from "./error-boundary.js";
 
+export {
+  DISTRIBUTED_TRACE_HEADER,
+  getActiveDistributedTraceId,
+} from "./distributed-trace.js";
+
 export type {
   ExceptionStackTrace,
   CollectionFrame,

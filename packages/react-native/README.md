@@ -28,7 +28,7 @@ This is the React Native counterpart to [`@tracewayapp/react`](https://www.npmjs
 - Full Hermes / JavaScriptCore stack traces, normalized to Traceway's wire format
 - **Logs** — every `console.{debug,log,info,warn,error}` line from the last ~10 seconds
 - **Actions** — every `fetch` and `XMLHttpRequest` call, plus navigation transitions you wire in, plus custom breadcrumbs
-- React surface: `<TracewayProvider>`, `<TracewayErrorBoundary>`, `useTraceway()` hook
+- React surface: `<TracewayProvider>` (also acts as an error boundary), `useTraceway()` hook
 - Debounced, retrying batch transport over plain `fetch` (no native modules, works in Expo Go)
 - Simple one-line setup
 
@@ -42,10 +42,10 @@ The package is plain JavaScript — no native modules, no `pod install`, no Grad
 
 ## Quick Start
 
-Wrap your app in `TracewayProvider` from your entry component (typically `App.tsx`). Mounting the provider runs `init(...)` once, which installs the `ErrorUtils` global handler, the `fetch` / XHR wrappers, and the console mirror.
+Wrap your app in `TracewayProvider` from your entry component (typically `App.tsx`). Mounting the provider runs `init(...)` once, which installs the `ErrorUtils` global handler, the `fetch` / XHR wrappers, and the console mirror. The provider also acts as an error boundary — render-time exceptions are captured and re-thrown automatically.
 
 ```tsx
-import { TracewayProvider, TracewayErrorBoundary } from "@tracewayapp/react-native";
+import { TracewayProvider } from "@tracewayapp/react-native";
 
 export default function App() {
   return (
@@ -53,15 +53,13 @@ export default function App() {
       connectionString="your-token@https://your-traceway-instance.com/api/report"
       options={{ version: "1.0.0" }}
     >
-      <TracewayErrorBoundary fallback={<CrashScreen />}>
-        <RootNavigator />
-      </TracewayErrorBoundary>
+      <RootNavigator />
     </TracewayProvider>
   );
 }
 ```
 
-That's it. Every uncaught throw, unhandled promise rejection, and `fetch` call is captured automatically.
+That's it. Every uncaught throw, unhandled promise rejection, render-time exception, and `fetch` call is captured automatically. `TracewayErrorBoundary` is still exported (deprecated) if you need a custom `fallback` UI for a specific subtree; it will be removed in v2.
 
 ## Manual Capture
 
@@ -253,7 +251,7 @@ For each captured exception: `device info < global scope < per-call`. The same p
 - **Unhandled promise rejections** — `Promise.reject(...)` without a `.catch()` reaches the same `ErrorUtils` handler.
 - **`fetch` calls** — wrapped at install time. Method, URL, status, duration, byte counts.
 - **`XMLHttpRequest` calls** — RN polyfills XHR (and `fetch` is implemented on top of it on some platforms); both paths are covered.
-- **Render errors** — when wrapped in `<TracewayErrorBoundary>`, exceptions thrown during render or in lifecycle methods are captured.
+- **Render errors** — `<TracewayProvider>` itself acts as an error boundary: exceptions thrown during render or in lifecycle methods are captured and re-thrown so the app behaves exactly as without Traceway.
 - **Console output** — `console.{debug,log,info,warn,error}` is mirrored into the log buffer that rides along the next exception.
 
 ## Platform Support

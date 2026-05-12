@@ -11,3 +11,11 @@ export function getTraceway(): TracewayContextValue {
   }
   return context;
 }
+
+/**
+ * Alias for `getTraceway()` provided for cross-framework consistency with
+ * `@tracewayapp/react`, `@tracewayapp/vue`, and `@tracewayapp/react-native`,
+ * which all expose a `useTraceway()` hook. Functionally identical to
+ * `getTraceway()`; Svelte convention prefers the `get`-prefix.
+ */
+export const useTraceway = getTraceway;

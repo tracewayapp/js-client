@@ -10,4 +10,5 @@ export interface TracewayContextValue {
   captureException: typeof traceway.captureException;
   captureExceptionWithAttributes: typeof traceway.captureExceptionWithAttributes;
   captureMessage: typeof traceway.captureMessage;
+  recordAction: typeof traceway.recordAction;
 }

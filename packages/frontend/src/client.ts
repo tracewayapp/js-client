@@ -66,6 +66,8 @@ export const DEFAULT_IGNORE_PATTERNS: Array<string | RegExp> = [
   "NetworkError when attempting to fetch resource",
   "Load failed",
   "Network Error",
+  // RN-style network error (surfaces here when an app shares code with React Native)
+  "Network request failed",
   // Timeout / Abort
   "The operation was aborted",
   /timeout/i,
@@ -106,6 +108,13 @@ export interface TracewayFrontendOptions {
   eventsWindowMs?: number;
   /** Hard cap applied independently to logs and actions. Default 200. */
   eventsMaxCount?: number;
+  /**
+   * When `true`, every `fetch` / `XHR` response with `status >= 500` is also
+   * reported to Traceway as a synthetic exception (in addition to the network
+   * action it already records). 4xx responses are intentionally not captured
+   * by this flag — see `DEFAULT_IGNORE_PATTERNS`. Default `false`.
+   */
+  captureHttpServerErrors?: boolean;
 }
 
 export class TracewayFrontendClient {
@@ -151,6 +160,7 @@ export class TracewayFrontendClient {
   readonly captureLogs: boolean;
   readonly captureNetwork: boolean;
   readonly captureNavigation: boolean;
+  readonly captureHttpServerErrors: boolean;
   private readonly logs: EventBuffer<LogEvent>;
   private readonly actions: EventBuffer<NetworkEvent | NavigationEvent | CustomEvent>;
 
@@ -168,6 +178,7 @@ export class TracewayFrontendClient {
     this.captureLogs = options.captureLogs ?? true;
     this.captureNetwork = options.captureNetwork ?? true;
     this.captureNavigation = options.captureNavigation ?? true;
+    this.captureHttpServerErrors = options.captureHttpServerErrors ?? false;
 
     // When always-on session recording is on, segments rotate every 30 s and
     // drain the logs/actions buffers on each rotation. The window/cap need to
@@ -458,6 +469,28 @@ export class TracewayFrontendClient {
   }
 
   // ── Exception lifecycle ─────────────────────────────────────────────────
+
+  /**
+   * Promote a 5xx HTTP response into a captured exception. Called from the
+   * fetch / XHR wrappers when `captureHttpServerErrors` is enabled.
+   */
+  captureHttpServerError(
+    method: string,
+    url: string,
+    statusCode: number,
+  ): void {
+    this.addException({
+      traceId: null,
+      stackTrace: `HTTP ${statusCode} ${method} ${url}`,
+      recordedAt: nowISO(),
+      attributes: {
+        "http.method": method,
+        "http.url": url,
+        "http.status_code": String(statusCode),
+      },
+      isMessage: true,
+    });
+  }
 
   addException(exception: ExceptionStackTrace): void {
     if (this.shouldIgnore(exception)) {

@@ -1,4 +1,11 @@
+import { generateUUID } from "@tracewayapp/core";
 import type { TracewayReactNativeClient } from "./client.js";
+import {
+  DISTRIBUTED_TRACE_HEADER,
+  setActiveDistributedTraceId,
+  clearActiveDistributedTraceId,
+  shouldInjectTraceHeader,
+} from "./distributed-trace.js";
 
 /**
  * Hostname of the Traceway ingestion endpoint — captured at install time so
@@ -85,6 +92,16 @@ export function installFetchInstrumentation(
     const start = Date.now();
     const startedAt = new Date(start).toISOString();
 
+    let nextInit = init;
+    let traceId: string | null = null;
+    if (shouldInjectTraceHeader(url, client.distributedTraceHosts)) {
+      traceId = generateUUID();
+      setActiveDistributedTraceId(traceId);
+      const headers = new Headers(init?.headers as HeadersInit | undefined);
+      headers.set(DISTRIBUTED_TRACE_HEADER, traceId);
+      nextInit = { ...init, headers };
+    }
+
     const recordEvent = (response: Response | null, error: unknown): void => {
       try {
         client.recordNetworkEvent({
@@ -103,14 +120,26 @@ export function installFetchInstrumentation(
     };
 
     return originalFetch
-      .call(this, input, init)
+      .call(this, input, nextInit)
       .then((response) => {
         recordEvent(response, null);
+        if (client.captureHttpServerErrors && response.status >= 500) {
+          client.captureHttpServerError(
+            method.toUpperCase(),
+            url,
+            response.status,
+          );
+        }
         return response;
       })
       .catch((err) => {
         recordEvent(null, err);
         throw err;
+      })
+      .finally(() => {
+        if (traceId !== null) {
+          clearActiveDistributedTraceId(traceId);
+        }
       });
   };
 }

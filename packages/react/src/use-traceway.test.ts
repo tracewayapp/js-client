@@ -6,6 +6,7 @@ vi.mock("@tracewayapp/frontend", () => ({
   captureException: vi.fn(),
   captureExceptionWithAttributes: vi.fn(),
   captureMessage: vi.fn(),
+  recordAction: vi.fn(),
   init: vi.fn(),
   flush: vi.fn(),
 }));

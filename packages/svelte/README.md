@@ -48,7 +48,28 @@ Call `setupTraceway` in your root component:
 <slot />
 ```
 
-That's it. `setupTraceway` runs `init(...)` once, which installs `window.onerror`, `unhandledrejection`, the `console.*` mirror, the `fetch` / `XHR` instrumentation, the History API instrumentation, and the rrweb recorder.
+That's it. `setupTraceway` runs `init(...)` synchronously, which installs `window.onerror`, `unhandledrejection`, the `console.*` mirror, the `fetch` / `XHR` instrumentation, the History API instrumentation, and the rrweb recorder.
+
+### Render-time errors
+
+Svelte does **not** have a global error-boundary primitive like React or Vue. The global `window.onerror` and `unhandledrejection` handlers catch runtime errors (event handlers, async work, network failures), but a component that throws during render does not automatically reach those handlers.
+
+- **Svelte 5+** ships [`<svelte:boundary>`](https://svelte.dev/docs/svelte/svelte-boundary). Pipe its `onerror` prop into Traceway via the exported `captureSvelteError` helper:
+
+  ```svelte
+  <script>
+    import { captureSvelteError } from "@tracewayapp/svelte";
+  </script>
+
+  <svelte:boundary onerror={(error) => captureSvelteError(error)}>
+    <YourApp />
+    {#snippet failed(error, reset)}
+      <p>Something went wrong.</p>
+    {/snippet}
+  </svelte:boundary>
+  ```
+
+- **Svelte 4** has no boundary primitive at all. Wrap risky code in `try/catch` and call `captureSvelteError(err)` manually, or upgrade to Svelte 5 for `<svelte:boundary>`.
 
 ### SvelteKit
 

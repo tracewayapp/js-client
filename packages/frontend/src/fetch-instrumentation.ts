@@ -113,6 +113,17 @@ export function installFetchInstrumentation(
       .call(this, input, nextInit)
       .then((response) => {
         recordEvent(response, null);
+        if (
+          client &&
+          client.captureHttpServerErrors &&
+          response.status >= 500
+        ) {
+          client.captureHttpServerError(
+            method.toUpperCase(),
+            url,
+            response.status,
+          );
+        }
         return response;
       })
       .catch((err) => {

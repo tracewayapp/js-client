@@ -71,6 +71,22 @@ export interface TracewayReactNativeOptions {
   eventsWindowMs?: number;
   /** Hard cap applied independently to logs and actions. Default 200. */
   eventsMaxCount?: number;
+  /**
+   * Hostnames that should receive an outgoing `traceway-trace-id` header so
+   * server-side captures can be linked to the client request. React Native
+   * has no `window.location.origin`, so distributed tracing is opt-in:
+   * pass the hosts of your own backend(s) here (e.g. `["api.example.com"]`).
+   * Each entry can be an exact hostname string or a RegExp tested against
+   * the URL's host. Default: empty (no injection).
+   */
+  distributedTraceHosts?: Array<string | RegExp>;
+  /**
+   * When `true`, every `fetch` / `XHR` response with `status >= 500` is also
+   * reported to Traceway as a synthetic exception (in addition to the network
+   * action it already records). 4xx responses are intentionally not captured
+   * by this flag — see `DEFAULT_IGNORE_PATTERNS`. Default `false`.
+   */
+  captureHttpServerErrors?: boolean;
 }
 
 export class TracewayReactNativeClient {
@@ -96,6 +112,8 @@ export class TracewayReactNativeClient {
   readonly captureNetwork: boolean;
   readonly captureNavigation: boolean;
   readonly captureDeviceInfo: boolean;
+  readonly distributedTraceHosts: Array<string | RegExp>;
+  readonly captureHttpServerErrors: boolean;
   private deviceAttributes: Record<string, string> = {};
   private readonly logs: EventBuffer<LogEvent>;
   private readonly actions: EventBuffer<
@@ -120,6 +138,8 @@ export class TracewayReactNativeClient {
     this.captureNetwork = options.captureNetwork ?? true;
     this.captureNavigation = options.captureNavigation ?? true;
     this.captureDeviceInfo = options.captureDeviceInfo ?? true;
+    this.distributedTraceHosts = options.distributedTraceHosts ?? [];
+    this.captureHttpServerErrors = options.captureHttpServerErrors ?? false;
 
     const bufferOpts = {
       windowMs: options.eventsWindowMs ?? 10_000,
@@ -245,6 +265,28 @@ export class TracewayReactNativeClient {
   }
 
   // ── Exception lifecycle ─────────────────────────────────────────────────
+
+  /**
+   * Promote a 5xx HTTP response into a captured exception. Called from the
+   * fetch / XHR wrappers when `captureHttpServerErrors` is enabled.
+   */
+  captureHttpServerError(
+    method: string,
+    url: string,
+    statusCode: number,
+  ): void {
+    this.addException({
+      traceId: null,
+      stackTrace: `HTTP ${statusCode} ${method} ${url}`,
+      recordedAt: nowISO(),
+      attributes: {
+        "http.method": method,
+        "http.url": url,
+        "http.status_code": String(statusCode),
+      },
+      isMessage: true,
+    });
+  }
 
   addException(exception: ExceptionStackTrace): void {
     if (this.shouldIgnore(exception)) {

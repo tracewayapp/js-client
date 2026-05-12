@@ -335,4 +335,29 @@ describe("TracewayFrontendClient", () => {
       expect(beforeCapture).not.toHaveBeenCalled();
     });
   });
+
+  describe("captureHttpServerErrors", () => {
+    it("defaults to false (5xx responses don't promote to Issues)", async () => {
+      const client = createClient(50);
+      expect(client.captureHttpServerErrors).toBe(false);
+    });
+
+    it("captureHttpServerError() bypasses ignoreErrors filters when called explicitly", async () => {
+      const client = new TracewayFrontendClient(
+        "test-token@https://example.com/api/report",
+        { debounceMs: 50, captureHttpServerErrors: true },
+      );
+
+      client.captureHttpServerError("GET", "https://api.example.com/x", 503);
+
+      await sleep(100);
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const bodyArr = init.body as Uint8Array;
+      const text = new TextDecoder().decode(bodyArr);
+      expect(text).toContain("HTTP 503 GET https://api.example.com/x");
+      expect(text).toContain("\"http.status_code\":\"503\"");
+    });
+  });
 });

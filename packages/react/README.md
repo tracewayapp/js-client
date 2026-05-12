@@ -13,7 +13,7 @@
 
 # Traceway React SDK
 
-Error tracking and session replay for React apps. Provides `<TracewayProvider>`, `<TracewayErrorBoundary>`, and a `useTraceway()` hook on top of [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend).
+Error tracking and session replay for React apps. Provides `<TracewayProvider>` (which also catches render errors) and a `useTraceway()` hook on top of [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend).
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
@@ -21,8 +21,8 @@ Error tracking and session replay for React apps. Provides `<TracewayProvider>`,
 
 ## Features
 
-- Provider that initializes Traceway exactly once via `useEffect`
-- Error boundary that captures render-time exceptions and renders a fallback UI
+- Provider that initializes Traceway exactly once and acts as an error boundary
+- Render-time exceptions are captured automatically and re-thrown so your app behaves exactly as without Traceway
 - `useTraceway()` hook for capturing exceptions and messages from any component
 - Inherits everything from [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend): rrweb session replay, console logs, network/navigation actions, gzip transport
 - Simple one-line setup
@@ -38,7 +38,7 @@ npm install @tracewayapp/react
 Wrap your application with `TracewayProvider`:
 
 ```tsx
-import { TracewayProvider, TracewayErrorBoundary } from "@tracewayapp/react";
+import { TracewayProvider } from "@tracewayapp/react";
 
 function App() {
   return (
@@ -46,9 +46,7 @@ function App() {
       connectionString="your-token@https://traceway.example.com/api/report"
       options={{ version: "1.0.0" }}
     >
-      <TracewayErrorBoundary fallback={<ErrorPage />}>
-        <YourApp />
-      </TracewayErrorBoundary>
+      <YourApp />
     </TracewayProvider>
   );
 }
@@ -56,7 +54,7 @@ function App() {
 export default App;
 ```
 
-That's it. The provider runs `init(...)` once, which installs `window.onerror`, `unhandledrejection`, the `console.*` mirror, the `fetch` / `XHR` instrumentation, the History API instrumentation, and the rrweb recorder.
+That's it. The provider runs `init(...)` once, which installs `window.onerror`, `unhandledrejection`, the `console.*` mirror, the `fetch` / `XHR` instrumentation, the History API instrumentation, and the rrweb recorder. It also acts as an error boundary: render-time exceptions are captured and re-thrown so the app behaves exactly as it would without Traceway.
 
 ## Manual Capture
 
@@ -173,7 +171,9 @@ Each captured exception ships with the buffered logs, actions, and replay frames
 | `options` | `TracewayFrontendOptions` | Forwarded to `init()` from `@tracewayapp/frontend` |
 | `children` | `ReactNode` | Child components |
 
-### `<TracewayErrorBoundary>`
+### `<TracewayErrorBoundary>` (deprecated since v1.1.0)
+
+`TracewayProvider` now catches render errors and reports them on its own. Use `TracewayErrorBoundary` only if you need a custom `fallback` UI for a specific subtree. It will be removed in v2.
 
 | Prop | Type | Description |
 |------|------|-------------|

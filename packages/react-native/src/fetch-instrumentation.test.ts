@@ -115,4 +115,112 @@ describe("installFetchInstrumentation", () => {
     expect(event.method).toBe("DELETE");
     expect(event.url).toBe("https://api.example.com/widgets");
   });
+
+  it("does NOT inject the traceway-trace-id header by default (empty allow-list)", async () => {
+    const inner = vi.fn().mockResolvedValue(makeResponse(200));
+    globalThis.fetch = inner as unknown as typeof fetch;
+
+    installFetchInstrumentation(client);
+    await fetch("https://api.example.com/users");
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    const [, init] = inner.mock.calls[0];
+    const headers = init?.headers ? new Headers(init.headers) : new Headers();
+    expect(headers.get("traceway-trace-id")).toBeNull();
+  });
+
+  it("injects the traceway-trace-id header when host matches the allow-list", async () => {
+    const trackedClient = new TracewayReactNativeClient(
+      "tok@https://traceway.example.com/api/report",
+      { debounceMs: 10_000, distributedTraceHosts: ["api.example.com"] },
+    );
+    const inner = vi.fn().mockResolvedValue(makeResponse(200));
+    globalThis.fetch = inner as unknown as typeof fetch;
+
+    installFetchInstrumentation(trackedClient);
+    await fetch("https://api.example.com/users");
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    const [, init] = inner.mock.calls[0];
+    const headers = new Headers((init as RequestInit).headers);
+    expect(headers.get("traceway-trace-id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it("does not inject for unmatched hosts", async () => {
+    const trackedClient = new TracewayReactNativeClient(
+      "tok@https://traceway.example.com/api/report",
+      { debounceMs: 10_000, distributedTraceHosts: ["api.example.com"] },
+    );
+    const inner = vi.fn().mockResolvedValue(makeResponse(200));
+    globalThis.fetch = inner as unknown as typeof fetch;
+
+    installFetchInstrumentation(trackedClient);
+    await fetch("https://other.example.com/users");
+
+    const [, init] = inner.mock.calls[0];
+    const headers = new Headers(((init as RequestInit) ?? {}).headers);
+    expect(headers.get("traceway-trace-id")).toBeNull();
+  });
+
+  it("does NOT promote 5xx responses to captured exceptions by default", async () => {
+    const inner = vi.fn().mockResolvedValue(makeResponse(503));
+    globalThis.fetch = inner as unknown as typeof fetch;
+
+    installFetchInstrumentation(client);
+    const captureSpy = vi.spyOn(client, "captureHttpServerError");
+
+    await fetch("https://api.example.com/x");
+
+    expect(captureSpy).not.toHaveBeenCalled();
+  });
+
+  it("promotes 5xx responses to captured exceptions when captureHttpServerErrors is true", async () => {
+    const errClient = new TracewayReactNativeClient(
+      "tok@https://traceway.example.com/api/report",
+      { debounceMs: 10_000, captureHttpServerErrors: true },
+    );
+    const inner = vi.fn().mockResolvedValue(makeResponse(502));
+    globalThis.fetch = inner as unknown as typeof fetch;
+
+    installFetchInstrumentation(errClient);
+    const captureSpy = vi.spyOn(errClient, "captureHttpServerError");
+
+    await fetch("https://api.example.com/x");
+
+    expect(captureSpy).toHaveBeenCalledWith("GET", "https://api.example.com/x", 502);
+  });
+
+  it("does NOT promote 4xx responses even when captureHttpServerErrors is true", async () => {
+    const errClient = new TracewayReactNativeClient(
+      "tok@https://traceway.example.com/api/report",
+      { debounceMs: 10_000, captureHttpServerErrors: true },
+    );
+    const inner = vi.fn().mockResolvedValue(makeResponse(404));
+    globalThis.fetch = inner as unknown as typeof fetch;
+
+    installFetchInstrumentation(errClient);
+    const captureSpy = vi.spyOn(errClient, "captureHttpServerError");
+
+    await fetch("https://api.example.com/x");
+
+    expect(captureSpy).not.toHaveBeenCalled();
+  });
+
+  it("supports a RegExp entry in distributedTraceHosts", async () => {
+    const trackedClient = new TracewayReactNativeClient(
+      "tok@https://traceway.example.com/api/report",
+      { debounceMs: 10_000, distributedTraceHosts: [/\.example\.com$/] },
+    );
+    const inner = vi.fn().mockResolvedValue(makeResponse(200));
+    globalThis.fetch = inner as unknown as typeof fetch;
+
+    installFetchInstrumentation(trackedClient);
+    await fetch("https://api.example.com/users");
+
+    const [, init] = inner.mock.calls[0];
+    const headers = new Headers((init as RequestInit).headers);
+    expect(headers.get("traceway-trace-id")).not.toBeNull();
+  });
 });
