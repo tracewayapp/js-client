@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/frontend",
-  "version": "1.1.0",
+  "version": "1.2.2",
   "description": "Traceway SDK for browser environments",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
