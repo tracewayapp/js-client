@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/bundler-plugin",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Vite, Rollup and webpack plugins that inject ECMA-426 debug IDs into bundles and source maps for Traceway symbolication",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
