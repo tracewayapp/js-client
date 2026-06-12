@@ -13,16 +13,16 @@
 
 # Traceway Source Map Upload CLI
 
-Uploads `.map` files to your Traceway backend so the dashboard can resolve minified production stack traces back to the original file, line, and column. Run it once per build, after your bundler has emitted the maps.
+Uploads `.map` files (and their minified bundles) to your Traceway backend so the dashboard can resolve minified production stack traces back to the original file, line, column, and function name. Run it once per build, after your bundler has emitted the maps.
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
 ## Features
 
-- Walks a directory and uploads every `.map` file it finds
+- Walks a directory and uploads every `.map` file it finds, plus the matching `.js`/`.cjs`/`.mjs` bundle next to it
 - Single-purpose CLI — no config file, no plugin, just one command
 - Reads credentials from flags or environment variables (CI-friendly)
-- Tags each map with the version you pass; the SDK's `version` option ties production exceptions back to the right map
+- Maps are resolved by filename — the most recent upload of each file wins, so content-hashed bundle names (the default in Vite, Next, etc.) just work
 - Skips files larger than 50 MB
 
 ## Generate an Upload Token
@@ -42,11 +42,10 @@ Run after your production build:
 npx @tracewayapp/sourcemap-upload \
   --url https://traceway.example.com \
   --token YOUR_SOURCE_MAP_TOKEN \
-  --version 1.0.0 \
   --directory dist/assets
 ```
 
-The `--version` you pass here must match the `version` option you give the SDK at runtime — the dashboard joins exceptions and maps by that string.
+The backend resolves each minified stack frame to its map by filename, so there is nothing to configure beyond pointing the CLI at your build output. Re-running the upload replaces the map for any filename it uploads; the most recent upload of each file wins.
 
 ## Options
 
@@ -54,8 +53,7 @@ The `--version` you pass here must match the `version` option you give the SDK a
 |------|--------------|----------|-------------|
 | `--url` | `TRACEWAY_URL` | Yes | Traceway backend URL (no trailing slash) |
 | `--token` | `TRACEWAY_SOURCEMAP_TOKEN` | Yes | Source map upload token from the dashboard |
-| `--version` | — | Yes | App version to associate with the source maps |
-| `--directory` | — | No | Directory to walk for `.map` files (default: `.`) |
+| `--directory` | — | No | Directory to walk for `.map` files and their bundles (default: `.`) |
 
 ### Environment variables
 
@@ -66,13 +64,12 @@ export TRACEWAY_URL=https://traceway.example.com
 export TRACEWAY_SOURCEMAP_TOKEN=$TRACEWAY_TOKEN_FROM_SECRETS
 
 npx @tracewayapp/sourcemap-upload \
-  --version $CI_COMMIT_SHA \
   --directory dist/assets
 ```
 
 ## CI/CD Integration
 
-Add source-map upload as a step after your build. Use the same `--version` you embed in the SDK so the dashboard can resolve stack traces.
+Add source-map upload as a step after your build, pointing it at your bundler's output directory.
 
 ### GitHub Actions
 
@@ -85,7 +82,6 @@ Add source-map upload as a step after your build. Use the same `--version` you e
     npx @tracewayapp/sourcemap-upload \
       --url ${{ secrets.TRACEWAY_URL }} \
       --token ${{ secrets.TRACEWAY_SOURCEMAP_TOKEN }} \
-      --version ${{ github.sha }} \
       --directory dist/assets
 ```
 
@@ -98,29 +94,23 @@ deploy:
     - npx @tracewayapp/sourcemap-upload
         --url $TRACEWAY_URL
         --token $TRACEWAY_SOURCEMAP_TOKEN
-        --version $CI_COMMIT_SHA
         --directory dist/assets
 ```
 
 ## Limits
 
-- Each `.map` file must be under 50 MB
-- Only `.map` files are uploaded — siblings (`.js`, `.css`, etc.) are ignored
-- Maps are identified by `(version, filename)` on the backend, so re-running the upload for the same version overwrites previous uploads
+- Each uploaded file must be under 50 MB
+- Each `.map` is uploaded with its sibling minified bundle (`.js`/`.cjs`/`.mjs`) when one exists; other siblings (`.css`, source files, etc.) are ignored. Uploading the bundle is what lets the backend resolve function names — without it, symbolication is location-only
+- Maps are stored permanently and addressed by filename on the backend; re-running the upload overwrites the map for any filename it uploads. Uploads are never auto-deleted or expired.
 
-## Tying Maps to Exceptions
+## How Maps Are Matched
 
-Pass the same `version` to the SDK at runtime so the backend can resolve uploaded maps:
+There is nothing to wire up at runtime. When an exception arrives, the backend resolves each minified frame in two steps:
 
-```ts
-// Browser
-init("token@https://traceway.example.com/api/report", { version: "1.0.0" });
+1. **By debug ID**, when the build used [`@tracewayapp/bundler-plugin`](https://www.npmjs.com/package/@tracewayapp/bundler-plugin): every bundle and its map share an embedded ECMA-426 debug ID, the upload endpoint detects it in the files automatically, and frames resolve against the map from that exact build, immune to filename collisions and concurrent deploys.
+2. **By filename** otherwise: the backend looks up the map you uploaded under the frame's filename; the most recent upload wins. Content-hashed bundle filenames (the default in Vite, Next, Angular, and most bundlers) keep every build's maps distinct automatically.
 
-// React Native
-<TracewayProvider connectionString={DSN} options={{ version: "1.0.0" }}>
-```
-
-Once a map is uploaded, every exception captured under that `version` shows the original source location in the dashboard.
+The SDK's `version` option is unrelated to source maps: it is plain metadata shown on exceptions in the dashboard, useful for filtering by build, and you can set it or leave it unset independently of uploads.
 
 ## Links
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-PACKAGES=(core frontend react react-native vue svelte jquery sourcemap-upload)
-PACKAGE_DIRS=(packages/core packages/frontend packages/react packages/react-native packages/vue packages/svelte packages/jquery packages/sourcemap-upload)
+PACKAGES=(core frontend react react-native vue svelte jquery sourcemap-upload bundler-plugin)
+PACKAGE_DIRS=(packages/core packages/frontend packages/react packages/react-native packages/vue packages/svelte packages/jquery packages/sourcemap-upload packages/bundler-plugin)
 
 # --- 1. Read current version from packages/core/package.json ---
 CURRENT_VERSION=$(node -p "require('./packages/core/package.json').version")

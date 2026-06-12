@@ -1,11 +1,10 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { glob } from "glob";
 
 interface UploadOptions {
   url: string;
   token: string;
-  version: string;
   directory: string;
 }
 
@@ -14,18 +13,33 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 export async function upload(options: UploadOptions): Promise<void> {
   const dir = resolve(options.directory);
 
-  const files = await glob("**/*.map", { cwd: dir });
+  const maps = await glob("**/*.map", { cwd: dir });
 
-  if (files.length === 0) {
+  if (maps.length === 0) {
     console.log("No .map files found in", dir);
     return;
   }
 
-  console.log(`Found ${files.length} source map file(s)`);
+  // Upload each .map together with its sibling minified bundle when present.
+  // The bundle lets the backend resolve the enclosing function name; without
+  // it, symbolication is location-only.
+  const files: string[] = [];
+  let bundleCount = 0;
+  for (const mapFile of maps) {
+    files.push(mapFile);
+    const bundleFile = mapFile.replace(/\.map$/, "");
+    if (/\.(js|cjs|mjs)$/.test(bundleFile) && existsSync(join(dir, bundleFile))) {
+      files.push(bundleFile);
+      bundleCount++;
+    }
+  }
+
+  console.log(
+    `Found ${maps.length} source map(s) and ${bundleCount} bundle(s)`,
+  );
 
   for (const file of files) {
-    const filePath = join(dir, file);
-    const stat = statSync(filePath);
+    const stat = statSync(join(dir, file));
     if (stat.size > MAX_FILE_SIZE) {
       throw new Error(
         `File ${file} exceeds 50MB limit (${Math.round(stat.size / 1024 / 1024)}MB)`,
@@ -34,11 +48,9 @@ export async function upload(options: UploadOptions): Promise<void> {
   }
 
   const formData = new FormData();
-  formData.append("version", options.version);
 
   for (const file of files) {
-    const filePath = join(dir, file);
-    const content = readFileSync(filePath);
+    const content = readFileSync(join(dir, file));
     const blob = new Blob([content]);
     formData.append("files", blob, file);
   }
@@ -58,6 +70,6 @@ export async function upload(options: UploadOptions): Promise<void> {
     throw new Error(`Upload failed (${response.status}): ${body}`);
   }
 
-  const result: { uploaded: number } = await response.json();
-  console.log(`Successfully uploaded ${result.uploaded} source map(s)`);
+  const result = (await response.json()) as { uploaded: number };
+  console.log(`Successfully uploaded ${result.uploaded} file(s)`);
 }

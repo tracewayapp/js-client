@@ -9,7 +9,8 @@
     "packages/vue",
     "packages/svelte",
     "packages/jquery",
-    "packages/sourcemap-upload"
+    "packages/sourcemap-upload",
+    "packages/bundler-plugin"
   ],
   "scripts": {
     "build": "npm run build --workspaces",

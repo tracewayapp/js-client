@@ -15,6 +15,7 @@ import { sendReport } from "./transport.js";
 import { SessionRecorder } from "./session-recorder.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
 import { collectDefaultAttributes } from "./default-attributes.js";
+import { debugIdsForStackTrace } from "./debug-ids.js";
 
 interface RrwebLikeEvent {
   timestamp?: number;
@@ -510,6 +511,13 @@ export class TracewayFrontendClient {
       ...this.globalAttributes,
       ...(exception.attributes ?? {}),
     };
+
+    if (!exception.isMessage && !exception.debugIds) {
+      const debugIds = debugIdsForStackTrace(exception.stackTrace);
+      if (debugIds) {
+        exception.debugIds = debugIds;
+      }
+    }
 
     const recorderEvents =
       this.recorder && this.recorder.hasSegments()

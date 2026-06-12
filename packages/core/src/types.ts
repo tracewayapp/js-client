@@ -14,6 +14,13 @@ export interface ExceptionStackTrace {
    */
   sessionId?: string | null;
   distributedTraceId?: string | null;
+  /**
+   * Maps stack-trace filenames to ECMA-426 debug IDs read from the
+   * `_tracewayDebugIds` / `_sentryDebugIds` runtime registries injected by
+   * `@tracewayapp/bundler-plugin`. The backend uses these to pick the exact
+   * source map for symbolication instead of relying on filename matching.
+   */
+  debugIds?: Record<string, string>;
 }
 
 export interface MetricRecord {

@@ -226,11 +226,12 @@ When you build for production, the browser stack traces are minified. Upload you
 npx @tracewayapp/sourcemap-upload \
   --url https://traceway.example.com \
   --token YOUR_SOURCE_MAP_TOKEN \
-  --version 1.0.0 \
   --directory dist/assets
 ```
 
-The `--version` flag must match the `version` you pass to `init()`. See [`@tracewayapp/sourcemap-upload`](https://www.npmjs.com/package/@tracewayapp/sourcemap-upload) for the full CLI reference.
+Maps are matched by filename, so there is nothing to configure at runtime. See [`@tracewayapp/sourcemap-upload`](https://www.npmjs.com/package/@tracewayapp/sourcemap-upload) for the full CLI reference.
+
+For exact build-to-map matching, add [`@tracewayapp/bundler-plugin`](https://www.npmjs.com/package/@tracewayapp/bundler-plugin) to your Vite, Rollup, or webpack config. It embeds an ECMA-426 debug ID into each bundle and its map; the SDK picks the IDs up at runtime automatically and reports them with every exception, so frames resolve against the map from the exact build that threw, immune to filename collisions and concurrent deploys.
 
 ## API
 

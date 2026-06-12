@@ -15,7 +15,6 @@ async function main() {
 Options:
   --url <url>          Traceway backend URL (or TRACEWAY_URL env var)
   --token <token>      Source map upload token (or TRACEWAY_SOURCEMAP_TOKEN env var)
-  --version <version>  App version to associate with the source maps
   --directory <dir>    Directory to search for .map files (default: ".")
   --help, -h           Show this help message`);
     process.exit(0);
@@ -23,7 +22,6 @@ Options:
 
   const url = getArg(args, "--url") ?? process.env.TRACEWAY_URL;
   const token = getArg(args, "--token") ?? process.env.TRACEWAY_SOURCEMAP_TOKEN;
-  const version = getArg(args, "--version");
   const directory = getArg(args, "--directory") ?? ".";
 
   if (!url) {
@@ -36,12 +34,8 @@ Options:
     );
     process.exit(1);
   }
-  if (!version) {
-    console.error("Error: --version is required");
-    process.exit(1);
-  }
 
-  await upload({ url, token, version, directory });
+  await upload({ url, token, directory });
 }
 
 main().catch((err) => {

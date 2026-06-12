@@ -1,0 +1,47 @@
+{
+  "name": "@tracewayapp/bundler-plugin",
+  "version": "1.1.0",
+  "description": "Vite, Rollup and webpack plugins that inject ECMA-426 debug IDs into bundles and source maps for Traceway symbolication",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.mjs",
+      "require": "./dist/vite.js"
+    },
+    "./rollup": {
+      "types": "./dist/rollup.d.ts",
+      "import": "./dist/rollup.mjs",
+      "require": "./dist/rollup.js"
+    },
+    "./webpack": {
+      "types": "./dist/webpack.d.ts",
+      "import": "./dist/webpack.mjs",
+      "require": "./dist/webpack.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "magic-string": "^0.30.0"
+  },
+  "devDependencies": {
+    "rollup": "^4.0.0",
+    "webpack": "^5.90.0"
+  }
+}
