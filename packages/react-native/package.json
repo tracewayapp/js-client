@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/react-native",
-  "version": "1.2.2",
+  "version": "1.1.0",
   "description": "Traceway React Native SDK — error tracking with last-10s session context for iOS, Android and Expo apps",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
