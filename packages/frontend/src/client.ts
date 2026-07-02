@@ -521,7 +521,7 @@ export class TracewayFrontendClient {
 
     const recorderEvents =
       this.recorder && this.recorder.hasSegments()
-        ? this.recorder.getSegments().flatMap((s) => s.events)
+        ? this.recorder.getClipEvents()
         : [];
     const logSnapshot = this.logs.snapshot();
     const actionSnapshot = this.actions.snapshot();
@@ -532,9 +532,10 @@ export class TracewayFrontendClient {
 
     // Tag the exception with the parent session id (if always-on is on) so
     // the dashboard can show a "View full session" link. Sessions and the
-    // per-exception clip are independent attachments — both ride along. The
-    // clip captures the rolling timeline window (default 10 s; bumped to
-    // match `sessionRecordingSegmentDuration` when always-on is active).
+    // per-exception clip are independent attachments; both ride along. The
+    // rrweb clip is a single segment (see getClipEvents), so it is bounded to
+    // `sessionRecordingSegmentDuration` (default 30 s). The logs/actions that
+    // ride with it stay on their own ~10 s rolling window (see EventBuffer).
     if (this.recordAllSessions && this.sessionId) {
       exception.sessionId = this.sessionId;
     }

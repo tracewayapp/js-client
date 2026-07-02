@@ -144,6 +144,23 @@ export class SessionRecorder {
     return segments;
   }
 
+  /**
+   * Events for the per-exception clip. Returns a single segment so the clip is
+   * bounded to `segmentDuration` (default 30 s) no matter how long the session
+   * has been running: shipping `previous` + `current` would span up to two
+   * segments (~60 s). We prefer `current` because it is closest to the error;
+   * each segment is self-contained (it begins with the meta + full snapshot
+   * rrweb emits at record start and on every rotation), so it replays
+   * standalone without `previous`.
+   */
+  getClipEvents(): eventWithTime[] {
+    if (this.current.events.length > 0) return this.current.events;
+    if (this.previous && this.previous.events.length > 0) {
+      return this.previous.events;
+    }
+    return [];
+  }
+
   hasSegments(): boolean {
     return (
       this.current.events.length > 0 ||
