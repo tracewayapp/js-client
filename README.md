@@ -237,3 +237,31 @@ The deprecated `backend` and `nestjs` packages are excluded from this rule — t
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Finding a user's sessions
+
+Enable always-on recording and optionally supply identity attributes at initialization:
+
+```ts
+import { init, setAttributes, clearAttributes } from "@tracewayapp/frontend";
+
+init("your-token@https://traceway.example.com/api/report", {
+  recordAllSessions: true,
+  attributes: { userId: "u_42", email: "alice@example.com" },
+});
+
+// When identity becomes available after initialization:
+setAttributes({ userId: "u_42", tenant: "acme" });
+
+// On logout, remove app-defined context:
+clearAttributes();
+```
+
+Attribute values are strings. `setAttribute`, `setAttributes`, `removeAttribute`,
+and `clearAttributes` refresh the current session and affect subsequent exceptions.
+The React, Vue, Svelte, and jQuery integrations accept the same initialization options.
+In Traceway's Sessions page, search for a user ID or email, or add an attribute filter
+such as `userId=u_42`. Filters appear as editable chips and can be combined.
+
+The `attributes` initialization option is optional. Existing initialization calls
+and `/api/report` payloads without session attributes remain supported.

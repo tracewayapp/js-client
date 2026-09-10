@@ -188,6 +188,47 @@ describe("TracewayFrontendClient timeline events", () => {
     expect(opening.startedAt).toBeTruthy();
   });
 
+  it("sends initial attributes and refreshes the same session as identity changes", async () => {
+    vi.useFakeTimers();
+    const attributes = { userId: "u_42", email: "alice@example.com" };
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      { debounceMs: 0, sessionRecording: false, recordAllSessions: true, attributes },
+    );
+    attributes.userId = "caller-mutated";
+    const lastSession = () => {
+      const call = vi.mocked(fetch).mock.calls.at(-1)!;
+      const body = JSON.parse(new TextDecoder().decode(call[1]!.body as Uint8Array)) as ReportRequest;
+      return body.collectionFrames.flatMap((f) => f.sessions ?? []).at(-1)!;
+    };
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      const opening = lastSession();
+      expect(opening.attributes).toMatchObject({ userId: "u_42", email: "alice@example.com" });
+      expect(opening.attributes?.userAgent).toBeTruthy();
+      client.setAttributes({ userId: "u_43", tenant: "acme" });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(lastSession()).toMatchObject({ id: opening.id, startedAt: opening.startedAt, attributes: { userId: "u_43", tenant: "acme" } });
+      expect(lastSession().endedAt).toBeUndefined();
+      client.removeAttribute("email");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(lastSession().attributes).not.toHaveProperty("email");
+      expect(lastSession().attributes?.userId).toBe("u_43");
+      client.clearAttributes();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(lastSession().attributes).not.toHaveProperty("userId");
+      expect(lastSession().attributes?.userAgent).toBeTruthy();
+      client.setAttribute("userId", "u_44");
+      await client.flush();
+      expect(lastSession()).toMatchObject({ id: opening.id, attributes: { userId: "u_44" } });
+      expect(lastSession().endedAt).toBeTruthy();
+      expect(opening.attributes?.userId).toBe("u_42");
+    } finally {
+      await client.flush();
+      vi.useRealTimers();
+    }
+  });
+
   it("addException during always-on sessions stamps sessionId AND emits the per-exception 10s clip", async () => {
     const client = new TracewayFrontendClient(
       "test-token@https://example.com/api/report",

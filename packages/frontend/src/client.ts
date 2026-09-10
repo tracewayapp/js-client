@@ -97,6 +97,8 @@ export interface TracewayFrontendOptions {
    * Defaults to false to preserve the existing exception-only behaviour.
    */
   recordAllSessions?: boolean;
+  /** Initial attributes for sessions and exceptions; copied when the client starts. */
+  attributes?: Record<string, string>;
   ignoreErrors?: Array<string | RegExp>;
   beforeCapture?: (exception: ExceptionStackTrace) => boolean;
   /** Mirror console.{log,info,warn,error,debug} into the rolling log buffer. Default true. */
@@ -173,6 +175,7 @@ export class TracewayFrontendClient {
     this.debounceMs = options.debounceMs ?? 1500;
     this.retryDelayMs = options.retryDelayMs ?? 10000;
     this.version = options.version ?? "";
+    this.globalAttributes = { ...options.attributes };
     this.ignoreErrors = options.ignoreErrors ?? DEFAULT_IGNORE_PATTERNS;
     this.beforeCapture = options.beforeCapture ?? null;
 
