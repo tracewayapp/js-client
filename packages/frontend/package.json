@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@tracewayapp/core": "1.2.0",
+    "fflate": "^0.8.2",
     "rrweb": "^2.0.0-alpha.18"
   }
 }

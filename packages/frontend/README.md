@@ -119,7 +119,7 @@ await flush();
 | `captureNavigation` | `true` | Record History API push / replace / pop as navigation actions |
 | `sessionRecording` | `true` | Enable the rrweb session recorder |
 | `sessionRecordingSegmentDuration` | `30000` | Segment length for the recorder (ms). 30 s by default; the always-on path uploads each segment as it rotates |
-| `recordAllSessions` | `false` | When `true`, upload every segment continuously and create a parent session row, regardless of whether an exception fires. Sessions end on 15 min inactivity, 60 min max duration, or `pagehide` |
+| `recordAllSessions` | `false` | When `true`, upload every segment continuously and create a parent session row, regardless of whether an exception fires. Sessions end on 15 min inactivity or 60 min max duration; page loads of the same tab within that window continue the session |
 | `eventsWindowMs` | `10000` (`30000` with `recordAllSessions`) | Rolling window kept in the log/action buffers |
 | `eventsMaxCount` | `200` (`600` with `recordAllSessions`) | Hard cap applied independently to logs and actions |
 
@@ -173,9 +173,11 @@ init("your-token@https://traceway.example.com/api/report", {
 
 What changes:
 
-- A persistent `sessionId` is generated at SDK init (or after bfcache restore) and attached to every exception captured during that session.
+- A `sessionId` is generated at SDK init and attached to every exception captured during that session. It is kept in `sessionStorage`, so a full page navigation in the same tab (or a back/forward restore) within 15 minutes of the last activity continues the session instead of starting a new one. A duplicated tab starts its own. The session keeps the `url`, `path` and `referrer` of the page it started on.
 - Each ~30 s rrweb segment is uploaded as a separate `session_recordings` row pointing at a parent `sessions` row in the dashboard.
-- Sessions end on **15 min inactivity** (no DOM events), **60 min max duration**, or `pagehide` (close tab / navigate away). The closing payload uses `fetch keepalive` so it survives unload.
+- Sessions end on **15 min inactivity** (no DOM events; the end is stamped at the last activity) or **60 min max duration**. Activity after that starts a new session.
+- Hiding the page (tab switch, app backgrounded on mobile) uploads the in-progress segment, since the OS may freeze or kill a hidden page without a `pagehide`. `pagehide` (close tab / navigate away) closes the session and uploads what is left.
+- Both use `fetch keepalive`, gzipped synchronously so the request is queued before the page goes away. Browsers cap keepalive bodies at 64 KiB in total, so the closing session row is always sent on its own, then each exception with its clip, then each segment, as budget allows.
 - The exception-bound 10 s clip still ships alongside, so the issue page keeps its inline replay; the new Sessions page in the dashboard plays the full timeline.
 - Logs and actions are flushed onto each segment as it rotates (drained from the rolling buffer to avoid double-counting).
 
@@ -260,7 +262,7 @@ For exact build-to-map matching, add [`@tracewayapp/bundler-plugin`](https://www
 | Edge 80+ | Yes | Yes |
 | Older browsers | No | No |
 
-The `CompressionStream` API used for gzip-compressed uploads is supported in Chrome 80+, Firefox 113+, Safari 16.4+ — the SDK requires it for the regular sync path. The page-unload flush always sends raw JSON (so the request can dispatch synchronously inside the `pagehide` handler), and the backend accepts both.
+The `CompressionStream` API used for gzip-compressed uploads is supported in Chrome 80+, Firefox 113+, Safari 16.4+ — the SDK requires it for the regular sync path. The hidden-page and page-unload flushes gzip synchronously with `fflate` instead, because the request has to be queued before the handler returns.
 
 For React Native and Expo apps, use [`@tracewayapp/react-native`](https://www.npmjs.com/package/@tracewayapp/react-native) instead — it intentionally omits rrweb (no DOM) but preserves the logs, actions, and exception capture pipeline.
 

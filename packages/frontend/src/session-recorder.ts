@@ -41,11 +41,12 @@ export class SessionRecorder {
   }
 
   start(): void {
-    this.stopFn = record({
-      emit: (event) => {
-        this.onEvent(event);
-      },
-    });
+    this.stopFn =
+      record({
+        emit: (event) => {
+          this.onEvent(event);
+        },
+      }) ?? null;
   }
 
   stop(): void {
@@ -166,6 +167,19 @@ export class SessionRecorder {
       this.current.events.length > 0 ||
       (this.previous !== null && this.previous.events.length > 0)
     );
+  }
+
+  /**
+   * Discards the in-flight segment and starts a new one from a full
+   * snapshot, so it replays on its own: used when a session opens again and
+   * when a hidden page becomes visible after its segment was flushed.
+   */
+  startFresh(): void {
+    this.previous = null;
+    this.current = this.newSegment();
+    if (this.stopFn) {
+      record.takeFullSnapshot();
+    }
   }
 
   flush(): void {
