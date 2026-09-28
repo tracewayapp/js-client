@@ -1,3 +1,5 @@
+import { gzipSync, strToU8 } from "fflate";
+
 export async function compressGzip(data: string): Promise<Uint8Array> {
   const encoder = new TextEncoder();
   const inputBytes = encoder.encode(data);
@@ -28,52 +30,58 @@ export async function compressGzip(data: string): Promise<Uint8Array> {
   return result;
 }
 
-export interface SendReportOptions {
-  /**
-   * Set to true on session-end paths (pagehide/unload). Skips gzip and
-   * dispatches synchronously with `fetch(..., { keepalive: true })` so the
-   * request survives navigation. Body is plain JSON — the backend's gzip
-   * middleware bypasses decompression when `Content-Encoding` is absent.
-   * Browser keepalive caps bodies at 64 KB, plenty for a closing-session
-   * payload (final drained segment + closing `ClientSession` row).
-   */
-  keepalive?: boolean;
+/**
+ * Browsers reject a keepalive request once the bodies of all in-flight
+ * keepalive requests of the page would exceed 64 KiB, and the rejection is
+ * silent to code that has already returned from its unload handler.
+ */
+export const KEEPALIVE_BUDGET_BYTES = 64 * 1024;
+
+/**
+ * Sends a report that must survive the page going away (pagehide, a hidden
+ * tab the OS may freeze or kill). An unload handler cannot await, so the body
+ * is gzipped synchronously; rrweb JSON shrinks roughly tenfold, which is what
+ * lets a full DOM snapshot fit the keepalive budget at all.
+ *
+ * `bytes` is the compressed body size dispatched (0 when it does not fit in
+ * `budgetBytes` and nothing was sent); `delivered` settles with whether the
+ * backend accepted it, for callers whose page is still alive to retry.
+ */
+export function sendReportKeepalive(
+  apiUrl: string,
+  token: string,
+  body: string,
+  budgetBytes: number = KEEPALIVE_BUDGET_BYTES,
+): { bytes: number; delivered: Promise<boolean> } {
+  const compressed = gzipSync(strToU8(body));
+  if (compressed.length > budgetBytes) {
+    return { bytes: 0, delivered: Promise.resolve(false) };
+  }
+  try {
+    const delivered = fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip",
+        Authorization: `Bearer ${token}`,
+      },
+      body: compressed as unknown as BodyInit,
+      keepalive: true,
+    }).then(
+      (resp) => resp.status === 200,
+      () => false,
+    );
+    return { bytes: compressed.length, delivered };
+  } catch {
+    return { bytes: 0, delivered: Promise.resolve(false) };
+  }
 }
 
 export async function sendReport(
   apiUrl: string,
   token: string,
   body: string,
-  options: SendReportOptions = {},
 ): Promise<boolean> {
-  if (options.keepalive) {
-    // The pagehide handler returns within microseconds; we cannot `await`
-    // anything (including the async CompressionStream) before dispatching,
-    // or the page unloads before the request is queued.
-    //
-    // We also cannot use navigator.sendBeacon — it can't set Authorization
-    // and the backend's UseClientAuth middleware requires the Bearer header.
-    //
-    // Solution: skip gzip on this path and call fetch synchronously with
-    // keepalive: true. The backend's UseGzip middleware bypasses
-    // decompression when Content-Encoding is absent. Body is plain JSON.
-    // (Browser keepalive cap is 64 KB, plenty for a closing payload.)
-    try {
-      void fetch(apiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body,
-        keepalive: true,
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   const compressed = await compressGzip(body);
   // The compressed Uint8Array is a BodyInit at runtime; the TS lib bundled
   // with this project narrows it through ArrayBufferLike and trips the type

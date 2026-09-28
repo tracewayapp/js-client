@@ -11,14 +11,30 @@ import type {
   TracewayEvent,
 } from "@tracewayapp/core";
 import { parseConnectionString, generateUUID, EventBuffer, nowISO } from "@tracewayapp/core";
-import { sendReport } from "./transport.js";
+import { KEEPALIVE_BUDGET_BYTES, sendReport, sendReportKeepalive } from "./transport.js";
 import { SessionRecorder } from "./session-recorder.js";
-import { SessionLifecycle } from "./session-lifecycle.js";
+import {
+  DEFAULT_INACTIVITY_MS,
+  DEFAULT_MAX_DURATION_MS,
+  SessionLifecycle,
+} from "./session-lifecycle.js";
+import { clearStoredSession, readStoredSession, writeStoredSession } from "./session-store.js";
 import { collectDefaultAttributes } from "./default-attributes.js";
 import { debugIdsForStackTrace } from "./debug-ids.js";
 
 interface RrwebLikeEvent {
   timestamp?: number;
+}
+
+const ENTRY_ATTRIBUTE_KEYS = ["url", "path", "referrer"] as const;
+
+function entryAttributes(): Record<string, string> {
+  const defaults = collectDefaultAttributes();
+  const entry: Record<string, string> = {};
+  for (const key of ENTRY_ATTRIBUTE_KEYS) {
+    if (defaults[key] !== undefined) entry[key] = defaults[key]!;
+  }
+  return entry;
 }
 
 function epochMsToISO(ms: number): string {
@@ -90,9 +106,11 @@ export interface TracewayFrontendOptions {
    * becomes its own `session_recordings` row on the backend, all linked to a
    * parent `sessions` row by `sessionId`.
    *
-   *   - Inactivity timeout: 15 min ends the session.
+   *   - Inactivity timeout: 15 min ends the session, stamped at the last activity.
    *   - Max duration: 60 min ends the session.
-   *   - `pagehide` ends the session and triggers a final flush.
+   *   - `pagehide` closes the session and flushes it; a navigation to another
+   *     page of the same tab within the inactivity window continues it.
+   *   - Hiding the page flushes the in-progress segment.
    *
    * Defaults to false to preserve the existing exception-only behaviour.
    */
@@ -140,7 +158,12 @@ export class TracewayFrontendClient {
   private readonly recordAllSessions: boolean;
   private sessionId: string | null = null;
   private sessionStartedAt: string | null = null;
+  private sessionStartedAtMs = 0;
+  private sessionActive = false;
+  private sessionEntry: Record<string, string> = {};
   private segmentIndex = 0;
+  private readonly sessionStoreKey: string;
+  private keepaliveInFlightBytes = 0;
   /**
    * App-defined attributes attached to every session and exception emitted by
    * this client. Set via setAttribute() / setAttributes(). Auto-collected
@@ -149,9 +172,8 @@ export class TracewayFrontendClient {
    */
   private globalAttributes: Record<string, string> = {};
   /**
-   * Set true once the page begins unloading (`pagehide`). Forces the next
-   * sync to dispatch via `fetch(..., { keepalive: true })` with a raw JSON
-   * body so the closing-session payload survives the navigation.
+   * Set true once the page begins unloading (`pagehide`), so the closing
+   * payload goes out through the keepalive path instead of the debounced sync.
    */
   private unloading = false;
 
@@ -171,6 +193,7 @@ export class TracewayFrontendClient {
     const { token, apiUrl } = parseConnectionString(connectionString);
     this.apiUrl = apiUrl;
     this.token = token;
+    this.sessionStoreKey = `traceway:session:${token}`;
     this.debug = options.debug ?? false;
     this.debounceMs = options.debounceMs ?? 1500;
     this.retryDelayMs = options.retryDelayMs ?? 10000;
@@ -205,18 +228,17 @@ export class TracewayFrontendClient {
     // sessions row is still created. Without a recorder, no rrweb segments
     // ride along, but the linkage in the dashboard remains intact.
     if (this.recordAllSessions && hasWindow) {
-      this.beginSession();
+      const lastActivityMs = this.openSession();
       this.lifecycle = new SessionLifecycle({
+        startedAtMs: this.sessionStartedAtMs,
+        lastActivityMs,
         onUnloading: () => {
           this.unloading = true;
         },
-        onSessionEnd: () => this.endSession(),
+        onSessionEnd: (endedAtMs) => this.endSession(endedAtMs),
         onSessionRestart: () => this.restartSession(),
-        onSoftFlush: () => {
-          if (this.pendingSessions.length > 0 || this.pendingRecordings.length > 0) {
-            this.scheduleSync();
-          }
-        },
+        onSoftFlush: () => this.flushOnHidden(),
+        onResume: () => this.resumeVisible(),
       });
       this.lifecycle.install();
     }
@@ -239,25 +261,71 @@ export class TracewayFrontendClient {
 
   // ── Session lifecycle (always-on) ──────────────────────────────────────
 
-  private beginSession(): void {
-    this.sessionId = generateUUID();
-    this.sessionStartedAt = nowISO();
-    this.segmentIndex = 0;
+  /**
+   * Opens the tab's session: continues the one a previous page of this tab
+   * closed within the inactivity window, or starts a new one. Returns the
+   * session's last activity for the lifecycle's inactivity clock.
+   */
+  private openSession(): number {
+    const now = Date.now();
+    const stored = readStoredSession(this.sessionStoreKey);
+    const resumable =
+      stored !== null &&
+      stored.closedAtMs !== undefined &&
+      now - stored.lastActivityMs < DEFAULT_INACTIVITY_MS &&
+      now - stored.startedAtMs < DEFAULT_MAX_DURATION_MS;
+
+    let lastActivityMs = now;
+    if (resumable) {
+      this.sessionId = stored.id;
+      this.sessionStartedAt = stored.startedAt;
+      this.sessionStartedAtMs = stored.startedAtMs;
+      this.segmentIndex = stored.segmentIndex;
+      this.sessionEntry = stored.entry ?? {};
+      lastActivityMs = stored.lastActivityMs;
+    } else {
+      this.sessionId = generateUUID();
+      this.sessionStartedAtMs = now;
+      this.sessionStartedAt = new Date(now).toISOString();
+      this.segmentIndex = 0;
+      this.sessionEntry = entryAttributes();
+    }
+    this.sessionActive = true;
+    this.persistSession(lastActivityMs);
+
     this.pendingSessions.push({
       id: this.sessionId,
       startedAt: this.sessionStartedAt,
       attributes: this.composedSessionAttributes(),
     });
     this.scheduleSync();
+    return lastActivityMs;
+  }
+
+  private persistSession(lastActivityMs: number, closedAtMs?: number): void {
+    if (!this.sessionId || !this.sessionStartedAt) return;
+    writeStoredSession(this.sessionStoreKey, {
+      id: this.sessionId,
+      startedAt: this.sessionStartedAt,
+      startedAtMs: this.sessionStartedAtMs,
+      lastActivityMs,
+      segmentIndex: this.segmentIndex,
+      entry: this.sessionEntry,
+      closedAtMs,
+    });
   }
 
   /**
    * Merge browser defaults with whatever app-level scope was set via
-   * setAttribute(). App attrs override defaults on key collision.
+   * setAttribute(). App attrs override defaults on key collision. The page
+   * the session started on keeps its url/path/referrer for the whole
+   * session, so later pages and routes don't overwrite where the visit came
+   * from (the landing URL is what carries campaign parameters).
    */
   private composedSessionAttributes(): Record<string, string> {
     return {
       ...collectDefaultAttributes(),
+      ...this.sessionEntry,
       ...this.globalAttributes,
     };
   }
@@ -317,7 +385,7 @@ export class TracewayFrontendClient {
    */
   private refreshOpenSessionAttributes(): void {
     if (!this.sessionId || !this.sessionStartedAt) return;
-    if (this.recordAllSessions !== true) return;
+    if (this.recordAllSessions !== true || !this.sessionActive) return;
     this.pendingSessions.push({
       id: this.sessionId,
       startedAt: this.sessionStartedAt,
@@ -326,8 +394,8 @@ export class TracewayFrontendClient {
     this.scheduleSync();
   }
 
-  private endSession(): void {
-    if (!this.sessionId || !this.sessionStartedAt) return;
+  private endSession(endedAtMs: number): void {
+    if (!this.sessionId || !this.sessionStartedAt || !this.sessionActive) return;
 
     if (this.recorder) {
       const drained = this.recorder.drainCurrent();
@@ -339,38 +407,76 @@ export class TracewayFrontendClient {
     this.pendingSessions.push({
       id: this.sessionId,
       startedAt: this.sessionStartedAt,
-      endedAt: nowISO(),
+      endedAt: new Date(endedAtMs).toISOString(),
       // Re-snapshot attributes so the upsert doesn't clobber the opening
       // attribute blob with an empty map. Also picks up URL changes and any
       // global-scope attributes set during the session.
       attributes: this.composedSessionAttributes(),
     });
+    this.sessionActive = false;
 
-    // On unload paths the debounce timer never fires — flush directly so the
-    // closing payload rides out on fetch keepalive.
+    // On unload the debounce timer never fires and an in-flight sync would
+    // hold the closing payload back, so it leaves on the keepalive path now.
+    // The stored session stays resumable for the next page of this tab.
     if (this.unloading) {
       if (this.debounceTimer !== null) {
         clearTimeout(this.debounceTimer);
         this.debounceTimer = null;
       }
-      void this.doSync();
+      this.persistSession(this.lifecycle?.lastActivity() ?? endedAtMs, Date.now());
+      this.flushKeepalive();
     } else {
+      clearStoredSession(this.sessionStoreKey);
       this.scheduleSync();
     }
   }
 
   /**
-   * Begin a fresh session after the page came back from bfcache. The previous
-   * session was closed by `pagehide`; we generate a new sessionId and reset
-   * the unloading flag so subsequent syncs go back to the gzipped path.
+   * Opens a session again after the previous one ended: continues it when
+   * the page came back from bfcache within the inactivity window, otherwise
+   * starts a new one. The recorder restarts from a full snapshot so the new
+   * segment replays on its own.
    */
   private restartSession(): void {
     this.unloading = false;
-    this.beginSession();
+    const lastActivityMs = this.openSession();
+    this.lifecycle?.continueFrom(this.sessionStartedAtMs, lastActivityMs);
+    this.recorder?.startFresh();
+  }
+
+  /**
+   * The page was hidden: the OS may freeze or kill it without a `pagehide`
+   * (mobile browsers routinely do), so the in-progress segment and anything
+   * pending leave on the keepalive path while the page can still send.
+   */
+  private flushOnHidden(): void {
+    if (this.sessionActive) {
+      if (this.recorder) {
+        const drained = this.recorder.drainCurrent();
+        if (drained && drained.events.length > 0) {
+          this.queueSegment(drained);
+        }
+      }
+      this.persistSession(this.lifecycle?.lastActivity() ?? Date.now(), Date.now());
+    }
+    if (this.debounceTimer !== null) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.flushKeepalive();
+    if (this.hasPending()) {
+      this.scheduleSync();
+    }
+  }
+
+  private resumeVisible(): void {
+    if (!this.sessionActive) return;
+    this.persistSession(this.lifecycle?.lastActivity() ?? Date.now());
+    this.recorder?.startFresh();
   }
 
   private handleSegmentReady(segment: { events: unknown[]; startedAt: string; endedAt: string }): void {
-    if (!this.sessionId) return;
+    if (!this.sessionId || !this.sessionActive) return;
     this.queueSegment(segment);
     this.scheduleSync();
   }
@@ -394,6 +500,9 @@ export class TracewayFrontendClient {
     if (logs.length > 0) payload.logs = logs;
     if (actions.length > 0) payload.actions = actions;
     this.pendingRecordings.push(payload);
+    if (this.sessionActive) {
+      this.persistSession(this.lifecycle?.lastActivity() ?? Date.now());
+    }
   }
 
   /** @internal — exposed for tests. */
@@ -539,7 +648,7 @@ export class TracewayFrontendClient {
     // rrweb clip is a single segment (see getClipEvents), so it is bounded to
     // `sessionRecordingSegmentDuration` (default 30 s). The logs/actions that
     // ride with it stay on their own ~10 s rolling window (see EventBuffer).
-    if (this.recordAllSessions && this.sessionId) {
+    if (this.recordAllSessions && this.sessionId && this.sessionActive) {
       exception.sessionId = this.sessionId;
     }
 
@@ -634,12 +743,7 @@ export class TracewayFrontendClient {
 
     let failed = false;
     try {
-      const success = await sendReport(
-        this.apiUrl,
-        this.token,
-        JSON.stringify(payload),
-        this.unloading ? { keepalive: true } : undefined,
-      );
+      const success = await sendReport(this.apiUrl, this.token, JSON.stringify(payload));
       if (!success) {
         failed = true;
         this.pendingExceptions.unshift(...batch);
@@ -673,6 +777,88 @@ export class TracewayFrontendClient {
     }
   }
 
+  private hasPending(): boolean {
+    return (
+      this.pendingExceptions.length > 0 ||
+      this.pendingRecordings.length > 0 ||
+      this.pendingSessions.length > 0
+    );
+  }
+
+  private reportFor(frame: Partial<CollectionFrame>): ReportRequest {
+    return {
+      collectionFrames: [{ stackTraces: [], metrics: [], traces: [], ...frame }],
+      appVersion: this.version,
+      serverName: "",
+    };
+  }
+
+  /**
+   * Sends what is pending through keepalive requests, which survive the page
+   * being unloaded or killed. Browsers reject keepalive bodies beyond a shared
+   * 64 KiB budget, so nothing is bundled: session rows go first on their own
+   * (the closing row must never share a fate with a large replay segment),
+   * then each exception with its own clip (the backend links a clip to its
+   * exception only within one request), then each segment. What does not fit
+   * stays pending for the regular sync, and a failed delivery is re-queued.
+   */
+  private flushKeepalive(): void {
+    const send = (frame: Partial<CollectionFrame>, requeue: () => void): boolean => {
+      const budget = KEEPALIVE_BUDGET_BYTES - this.keepaliveInFlightBytes;
+      const { bytes, delivered } = sendReportKeepalive(
+        this.apiUrl,
+        this.token,
+        JSON.stringify(this.reportFor(frame)),
+        budget,
+      );
+      if (bytes === 0) return false;
+      this.keepaliveInFlightBytes += bytes;
+      void delivered.then((ok) => {
+        this.keepaliveInFlightBytes -= bytes;
+        if (!ok) {
+          requeue();
+          this.scheduleRetry();
+        }
+      });
+      return true;
+    };
+
+    const sessions = this.pendingSessions.splice(0);
+    if (sessions.length > 0 && !send({ sessions }, () => this.pendingSessions.unshift(...sessions))) {
+      this.pendingSessions.unshift(...sessions);
+    }
+
+    const recordings = this.pendingRecordings.splice(0);
+    const unsentExceptions: ExceptionStackTrace[] = [];
+    for (const exception of this.pendingExceptions.splice(0)) {
+      const clipIndex = recordings.findIndex(
+        (r) => r.exceptionId !== undefined && r.exceptionId === exception.sessionRecordingId,
+      );
+      const clip = clipIndex >= 0 ? recordings.splice(clipIndex, 1)[0]! : undefined;
+      const frame: Partial<CollectionFrame> = {
+        stackTraces: [exception],
+        sessionRecordings: clip ? [clip] : undefined,
+      };
+      const requeue = () => {
+        this.pendingExceptions.push(exception);
+        if (clip) this.pendingRecordings.push(clip);
+      };
+      if (!send(frame, requeue)) {
+        unsentExceptions.push(exception);
+        if (clip) recordings.push(clip);
+      }
+    }
+    this.pendingExceptions.unshift(...unsentExceptions);
+
+    const unsentRecordings: SessionRecordingPayload[] = [];
+    for (const recording of recordings) {
+      if (!send({ sessionRecordings: [recording] }, () => this.pendingRecordings.push(recording))) {
+        unsentRecordings.push(recording);
+      }
+    }
+    this.pendingRecordings.unshift(...unsentRecordings);
+  }
+
   private scheduleRetry(): void {
     if (this.retryTimer !== null) return;
     this.retryTimer = setTimeout(() => {
@@ -694,7 +880,7 @@ export class TracewayFrontendClient {
       this.lifecycle.uninstall();
     }
     if (this.recordAllSessions) {
-      this.endSession();
+      this.endSession(Date.now());
     }
     if (this.recorder) {
       this.recorder.stop();

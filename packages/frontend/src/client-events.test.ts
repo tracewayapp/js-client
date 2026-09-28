@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { TracewayFrontendClient } from "./client.js";
 import type { ReportRequest, SessionRecordingPayload } from "@tracewayapp/core";
+import { gunzipSync, strFromU8 } from "fflate";
 
 function createMockCompressionStream() {
   return class MockCompressionStream {
@@ -38,6 +39,7 @@ function makeClient(): TracewayFrontendClient {
 
 describe("TracewayFrontendClient timeline events", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 200 }));
     vi.stubGlobal("CompressionStream", createMockCompressionStream());
   });
@@ -299,7 +301,7 @@ describe("TracewayFrontendClient timeline events", () => {
     expect(closing!.startedAt).toBeTruthy();
   });
 
-  it("pagehide flushes the closing payload via fetch keepalive", async () => {
+  it("pagehide sends the closing session row on its own gzipped keepalive request", async () => {
     const client = new TracewayFrontendClient(
       "test-token@https://example.com/api/report",
       {
@@ -312,31 +314,23 @@ describe("TracewayFrontendClient timeline events", () => {
 
     window.dispatchEvent(new Event("pagehide"));
 
-    // The pagehide handler runs synchronously and dispatches an async sync;
-    // wait for the fetch promise chain to resolve.
-    await new Promise((r) => setTimeout(r, 10));
-
     const fetchMock = vi.mocked(fetch);
-    const keepaliveCall = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.keepalive === true);
-    expect(keepaliveCall).toBeDefined();
+    const keepaliveCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.keepalive === true);
+    expect(keepaliveCalls.length).toBeGreaterThan(0);
 
-    // Keepalive path skips gzip and sends raw JSON so the fetch can dispatch
-    // synchronously inside the pagehide handler. Body should be a plain
-    // string, no Content-Encoding header.
-    const init = keepaliveCall![1] as RequestInit;
-    expect(typeof init.body).toBe("string");
-    expect((init.headers as Record<string, string>)["Content-Encoding"]).toBeUndefined();
-
-    const body = JSON.parse(init.body as string) as ReportRequest;
-    const closing = body.collectionFrames
-      .flatMap((f) => f.sessions ?? [])
-      .find((s) => s.id === sid && s.endedAt);
-    expect(closing).toBeDefined();
+    // The request is dispatched synchronously inside the handler, gzipped
+    // without awaiting, and carries nothing but session rows.
+    const init = keepaliveCalls[0]![1] as RequestInit;
+    expect((init.headers as Record<string, string>)["Content-Encoding"]).toBe("gzip");
+    const body = JSON.parse(strFromU8(gunzipSync(init.body as Uint8Array))) as ReportRequest;
+    const frame = body.collectionFrames[0]!;
+    expect(frame.sessionRecordings).toBeUndefined();
+    expect(frame.sessions!.find((s) => s.id === sid && s.endedAt)).toBeDefined();
 
     void client.flush();
   });
 
-  it("bfcache restore generates a new sessionId and clears the unloading flag", async () => {
+  it("bfcache restore continues the session within the inactivity window and goes back to the regular sync", async () => {
     const client = new TracewayFrontendClient(
       "test-token@https://example.com/api/report",
       {
@@ -348,43 +342,47 @@ describe("TracewayFrontendClient timeline events", () => {
     const original = client.currentSessionId();
     expect(original).toBeTruthy();
 
-    // Close the page.
     window.dispatchEvent(new Event("pagehide"));
-
-    // Drain microtasks so the pagehide-triggered doSync fully resolves
-    // (releases the isSyncing guard) before we restart. In a real browser
-    // the bfcache freeze gives plenty of time for this; in synchronous
-    // test code we have to wait explicitly.
     await new Promise((r) => setTimeout(r, 0));
 
-    // Restore from bfcache.
+    const restore = new Event("pageshow") as PageTransitionEvent;
+    Object.defineProperty(restore, "persisted", { value: true });
+    window.dispatchEvent(restore);
+    expect(client.currentSessionId()).toBe(original);
+
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockClear();
+    client.recordLog("info", "post-restore");
+    await client.flush();
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
+    for (const call of fetchMock.mock.calls) {
+      expect((call[1] as RequestInit).keepalive).not.toBe(true);
+    }
+  });
+
+  it("bfcache restore after the inactivity window starts a new session", async () => {
+    const client = new TracewayFrontendClient(
+      "test-token@https://example.com/api/report",
+      {
+        debounceMs: 0,
+        recordAllSessions: true,
+        ignoreErrors: [],
+      },
+    );
+    const original = client.currentSessionId();
+
+    window.dispatchEvent(new Event("pagehide"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const realNow = Date.now;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 16 * 60_000);
     const restore = new Event("pageshow") as PageTransitionEvent;
     Object.defineProperty(restore, "persisted", { value: true });
     window.dispatchEvent(restore);
 
-    const restored = client.currentSessionId();
-    expect(restored).toBeTruthy();
-    expect(restored).not.toBe(original);
-
-    // Subsequent syncs after restart must go back to the gzipped
-    // (non-keepalive) path. Find any fetch call that carries the new
-    // session id and confirm it didn't use keepalive.
-    client.recordLog("info", "post-restore");
+    expect(client.currentSessionId()).toBeTruthy();
+    expect(client.currentSessionId()).not.toBe(original);
     await client.flush();
-
-    const fetchMock = vi.mocked(fetch);
-    const decoder = new TextDecoder();
-    const restoredCall = fetchMock.mock.calls.find((call) => {
-      const init = call[1] as RequestInit | undefined;
-      const body = init?.body;
-      const text =
-        typeof body === "string" ? body :
-        body instanceof Uint8Array ? decoder.decode(body) :
-        "";
-      return text.includes(restored!) && !text.includes(`"id":"${original}"`);
-    });
-    expect(restoredCall).toBeDefined();
-    expect((restoredCall![1] as RequestInit).keepalive).not.toBe(true);
   });
 
   it("setAttribute attaches scope to subsequent exceptions and to the open session", async () => {

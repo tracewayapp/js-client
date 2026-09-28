@@ -404,7 +404,8 @@ This lets you click on an error in the Traceway dashboard and see the correspond
 The frontend SDK includes built-in session replay powered by [rrweb](https://github.com/rrweb-io/rrweb) (`^2.0.0-alpha.18`).
 
 - **Enabled by default** — controlled by the `sessionRecording` option (defaults to `true`). Only activates when `window` is available.
-- **Segment rotation** — DOM events are recorded into segments that rotate every 10 seconds (configurable via `sessionRecordingSegmentDuration` in ms).
+- **Segment rotation** — DOM events are recorded into segments that rotate every 30 seconds (configurable via `sessionRecordingSegmentDuration` in ms).
+- **Always-on sessions** (`recordAllSessions: true`) — see the package README for the lifecycle. The session lives in `sessionStorage` (`src/session-store.ts`) so page loads of the same tab continue it; hidden-page and unload flushes go through `sendReportKeepalive` (`src/transport.ts`), which gzips synchronously with `fflate` and keeps every request within the browser's 64 KiB keepalive budget.
 - **Buffering** — The recorder keeps at most 2 segments in memory (the current segment and the previous one).
 - **Exception attachment** — When an exception is captured, the recorder's segments are automatically attached to it via a `sessionRecordingId` field, so the replay can be viewed alongside the error in the Traceway dashboard.
 - **Flush behavior** — On sync, pending recordings are sent with the exception batch. Calling `flush()` stops the recorder and sends all remaining data.
@@ -412,7 +413,7 @@ The frontend SDK includes built-in session replay powered by [rrweb](https://git
 ```ts
 traceway.init("token@https://traceway.example.com/api/report", {
   sessionRecording: true,               // default
-  sessionRecordingSegmentDuration: 10000, // default: 10s
+  sessionRecordingSegmentDuration: 30000, // default: 30s
 });
 ```
 
