@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 let emitFn: ((e: unknown) => void) | null = null;
 let snapshotClock = 0;
 
-vi.mock("rrweb", () => {
+vi.mock("@rrweb/record", () => {
   const record = vi.fn((opts: { emit: (e: unknown) => void }) => {
     emitFn = opts.emit;
     return () => {
