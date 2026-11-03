@@ -25,7 +25,7 @@ Every package below lives in `packages/<name>/` and is published as `@tracewayap
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| [`@tracewayapp/frontend`](packages/frontend) | <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a> | Browser SDK — `window.onerror`, `unhandledrejection`, console logs, `fetch` / XHR actions, History API navigation, rrweb session replay, gzip transport |
+| [`@tracewayapp/frontend`](packages/frontend) | <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a> | Browser SDK — built on OpenTelemetry (2.x): errors, console, navigation, clicks, web vitals, `fetch` / XHR spans with `traceparent`, rrweb session replay; what it sends is controlled remotely over OpAMP |
 | [`@tracewayapp/react`](packages/react) | <a href="https://www.npmjs.com/package/@tracewayapp/react"><img src="https://img.shields.io/npm/v/@tracewayapp/react.svg" alt="npm"></a> | React wrapper — `<TracewayProvider>`, `<TracewayErrorBoundary>`, `useTraceway()` hook |
 | [`@tracewayapp/vue`](packages/vue) | <a href="https://www.npmjs.com/package/@tracewayapp/vue"><img src="https://img.shields.io/npm/v/@tracewayapp/vue.svg" alt="npm"></a> | Vue 3 plugin + `useTraceway()` composable |
 | [`@tracewayapp/svelte`](packages/svelte) | <a href="https://www.npmjs.com/package/@tracewayapp/svelte"><img src="https://img.shields.io/npm/v/@tracewayapp/svelte.svg" alt="npm"></a> | Svelte / SvelteKit context-based setup |
@@ -41,7 +41,8 @@ Every package below lives in `packages/<name>/` and is published as `@tracewayap
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| [`@tracewayapp/core`](packages/core) | <a href="https://www.npmjs.com/package/@tracewayapp/core"><img src="https://img.shields.io/npm/v/@tracewayapp/core.svg" alt="npm"></a> | Shared types and utilities consumed by every other SDK. Zero runtime dependencies. You probably don't need to install this directly |
+| [`@tracewayapp/core`](packages/core) | <a href="https://www.npmjs.com/package/@tracewayapp/core"><img src="https://img.shields.io/npm/v/@tracewayapp/core.svg" alt="npm"></a> | Shared types and utilities consumed by every other SDK, plus the 2.x control plane (settings, triggers, buffer). Zero runtime dependencies. You probably don't need to install this directly |
+| [`@tracewayapp/opamp`](packages/opamp) | — | Minimal OpAMP client over plain HTTP (fetch), used by the browser SDK for remote config. Zero runtime dependencies |
 
 ### Tooling
 
@@ -83,7 +84,9 @@ These packages are no longer actively developed. New backend integrations should
 └────────┘ └────────┘ └────────┘ └────────┘ └────────┘
 ```
 
-`@tracewayapp/core` is platform-agnostic. `frontend` is the browser SDK with rrweb; the framework wrappers (`react`, `vue`, `svelte`, `jquery`) are thin layers on top. `react-native` does **not** depend on `frontend` — it builds directly on `core` so the bundle stays free of `rrweb`, `CompressionStream`, and other browser-only APIs that don't exist on Hermes / JSC.
+In 2.x, `frontend` exports OpenTelemetry (OTLP/HTTP JSON) and polls Traceway over OpAMP (`@tracewayapp/opamp`) for its collection settings; replay goes to a separate recordings endpoint. See `INTERNAL_DOCS.md` for the design.
+
+`@tracewayapp/core` is platform-agnostic. `frontend` is the browser SDK with rrweb; the framework wrappers (`react`, `vue`, `svelte`, `jquery`) are thin layers on top. `react-native` does **not** depend on `frontend` — it builds directly on `core` so the bundle stays free of `rrweb` and other browser-only APIs that don't exist on Hermes / JSC.
 
 ## Getting started as a user
 
@@ -117,7 +120,7 @@ Then [generate a connection string](https://docs.tracewayapp.com) on your Tracew
 js-client/
 ├── packages/
 │   ├── core/              # Foundation — types, utilities, zero deps
-│   ├── frontend/          # Browser SDK (rrweb, CompressionStream)
+│   ├── frontend/          # Browser SDK (rrweb, browser instrumentation)
 │   │   └── examples/
 │   │       └── browser-demo/
 │   ├── react/

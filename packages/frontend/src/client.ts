@@ -1,900 +1,1282 @@
-import type {
-  ExceptionStackTrace,
-  ReportRequest,
-  CollectionFrame,
-  SessionPayload,
-  SessionRecordingPayload,
-  LogEvent,
-  NetworkEvent,
-  NavigationEvent,
-  CustomEvent,
-  TracewayEvent,
-} from "@tracewayapp/core";
-import { parseConnectionString, generateUUID, EventBuffer, nowISO } from "@tracewayapp/core";
-import { KEEPALIVE_BUDGET_BYTES, sendReport, sendReportKeepalive } from "./transport.js";
-import { SessionRecorder } from "./session-recorder.js";
+import { context, propagation } from "@opentelemetry/api";
+import type { Logger } from "@opentelemetry/api-logs";
+import { SeverityNumber } from "@opentelemetry/api-logs";
+import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
+import { ErrorsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/errors";
+import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
+import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
+import { NavigationTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
+import { ResourceTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
+import { UserActionInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/user-action";
+import { WebVitalsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
+import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import type { Instrumentation } from "@opentelemetry/instrumentation";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import {
-  DEFAULT_INACTIVITY_MS,
-  DEFAULT_MAX_DURATION_MS,
-  SessionLifecycle,
-} from "./session-lifecycle.js";
-import { clearStoredSession, readStoredSession, writeStoredSession } from "./session-store.js";
-import { collectDefaultAttributes } from "./default-attributes.js";
+  defaultResource,
+  resourceFromAttributes,
+} from "@opentelemetry/resources";
+import type { LogRecordExporter, SdkLogRecord } from "@opentelemetry/sdk-logs";
+import {
+  BatchLogRecordProcessor,
+  LoggerProvider,
+} from "@opentelemetry/sdk-logs";
+import type { SpanExporter } from "@opentelemetry/sdk-trace";
+import {
+  BatchSpanProcessor,
+  StackContextManager,
+  TracerProvider,
+} from "@opentelemetry/sdk-trace";
+import type {
+  FiredTrigger,
+  Settings,
+  SignalName,
+  SignalSelector,
+  TracewayEndpoints,
+  TriggerAction,
+} from "@tracewayapp/core";
+import {
+  ceilingsFrom,
+  ControlState,
+  defaultSettings,
+  generateUUID,
+  parseConnectionString,
+  parseSettingsDocument,
+  resolveEndpoints,
+  RingBuffer,
+  TriggerEngine,
+  unitHash,
+  uuidToBytes,
+  uuidv7,
+} from "@tracewayapp/core";
+import type { AttributeValue, RemoteConfig } from "@tracewayapp/opamp";
+import { AgentCapabilities, OpampHttpClient } from "@tracewayapp/opamp";
+import { ErrorLimiter, type ErrorLimits } from "./error-limiter.js";
 import { debugIdsForStackTrace } from "./debug-ids.js";
+import { collectDefaultAttributes } from "./default-attributes.js";
+import { browserResourceAttributes } from "./otel/browser-resource.js";
+import type { RecordSignal } from "./otel/events.js";
+import {
+  ATTR_DEBUG_IDS,
+  ATTR_EXCEPTION_ID,
+  ATTR_SESSION_ID,
+  ATTR_SESSION_STARTED_AT,
+  EVENT_ACTION,
+  EVENT_CAPTURE_STARTED,
+  EVENT_CONFIG_APPLIED,
+  EVENT_EXCEPTION,
+  EVENT_MESSAGE,
+  EVENT_SESSION_END,
+  EVENT_SESSION_START,
+  EVENT_SESSION_UPDATE,
+  EVENT_TRIGGER_FIRED,
+  classifyLog,
+} from "./otel/events.js";
+import type { BufferedItem, ObservedRecord } from "./otel/router.js";
+import {
+  ControlLogProcessor,
+  ControlSpanProcessor,
+  TelemetryRouter,
+} from "./otel/router.js";
+import { ReplayController } from "./replay/replay-controller.js";
+import type { SessionInfo } from "./session/session-manager.js";
+import { SessionManager } from "./session/session-manager.js";
+import { RecordingsTransport } from "./transport/recordings.js";
+import { TelemetryPersistence } from "./persistence/telemetry-persistence.js";
+import type { StoredBatch } from "./persistence/idb.js";
+import { filterRequest } from "./persistence/otlp-json.js";
+import type { SendResult } from "./persistence/outbox.js";
+import {
+  PersistingLogExporter,
+  PersistingSpanExporter,
+} from "./persistence/persisting-exporters.js";
 
-interface RrwebLikeEvent {
-  timestamp?: number;
-}
-
-const ENTRY_ATTRIBUTE_KEYS = ["url", "path", "referrer"] as const;
-
-function entryAttributes(): Record<string, string> {
-  const defaults = collectDefaultAttributes();
-  const entry: Record<string, string> = {};
-  for (const key of ENTRY_ATTRIBUTE_KEYS) {
-    if (defaults[key] !== undefined) entry[key] = defaults[key]!;
-  }
-  return entry;
-}
-
-function epochMsToISO(ms: number): string {
-  return new Date(ms).toISOString();
-}
-
-/**
- * Computes the wall-clock window covered by a recording. Prefers rrweb events
- * (each carries a `timestamp` epoch ms); falls back to the timestamp range of
- * the buffered logs/actions when there's no replay data — that path is what
- * fires when `sessionRecording: false` but logs/actions are still being kept.
- */
-function computeRecordingAnchors(
-  recorderEvents: unknown[],
-  logs: LogEvent[],
-  actions: Array<NetworkEvent | NavigationEvent | CustomEvent>,
-): { startedAt?: string; endedAt?: string } {
-  if (recorderEvents.length > 0) {
-    const stamps: number[] = [];
-    for (const e of recorderEvents) {
-      const ts = (e as RrwebLikeEvent)?.timestamp;
-      if (typeof ts === "number" && Number.isFinite(ts)) stamps.push(ts);
-    }
-    if (stamps.length > 0) {
-      return {
-        startedAt: epochMsToISO(Math.min(...stamps)),
-        endedAt: epochMsToISO(Math.max(...stamps)),
-      };
-    }
-  }
-
-  const eventStamps = [
-    ...logs.map((e) => Date.parse(e.timestamp)),
-    ...actions.map((e) => Date.parse(e.timestamp)),
-  ].filter((n) => Number.isFinite(n));
-  if (eventStamps.length === 0) return {};
-  return {
-    startedAt: epochMsToISO(Math.min(...eventStamps)),
-    endedAt: epochMsToISO(Math.max(...eventStamps)),
-  };
-}
+export const SDK_VERSION = "2.0.0";
+const SCOPE_NAME = "@tracewayapp/frontend";
 
 export const DEFAULT_IGNORE_PATTERNS: Array<string | RegExp> = [
-  // Network errors (browser-specific messages)
   "Failed to fetch",
   "NetworkError when attempting to fetch resource",
   "Load failed",
   "Network Error",
-  // RN-style network error (surfaces here when an app shares code with React Native)
   "Network request failed",
-  // Timeout / Abort
   "The operation was aborted",
   /timeout/i,
-  // 4xx HTTP errors (common library patterns)
   /status code 4\d{2}/,
   /failed: 4\d{2}/,
 ];
 
+/** What `beforeCapture` sees of an exception before it is recorded. */
+export interface CapturedException {
+  type?: string;
+  message?: string;
+  stack?: string;
+  attributes: Record<string, unknown>;
+}
+
 export interface TracewayFrontendOptions {
   debug?: boolean;
-  debounceMs?: number;
-  retryDelayMs?: number;
+  /** `service.name` of this app. Defaults to the page's host name. */
+  serviceName?: string;
+  /** `service.version`, used to group releases and to target remote config. */
   version?: string;
-  sessionRecording?: boolean;
-  sessionRecordingSegmentDuration?: number;
-  /**
-   * Upload every segment of the session regardless of whether an exception
-   * fires. Each segment (default ~30 s, see `sessionRecordingSegmentDuration`)
-   * becomes its own `session_recordings` row on the backend, all linked to a
-   * parent `sessions` row by `sessionId`.
-   *
-   *   - Inactivity timeout: 15 min ends the session, stamped at the last activity.
-   *   - Max duration: 60 min ends the session.
-   *   - `pagehide` closes the session and flushes it; a navigation to another
-   *     page of the same tab within the inactivity window continues it.
-   *   - Hiding the page flushes the in-progress segment.
-   *
-   * Defaults to false to preserve the existing exception-only behaviour.
-   */
-  recordAllSessions?: boolean;
+  /** `deployment.environment.name`, e.g. "production". */
+  environment?: string;
   /** Initial attributes for sessions and exceptions; copied when the client starts. */
   attributes?: Record<string, string>;
   ignoreErrors?: Array<string | RegExp>;
-  beforeCapture?: (exception: ExceptionStackTrace) => boolean;
-  /** Mirror console.{log,info,warn,error,debug} into the rolling log buffer. Default true. */
+  /** Return false to drop an exception. */
+  beforeCapture?: (exception: CapturedException) => boolean;
+
+  /** Allow session replay at all. Remote config decides between buffering and streaming it. Default true. */
+  sessionRecording?: boolean;
+  sessionRecordingSegmentDuration?: number;
+  /** Stream every replay segment by default instead of keeping them for error clips. Default false. */
+  recordAllSessions?: boolean;
+  /** Record session start and end. Default true. */
+  sessions?: boolean;
+  /** Share of sessions streaming buffered breadcrumbs and network spans; replay is unaffected. Default 0. */
+  baselineSampleRate?: number;
+  /** Local protection against repeated errors and error storms. */
+  errorLimits?: Partial<ErrorLimits>;
+
+  /** The following allow a signal at all; remote config can only restrict them further. All default true. */
   captureLogs?: boolean;
-  /** Record fetch / XHR requests as network actions. Default true. */
   captureNetwork?: boolean;
-  /** Record History API push/replace/pop as navigation actions. Default true. */
   captureNavigation?: boolean;
-  /** Window kept in the rolling log/action buffers. Default 10_000ms. */
-  eventsWindowMs?: number;
-  /** Hard cap applied independently to logs and actions. Default 200. */
-  eventsMaxCount?: number;
-  /**
-   * When `true`, every `fetch` / `XHR` response with `status >= 500` is also
-   * reported to Traceway as a synthetic exception (in addition to the network
-   * action it already records). 4xx responses are intentionally not captured
-   * by this flag — see `DEFAULT_IGNORE_PATTERNS`. Default `false`.
-   */
+  captureUserActions?: boolean;
+  captureWebVitals?: boolean;
+  captureResourceTiming?: boolean;
+
+  /** Report fetch/XHR responses with status >= 500 as message issues. Default false. */
   captureHttpServerErrors?: boolean;
+  /** Cross-origin URLs that receive the W3C `traceparent` header (same-origin requests always do). */
+  propagateTraceHeaderCorsUrls?: Array<string | RegExp>;
+  /**
+   * Fetch collection settings from Traceway over OpAMP, so the dashboard can change what this app sends without a
+   * release. The options above stay the ceiling: remote settings can only restrict them. Default true.
+   */
+  remoteConfig?: boolean;
+  /** Delay between OTLP exports, in milliseconds. Default 1000. */
+  exportDelayMs?: number;
+
+  /**
+   * OTLP/HTTP base URL (appends /v1/logs and /v1/traces) and optional headers.
+   * OpAMP and replay stay on Traceway. Traceway credentials are never forwarded.
+   */
+  telemetry?: { url: string; headers?: Record<string, string> };
+
+  /** Advanced: export somewhere else than Traceway's OTLP endpoints, e.g. an in-memory exporter in tests. */
+  logExporter?: LogRecordExporter;
+  spanExporter?: SpanExporter;
+}
+
+function storageGet(key: string, perTab = false): string | null {
+  try {
+    if (perTab)
+      return typeof sessionStorage === "undefined"
+        ? null
+        : sessionStorage.getItem(key);
+    return typeof localStorage === "undefined"
+      ? null
+      : localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key: string, value: string, perTab = false): void {
+  try {
+    if (perTab) {
+      if (typeof sessionStorage !== "undefined")
+        sessionStorage.setItem(key, value);
+    } else if (typeof localStorage !== "undefined")
+      localStorage.setItem(key, value);
+  } catch {
+    // Blocked storage only means a new instance id per page.
+  }
+}
+
+interface LocalCapture {
+  id: string;
+  triggerId: string;
+  untilMs: number;
+  signals: SignalSelector;
+  replay: boolean;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function selectorSet(
+  signals: SignalSelector | undefined,
+): ReadonlySet<string> | "*" {
+  if (!signals || signals.includes("*")) return "*";
+  return new Set(signals);
 }
 
 export class TracewayFrontendClient {
-  private apiUrl: string;
-  private token: string;
-  private debug: boolean;
-  private debounceMs: number;
-  private retryDelayMs: number;
-  private version: string;
+  readonly endpoints: TracewayEndpoints;
+  readonly instanceId: string;
+  readonly control: ControlState;
 
-  private pendingExceptions: ExceptionStackTrace[] = [];
-  private pendingRecordings: SessionRecordingPayload[] = [];
-  private pendingSessions: SessionPayload[] = [];
-  private isSyncing = false;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
-
-  private recorder: SessionRecorder | null = null;
-  private lifecycle: SessionLifecycle | null = null;
-  private readonly recordAllSessions: boolean;
-  private sessionId: string | null = null;
-  private sessionStartedAt: string | null = null;
-  private sessionStartedAtMs = 0;
-  private sessionActive = false;
-  private sessionEntry: Record<string, string> = {};
-  private segmentIndex = 0;
-  private readonly sessionStoreKey: string;
-  private keepaliveInFlightBytes = 0;
-  /**
-   * App-defined attributes attached to every session and exception emitted by
-   * this client. Set via setAttribute() / setAttributes(). Auto-collected
-   * defaults take a back seat to these; per-call exception attributes win
-   * over both.
-   */
-  private globalAttributes: Record<string, string> = {};
-  /**
-   * Set true once the page begins unloading (`pagehide`), so the closing
-   * payload goes out through the keepalive path instead of the debounced sync.
-   */
+  private readonly token: string;
+  private readonly options: TracewayFrontendOptions;
+  private readonly ignoreErrors: Array<string | RegExp>;
+  private readonly buffer: RingBuffer<BufferedItem>;
+  private readonly triggers = new TriggerEngine();
+  private readonly sessions: SessionManager;
+  private readonly replay: ReplayController;
+  private readonly recordings: RecordingsTransport;
+  private sessionSink: BatchLogRecordProcessor | null = null;
+  private sessionPersistence: TelemetryPersistence | null = null;
+  private readonly errorLimiter: ErrorLimiter;
+  private readonly logSink: BatchLogRecordProcessor;
+  private readonly spanSink: BatchSpanProcessor;
+  private globalAttributes: Record<string, string>;
+  private router: TelemetryRouter | null = null;
+  private logger: Logger | null = null;
+  private loggerProvider: LoggerProvider | null = null;
+  private tracerProvider: TracerProvider | null = null;
+  private deregisterInstrumentations: (() => void) | null = null;
+  private ownsPropagator = false;
+  private ownsContextManager = false;
   private unloading = false;
-
-  private ignoreErrors: Array<string | RegExp>;
-  private beforeCapture:
-    | ((exception: ExceptionStackTrace) => boolean)
-    | null;
-
-  readonly captureLogs: boolean;
-  readonly captureNetwork: boolean;
-  readonly captureNavigation: boolean;
-  readonly captureHttpServerErrors: boolean;
-  private readonly logs: EventBuffer<LogEvent>;
-  private readonly actions: EventBuffer<NetworkEvent | NavigationEvent | CustomEvent>;
+  private started = false;
+  private opamp: OpampHttpClient | null = null;
+  private resourceAttributes: Record<string, unknown> = {};
+  private appliedConfigHash: Uint8Array | undefined;
+  private describeTimer: ReturnType<typeof setTimeout> | null = null;
+  private overrideTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly persistence: TelemetryPersistence;
 
   constructor(connectionString: string, options: TracewayFrontendOptions = {}) {
     const { token, apiUrl } = parseConnectionString(connectionString);
-    this.apiUrl = apiUrl;
     this.token = token;
-    this.sessionStoreKey = `traceway:session:${token}`;
-    this.debug = options.debug ?? false;
-    this.debounceMs = options.debounceMs ?? 1500;
-    this.retryDelayMs = options.retryDelayMs ?? 10000;
-    this.version = options.version ?? "";
-    this.globalAttributes = { ...options.attributes };
-    this.ignoreErrors = options.ignoreErrors ?? DEFAULT_IGNORE_PATTERNS;
-    this.beforeCapture = options.beforeCapture ?? null;
-
-    this.captureLogs = options.captureLogs ?? true;
-    this.captureNetwork = options.captureNetwork ?? true;
-    this.captureNavigation = options.captureNavigation ?? true;
-    this.captureHttpServerErrors = options.captureHttpServerErrors ?? false;
-
-    // When always-on session recording is on, segments rotate every 30 s and
-    // drain the logs/actions buffers on each rotation. The window/cap need to
-    // span a full segment so we don't ship a partial slice. When always-on is
-    // off, keep the legacy 10 s / 200 cap — the rolling buffer powers the
-    // exception-bound clip and shouldn't grow unbounded.
-    const alwaysOn = options.recordAllSessions === true;
-    const bufferOpts = {
-      windowMs: options.eventsWindowMs ?? (alwaysOn ? 30_000 : 10_000),
-      maxSize: options.eventsMaxCount ?? (alwaysOn ? 600 : 200),
-    };
-    this.logs = new EventBuffer<LogEvent>(bufferOpts);
-    this.actions = new EventBuffer<NetworkEvent | NavigationEvent | CustomEvent>(bufferOpts);
-
-    this.recordAllSessions = options.recordAllSessions ?? false;
-    const hasWindow = typeof window !== "undefined";
-
-    // The always-on session/lifecycle path runs even when sessionRecording is
-    // disabled — exceptions still get stamped with sessionId and the parent
-    // sessions row is still created. Without a recorder, no rrweb segments
-    // ride along, but the linkage in the dashboard remains intact.
-    if (this.recordAllSessions && hasWindow) {
-      const lastActivityMs = this.openSession();
-      this.lifecycle = new SessionLifecycle({
-        startedAtMs: this.sessionStartedAtMs,
-        lastActivityMs,
-        onUnloading: () => {
-          this.unloading = true;
-        },
-        onSessionEnd: (endedAtMs) => this.endSession(endedAtMs),
-        onSessionRestart: () => this.restartSession(),
-        onSoftFlush: () => this.flushOnHidden(),
-        onResume: () => this.resumeVisible(),
-      });
-      this.lifecycle.install();
-    }
-
-    if (options.sessionRecording !== false && hasWindow) {
-      const recorderOptions: ConstructorParameters<typeof SessionRecorder>[0] = {
-        segmentDuration: options.sessionRecordingSegmentDuration,
-      };
-      if (this.recordAllSessions) {
-        recorderOptions.onSegmentReady = (seg) => this.handleSegmentReady(seg);
-        // rrweb's emit fires for every DOM mutation/input event — use it as
-        // the lifecycle's activity heartbeat so we don't double-listen on
-        // window for mousedown/keydown/scroll/etc.
-        recorderOptions.onActivity = () => this.lifecycle?.markActivity();
+    this.options = options;
+    this.errorLimiter = new ErrorLimiter(options.errorLimits);
+    this.endpoints = resolveEndpoints(apiUrl);
+    if (options.telemetry) {
+      const url = new URL(options.telemetry.url);
+      if (
+        !["http:", "https:"].includes(url.protocol) ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash
+      ) {
+        throw new Error(
+          "telemetry.url must be an HTTP(S) base URL without credentials, query, or fragment",
+        );
       }
-      this.recorder = new SessionRecorder(recorderOptions);
-      this.recorder.start();
+      const base = url.toString().replace(/\/+$/, "");
+      this.endpoints.logs = base + "/v1/logs";
+      this.endpoints.traces = base + "/v1/traces";
     }
-  }
+    const instanceKey = `traceway:instance:${this.token}`;
+    const storedInstanceId = storageGet(instanceKey);
+    this.instanceId =
+      storedInstanceId &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        storedInstanceId,
+      )
+        ? storedInstanceId
+        : uuidv7();
+    if (this.instanceId !== storedInstanceId)
+      storageSet(instanceKey, this.instanceId);
+    this.ignoreErrors = options.ignoreErrors ?? DEFAULT_IGNORE_PATTERNS;
+    this.globalAttributes = { ...options.attributes };
 
-  // ── Session lifecycle (always-on) ──────────────────────────────────────
+    this.control = new ControlState(
+      defaultSettings({
+        recordAllSessions: options.recordAllSessions,
+        baselineSampleRate: options.baselineSampleRate,
+      }),
+      ceilingsFrom({
+        sessionRecording: options.sessionRecording,
+        captureLogs: options.captureLogs,
+        captureNetwork: options.captureNetwork,
+        captureNavigation: options.captureNavigation,
+        captureUserActions: options.captureUserActions,
+        captureWebVitals: options.captureWebVitals,
+        captureResourceTiming: options.captureResourceTiming,
+        sessions: options.sessions,
+      }),
+    );
+    const settings = this.control.settings();
+    this.buffer = new RingBuffer<BufferedItem>({
+      maxBytes: settings.buffer.maxBytes,
+      maxAgeMs: settings.buffer.maxAgeSeconds * 1000,
+    });
+    this.recordings = new RecordingsTransport(this.endpoints.recordings, token);
+    this.sessions = new SessionManager({
+      storeKey: `traceway:session:${token}`,
+      onStart: (session, resumed) => this.onSessionStart(session, resumed),
+      onEnd: (session, endedAtMs, unloading) =>
+        this.onSessionEnd(session, endedAtMs, unloading),
+      onHidden: () => this.onHidden(),
+      onVisible: () => this.onVisible(),
+    });
+    this.replay = new ReplayController(
+      this.sessions,
+      this.recordings,
+      options.sessionRecordingSegmentDuration,
+    );
 
-  /**
-   * Opens the tab's session: continues the one a previous page of this tab
-   * closed within the inactivity window, or starts a new one. Returns the
-   * session's last activity for the lifecycle's inactivity clock.
-   */
-  private openSession(): number {
-    const now = Date.now();
-    const stored = readStoredSession(this.sessionStoreKey);
-    const resumable =
-      stored !== null &&
-      stored.closedAtMs !== undefined &&
-      now - stored.lastActivityMs < DEFAULT_INACTIVITY_MS &&
-      now - stored.startedAtMs < DEFAULT_MAX_DURATION_MS;
-
-    let lastActivityMs = now;
-    if (resumable) {
-      this.sessionId = stored.id;
-      this.sessionStartedAt = stored.startedAt;
-      this.sessionStartedAtMs = stored.startedAtMs;
-      this.segmentIndex = stored.segmentIndex;
-      this.sessionEntry = stored.entry ?? {};
-      lastActivityMs = stored.lastActivityMs;
-    } else {
-      this.sessionId = generateUUID();
-      this.sessionStartedAtMs = now;
-      this.sessionStartedAt = new Date(now).toISOString();
-      this.segmentIndex = 0;
-      this.sessionEntry = entryAttributes();
+    const authHeaders = this.telemetryHeaders();
+    const exportDelay = options.exportDelayMs ?? 1000;
+    this.persistence = new TelemetryPersistence(
+      options.telemetry
+        ? JSON.stringify([token, this.endpoints.logs, this.endpoints.traces])
+        : token,
+      this.control,
+      this.buffer,
+      (kind, body) => this.sendOtlpJson(kind, body),
+    );
+    this.logSink = new BatchLogRecordProcessor({
+      exporter: new PersistingLogExporter(
+        options.logExporter ??
+          new OTLPLogExporter({
+            url: this.endpoints.logs,
+            headers: authHeaders,
+          }),
+        () => this.persistence.exporterOutbox(),
+        (eventName) => this.canExportLog(eventName),
+      ),
+      scheduledDelayMillis: exportDelay,
+    });
+    this.spanSink = new BatchSpanProcessor({
+      exporter: new PersistingSpanExporter(
+        options.spanExporter ??
+          new OTLPTraceExporter({
+            url: this.endpoints.traces,
+            headers: authHeaders,
+          }),
+        () => this.persistence.exporterOutbox(),
+        () => this.control.canExport("network"),
+      ),
+      scheduledDelayMillis: exportDelay,
+    });
+    if (options.telemetry) {
+      this.sessionPersistence = new TelemetryPersistence(
+        JSON.stringify([
+          token,
+          resolveEndpoints(apiUrl).logs,
+          "session-metadata",
+        ]),
+        this.control,
+        new RingBuffer<BufferedItem>({ maxBytes: 0, maxAgeMs: 0 }),
+        (kind, body) => this.sendOtlpJson(kind, body, false, true),
+      );
+      this.sessionSink = new BatchLogRecordProcessor({
+        exporter: new PersistingLogExporter(
+          new OTLPLogExporter({
+            url: resolveEndpoints(apiUrl).logs,
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          () => this.sessionPersistence?.exporterOutbox() ?? null,
+          (name) => this.isSessionEvent(name) && this.canExportLog(name),
+        ),
+        scheduledDelayMillis: exportDelay,
+      });
     }
-    this.sessionActive = true;
-    this.persistSession(lastActivityMs);
-
-    this.pendingSessions.push({
-      id: this.sessionId,
-      startedAt: this.sessionStartedAt,
-      attributes: this.composedSessionAttributes(),
-    });
-    this.scheduleSync();
-    return lastActivityMs;
+    this.control.onChange(() => this.applySettings());
+    if (options.remoteConfig !== false) this.applyCachedConfig();
   }
 
-  private persistSession(lastActivityMs: number, closedAtMs?: number): void {
-    if (!this.sessionId || !this.sessionStartedAt) return;
-    writeStoredSession(this.sessionStoreKey, {
-      id: this.sessionId,
-      startedAt: this.sessionStartedAt,
-      startedAtMs: this.sessionStartedAtMs,
-      lastActivityMs,
-      segmentIndex: this.segmentIndex,
-      entry: this.sessionEntry,
-      closedAtMs,
-    });
-  }
+  start(): void {
+    if (this.started || typeof window === "undefined") return;
+    this.started = true;
 
-  /**
-   * Merge browser defaults with whatever app-level scope was set via
-   * setAttribute(). App attrs override defaults on key collision. The page
-   * the session started on keeps its url/path/referrer for the whole
-   * session, so later pages and routes don't overwrite where the visit came
-   * from (the landing URL is what carries campaign parameters).
-   */
-  private composedSessionAttributes(): Record<string, string> {
-    return {
-      ...collectDefaultAttributes(),
-      ...this.sessionEntry,
-      ...this.globalAttributes,
+    this.router = new TelemetryRouter(
+      this.control,
+      this.buffer,
+      { logs: this.logSink, spans: this.spanSink },
+      {
+        sessionId: () => this.sessions.currentId(),
+        globalAttribute: (key) => this.globalAttributes[key],
+        enrichLog: (record, signal) => this.enrichLog(record, signal),
+        observe: (observed) => this.observe(observed),
+        sendStored: (batch) => this.persistence.sendStored(batch),
+      },
+    );
+
+    // Providers are this SDK's own and the instrumentations are bound to them, so an app that runs its own
+    // OpenTelemetry keeps its globals and never receives Traceway's records. Only W3C propagation and the context
+    // manager are global by nature; they are set when the page has none.
+    const attributes: Record<string, string | boolean | string[]> = {
+      ...browserResourceAttributes(),
+      "service.name":
+        this.options.serviceName ||
+        (typeof location !== "undefined" && location.hostname) ||
+        "browser",
+      "service.instance.id": this.instanceId,
     };
+    if (this.options.version)
+      attributes["service.version"] = this.options.version;
+    if (this.options.environment)
+      attributes["deployment.environment.name"] = this.options.environment;
+    const resource = defaultResource().merge(
+      resourceFromAttributes(attributes),
+    );
+    this.resourceAttributes = { ...resource.attributes };
+
+    this.loggerProvider = new LoggerProvider({
+      resource,
+      processors: [new ControlLogProcessor(() => this.router, this.logSink)],
+    });
+    this.tracerProvider = new TracerProvider({
+      resource,
+      spanProcessors: [
+        new ControlSpanProcessor(() => this.router, this.spanSink),
+      ],
+    });
+    this.logger = this.loggerProvider.getLogger(SCOPE_NAME, SDK_VERSION);
+    this.ownsPropagator = propagation.setGlobalPropagator(
+      new W3CTraceContextPropagator(),
+    );
+    const contextManager = new StackContextManager();
+    contextManager.enable();
+    this.ownsContextManager = context.setGlobalContextManager(contextManager);
+
+    this.sessions.start();
+    this.persistence.start(this.sessions.currentId());
+    this.sessionPersistence?.start(null);
+
+    const telemetryUrls = [
+      `${this.endpoints.base}/api/otel/v1/logs`,
+      this.endpoints.logs,
+      this.endpoints.traces,
+      this.endpoints.opamp,
+      this.endpoints.recordings,
+    ];
+    const ownUrls = new RegExp(
+      `^(?:${telemetryUrls.map(escapeRegExp).join("|")})(?:[?#]|$)`,
+    );
+    const instrumentations: Instrumentation[] = [new ErrorsInstrumentation()];
+    if (this.options.captureNetwork !== false) {
+      const networkConfig = {
+        ignoreUrls: [ownUrls],
+        propagateTraceHeaderCorsUrls: this.options.propagateTraceHeaderCorsUrls,
+      };
+      instrumentations.push(
+        new FetchInstrumentation(networkConfig),
+        new XhrInstrumentation(networkConfig),
+      );
+    }
+    if (this.options.captureLogs !== false)
+      instrumentations.push(new ConsoleInstrumentation());
+    if (this.options.captureNavigation !== false)
+      instrumentations.push(new NavigationInstrumentation());
+    if (this.options.captureUserActions !== false)
+      instrumentations.push(new UserActionInstrumentation());
+    if (this.options.captureWebVitals !== false)
+      instrumentations.push(new WebVitalsInstrumentation());
+    if (this.options.captureResourceTiming !== false) {
+      instrumentations.push(
+        new ResourceTimingInstrumentation(),
+        new NavigationTimingInstrumentation(),
+      );
+    }
+    this.deregisterInstrumentations = registerInstrumentations({
+      instrumentations,
+      tracerProvider: this.tracerProvider,
+      loggerProvider: this.loggerProvider,
+    });
+
+    this.applySettings();
+    if (this.options.remoteConfig !== false) this.startOpamp();
+    for (const capture of this.readLocalCaptures()) {
+      this.streamFor(
+        capture.signals,
+        capture.replay,
+        capture.untilMs,
+        true,
+        `local:${capture.triggerId}`,
+      );
+    }
   }
 
-  // ── Global scope ────────────────────────────────────────────────────────
+  captureException(error: unknown, attributes?: Record<string, string>): void {
+    const err =
+      error instanceof Error
+        ? error
+        : new Error(typeof error === "string" ? error : JSON.stringify(error));
+    this.logger?.emit({
+      eventName: EVENT_EXCEPTION,
+      severityNumber: SeverityNumber.ERROR,
+      severityText: "ERROR",
+      attributes: {
+        "exception.type": err.name,
+        "exception.message": err.message,
+        "exception.stacktrace": err.stack || `${err.name}: ${err.message}`,
+        ...attributes,
+      },
+    });
+  }
 
-  /**
-   * Attach a key/value attribute to every subsequent session and exception
-   * emitted by this client. If a session is already open, its attributes are
-   * refreshed on the backend immediately. Setting the same key replaces the
-   * previous value.
-   */
+  captureMessage(message: string, attributes?: Record<string, string>): void {
+    this.logger?.emit({
+      eventName: EVENT_MESSAGE,
+      severityNumber: SeverityNumber.INFO,
+      severityText: "INFO",
+      body: message,
+      attributes: { ...attributes },
+    });
+  }
+
+  /** A breadcrumb the replay player shows next to the recording, and an event triggers can match. */
+  recordAction(
+    category: string,
+    name: string,
+    data?: Record<string, unknown>,
+  ): void {
+    const attributes: Record<string, string> = {
+      "traceway.action.category": category,
+      "traceway.action.name": name,
+    };
+    if (data !== undefined)
+      attributes["traceway.action.data"] = JSON.stringify(data);
+    this.logger?.emit({
+      eventName: EVENT_ACTION,
+      severityNumber: SeverityNumber.INFO,
+      attributes,
+    });
+  }
+
+  /** A named app event, e.g. `track("checkout_failed")`. Buffered by default; triggers can match it. */
+  track(
+    eventName: string,
+    attributes?: Record<string, string | number | boolean>,
+  ): void {
+    if (!eventName) return;
+    this.logger?.emit({
+      eventName,
+      severityNumber: SeverityNumber.INFO,
+      attributes: { ...attributes },
+    });
+  }
+
   setAttribute(key: string, value: string): void {
     if (!key) return;
     this.globalAttributes[key] = value;
-    this.refreshOpenSessionAttributes();
+    this.refreshSession();
   }
 
-  /**
-   * Bulk version of setAttribute. Caller's keys override existing scope.
-   * Triggers one session refresh after the merge, not one per key.
-   */
   setAttributes(attrs: Record<string, string>): void {
-    if (!attrs) return;
     let changed = false;
-    for (const k of Object.keys(attrs)) {
-      if (!k) continue;
-      this.globalAttributes[k] = attrs[k]!;
+    for (const [key, value] of Object.entries(attrs ?? {})) {
+      if (!key) continue;
+      this.globalAttributes[key] = value;
       changed = true;
     }
-    if (changed) this.refreshOpenSessionAttributes();
+    if (changed) this.refreshSession();
   }
 
   removeAttribute(key: string): void {
-    if (key in this.globalAttributes) {
-      delete this.globalAttributes[key];
-      this.refreshOpenSessionAttributes();
-    }
+    if (!(key in this.globalAttributes)) return;
+    delete this.globalAttributes[key];
+    this.refreshSession();
   }
 
   clearAttributes(): void {
     if (Object.keys(this.globalAttributes).length === 0) return;
     this.globalAttributes = {};
-    this.refreshOpenSessionAttributes();
+    this.refreshSession();
   }
 
-  /** @internal — exposed for tests. */
   currentAttributes(): Record<string, string> {
     return { ...this.globalAttributes };
   }
 
-  /**
-   * When the global scope changes mid-session, push a session-refresh
-   * payload (no endedAt) so the backend's ON CONFLICT update writes the new
-   * attribute blob into the existing row. Without this the new attrs would
-   * only land at session close.
-   */
-  private refreshOpenSessionAttributes(): void {
-    if (!this.sessionId || !this.sessionStartedAt) return;
-    if (this.recordAllSessions !== true || !this.sessionActive) return;
-    this.pendingSessions.push({
-      id: this.sessionId,
-      startedAt: this.sessionStartedAt,
-      attributes: this.composedSessionAttributes(),
-    });
-    this.scheduleSync();
-  }
-
-  private endSession(endedAtMs: number): void {
-    if (!this.sessionId || !this.sessionStartedAt || !this.sessionActive) return;
-
-    if (this.recorder) {
-      const drained = this.recorder.drainCurrent();
-      if (drained && drained.events.length > 0) {
-        this.queueSegment(drained);
-      }
-    }
-
-    this.pendingSessions.push({
-      id: this.sessionId,
-      startedAt: this.sessionStartedAt,
-      endedAt: new Date(endedAtMs).toISOString(),
-      // Re-snapshot attributes so the upsert doesn't clobber the opening
-      // attribute blob with an empty map. Also picks up URL changes and any
-      // global-scope attributes set during the session.
-      attributes: this.composedSessionAttributes(),
-    });
-    this.sessionActive = false;
-
-    // On unload the debounce timer never fires and an in-flight sync would
-    // hold the closing payload back, so it leaves on the keepalive path now.
-    // The stored session stays resumable for the next page of this tab.
-    if (this.unloading) {
-      if (this.debounceTimer !== null) {
-        clearTimeout(this.debounceTimer);
-        this.debounceTimer = null;
-      }
-      this.persistSession(this.lifecycle?.lastActivity() ?? endedAtMs, Date.now());
-      this.flushKeepalive();
-    } else {
-      clearStoredSession(this.sessionStoreKey);
-      this.scheduleSync();
-    }
-  }
-
-  /**
-   * Opens a session again after the previous one ended: continues it when
-   * the page came back from bfcache within the inactivity window, otherwise
-   * starts a new one. The recorder restarts from a full snapshot so the new
-   * segment replays on its own.
-   */
-  private restartSession(): void {
-    this.unloading = false;
-    const lastActivityMs = this.openSession();
-    this.lifecycle?.continueFrom(this.sessionStartedAtMs, lastActivityMs);
-    this.recorder?.startFresh();
-  }
-
-  /**
-   * The page was hidden: the OS may freeze or kill it without a `pagehide`
-   * (mobile browsers routinely do), so the in-progress segment and anything
-   * pending leave on the keepalive path while the page can still send.
-   */
-  private flushOnHidden(): void {
-    if (this.sessionActive) {
-      if (this.recorder) {
-        const drained = this.recorder.drainCurrent();
-        if (drained && drained.events.length > 0) {
-          this.queueSegment(drained);
-        }
-      }
-      this.persistSession(this.lifecycle?.lastActivity() ?? Date.now(), Date.now());
-    }
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    this.flushKeepalive();
-    if (this.hasPending()) {
-      this.scheduleSync();
-    }
-  }
-
-  private resumeVisible(): void {
-    if (!this.sessionActive) return;
-    this.persistSession(this.lifecycle?.lastActivity() ?? Date.now());
-    this.recorder?.startFresh();
-  }
-
-  private handleSegmentReady(segment: { events: unknown[]; startedAt: string; endedAt: string }): void {
-    if (!this.sessionId || !this.sessionActive) return;
-    this.queueSegment(segment);
-    this.scheduleSync();
-  }
-
-  private queueSegment(segment: { events: unknown[]; startedAt: string; endedAt: string }): void {
-    if (!this.sessionId) return;
-    // Drain the rolling logs/actions buffers and attach them to this segment.
-    // Clearing prevents segment N+1 from re-shipping the same entries.
-    const logs = this.logs.snapshot();
-    const actions = this.actions.snapshot();
-    if (logs.length > 0) this.logs.clear();
-    if (actions.length > 0) this.actions.clear();
-
-    const payload: SessionRecordingPayload = {
-      sessionId: this.sessionId,
-      segmentIndex: this.segmentIndex++,
-      events: segment.events,
-      startedAt: segment.startedAt,
-      endedAt: segment.endedAt,
-    };
-    if (logs.length > 0) payload.logs = logs;
-    if (actions.length > 0) payload.actions = actions;
-    this.pendingRecordings.push(payload);
-    if (this.sessionActive) {
-      this.persistSession(this.lifecycle?.lastActivity() ?? Date.now());
-    }
-  }
-
-  /** @internal — exposed for tests. */
   currentSessionId(): string | null {
-    return this.sessionId;
+    return this.sessions.currentId();
   }
 
-  // ── Timeline event recording ────────────────────────────────────────────
-
-  recordLog(level: LogEvent["level"], message: string): void {
-    if (!this.captureLogs) return;
-    this.logs.add({ type: "log", timestamp: nowISO(), level, message });
+  /** Asks Traceway for this client's collection settings now, e.g. right after login set `user.id`. */
+  async refreshConfig(): Promise<void> {
+    await this.opamp?.refresh();
   }
 
-  recordNetworkEvent(event: Omit<NetworkEvent, "type" | "timestamp"> & { timestamp?: string }): void {
-    if (!this.captureNetwork) return;
-    // Don't record the SDK's own report uploads — otherwise every segment
-    // flush would be captured as a "network action" and end up in the next
-    // segment's actions buffer, creating a self-referential tail.
-    if (this.isOwnReportUrl(event.url)) return;
-    this.actions.add({
-      type: "network",
-      timestamp: event.timestamp ?? nowISO(),
-      method: event.method,
-      url: event.url,
-      durationMs: event.durationMs,
-      statusCode: event.statusCode,
-      requestBytes: event.requestBytes,
-      responseBytes: event.responseBytes,
-      error: event.error,
+  /** Sends everything queued for sending. Buffered telemetry stays on the device. */
+  async flush(): Promise<void> {
+    this.persistBuffer();
+    await this.persistence.flush();
+    await this.sessionPersistence?.flush();
+    await Promise.all([
+      this.logSink.forceFlush(),
+      this.sessionSink?.forceFlush(),
+      this.spanSink.forceFlush(),
+      this.recordings.flush(),
+    ]);
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.overrideTimer !== null) clearTimeout(this.overrideTimer);
+    this.overrideTimer = null;
+    this.opamp?.stop();
+    this.opamp = null;
+    if (this.describeTimer !== null) clearTimeout(this.describeTimer);
+    this.sessions.close();
+    this.deregisterInstrumentations?.();
+    this.deregisterInstrumentations = null;
+    await this.flush().catch(() => undefined);
+    this.persistence.stop();
+    this.sessionPersistence?.stop();
+    this.replay.stop();
+    this.sessions.stop();
+    await Promise.all([
+      this.sessionSink?.shutdown().catch(() => undefined),
+      this.loggerProvider?.shutdown().catch(() => undefined),
+      this.tracerProvider?.shutdown().catch(() => undefined),
+    ]);
+    if (this.ownsPropagator) propagation.disable();
+    if (this.ownsContextManager) context.disable();
+    this.ownsPropagator = this.ownsContextManager = false;
+    this.loggerProvider = this.tracerProvider = null;
+    this.logger = null;
+    this.router = null;
+    this.started = false;
+  }
+
+  private applySettings(): void {
+    const settings = this.control.settings();
+    this.runCaptures(settings);
+    this.persistence.configure();
+    this.sessionPersistence?.configure();
+    this.buffer.retain((entry) =>
+      this.control.canExport(entry.signal as SignalName),
+    );
+    this.buffer.configure({
+      maxBytes: settings.buffer.maxBytes,
+      maxAgeMs: settings.buffer.maxAgeSeconds * 1000,
     });
+    this.triggers.setTriggers(settings.triggers);
+    this.applyReplay();
   }
 
-  private isOwnReportUrl(url: string): boolean {
-    if (!url) return false;
-    if (url === this.apiUrl) return true;
-    // Defensive: match URLs that start with apiUrl plus a query/fragment
-    // suffix, in case the transport ever appends one for diagnostics.
-    if (url.startsWith(this.apiUrl + "?") || url.startsWith(this.apiUrl + "#")) return true;
-    return false;
+  private persistBuffer(): void {
+    const session = this.sessions.current();
+    if (session) this.persistence.save(session.id);
   }
 
-  recordNavigationEvent(event: Omit<NavigationEvent, "type" | "timestamp"> & { timestamp?: string }): void {
-    if (!this.captureNavigation) return;
-    this.actions.add({
-      type: "navigation",
-      timestamp: event.timestamp ?? nowISO(),
-      action: event.action,
-      from: event.from,
-      to: event.to,
-    });
-  }
-
-  /**
-   * Records a custom user-defined breadcrumb. Use to log any app-level action
-   * that should ride along with the next exception ("user_tapped_pay",
-   * "cart_synced", etc.). Always recorded — there is no per-category opt-out.
-   */
-  recordAction(category: string, name: string, data?: Record<string, unknown>): void {
-    this.actions.add({
-      type: "custom",
-      timestamp: nowISO(),
-      category,
-      name,
-      data,
-    });
-  }
-
-  /** @internal — exposed for tests. */
-  bufferedLogs(): LogEvent[] {
-    return this.logs.snapshot();
-  }
-
-  /** @internal — exposed for tests. */
-  bufferedActions(): TracewayEvent[] {
-    return this.actions.snapshot();
-  }
-
-  // ── Exception lifecycle ─────────────────────────────────────────────────
-
-  /**
-   * Promote a 5xx HTTP response into a captured exception. Called from the
-   * fetch / XHR wrappers when `captureHttpServerErrors` is enabled.
-   */
-  captureHttpServerError(
-    method: string,
-    url: string,
-    statusCode: number,
-  ): void {
-    this.addException({
-      traceId: null,
-      stackTrace: `HTTP ${statusCode} ${method} ${url}`,
-      recordedAt: nowISO(),
-      attributes: {
-        "http.method": method,
-        "http.url": url,
-        "http.status_code": String(statusCode),
-      },
-      isMessage: true,
-    });
-  }
-
-  addException(exception: ExceptionStackTrace): void {
-    if (this.shouldIgnore(exception)) {
-      if (this.debug) {
-        console.debug(
-          "Traceway: exception suppressed by filter",
-          exception.stackTrace.slice(0, 120),
-        );
-      }
-      return;
-    }
-
-    // Merge in browser-context defaults plus the global scope. Caller-
-    // supplied keys win over both. Order matters: defaults < global < caller.
-    exception.attributes = {
-      ...collectDefaultAttributes(),
-      ...this.globalAttributes,
-      ...(exception.attributes ?? {}),
-    };
-
-    if (!exception.isMessage && !exception.debugIds) {
-      const debugIds = debugIdsForStackTrace(exception.stackTrace);
-      if (debugIds) {
-        exception.debugIds = debugIds;
-      }
-    }
-
-    const recorderEvents =
-      this.recorder && this.recorder.hasSegments()
-        ? this.recorder.getClipEvents()
-        : [];
-    const logSnapshot = this.logs.snapshot();
-    const actionSnapshot = this.actions.snapshot();
-    const hasTimelineData =
-      recorderEvents.length > 0 ||
-      logSnapshot.length > 0 ||
-      actionSnapshot.length > 0;
-
-    // Tag the exception with the parent session id (if always-on is on) so
-    // the dashboard can show a "View full session" link. Sessions and the
-    // per-exception clip are independent attachments; both ride along. The
-    // rrweb clip is a single segment (see getClipEvents), so it is bounded to
-    // `sessionRecordingSegmentDuration` (default 30 s). The logs/actions that
-    // ride with it stay on their own ~10 s rolling window (see EventBuffer).
-    if (this.recordAllSessions && this.sessionId && this.sessionActive) {
-      exception.sessionId = this.sessionId;
-    }
-
-    if (hasTimelineData) {
-      const exceptionId = generateUUID();
-      exception.sessionRecordingId = exceptionId;
-      const payload: SessionRecordingPayload = {
-        exceptionId,
-        events: recorderEvents,
-      };
-      const anchors = computeRecordingAnchors(
-        recorderEvents,
-        logSnapshot,
-        actionSnapshot,
-      );
-      if (anchors.startedAt) payload.startedAt = anchors.startedAt;
-      if (anchors.endedAt) payload.endedAt = anchors.endedAt;
-      if (logSnapshot.length > 0) payload.logs = logSnapshot;
-      if (actionSnapshot.length > 0) payload.actions = actionSnapshot;
-      this.pendingRecordings.push(payload);
-    }
-
-    this.pendingExceptions.push(exception);
-    this.scheduleSync();
-  }
-
-  private shouldIgnore(exception: ExceptionStackTrace): boolean {
-    if (this.ignoreErrors.length > 0) {
-      const text = exception.stackTrace;
-      for (const pattern of this.ignoreErrors) {
-        if (typeof pattern === "string") {
-          if (text.includes(pattern)) return true;
-        } else {
-          pattern.lastIndex = 0;
-          if (pattern.test(text)) return true;
-        }
-      }
-    }
-
-    if (this.beforeCapture !== null) {
-      try {
-        const result = this.beforeCapture(exception);
-        if (result === false) return true;
-      } catch (err) {
-        if (this.debug) {
-          console.error("Traceway: beforeCapture callback threw:", err);
-        }
-      }
-    }
-
-    return false;
-  }
-
-  private scheduleSync(): void {
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-    }
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      this.doSync();
-    }, this.debounceMs);
-  }
-
-  private async doSync(): Promise<void> {
-    if (this.isSyncing) return;
-    if (
-      this.pendingExceptions.length === 0 &&
-      this.pendingRecordings.length === 0 &&
-      this.pendingSessions.length === 0
-    ) {
-      return;
-    }
-
-    this.isSyncing = true;
-    const batch = this.pendingExceptions.splice(0);
-    const recordings = this.pendingRecordings.splice(0);
-    const sessions = this.pendingSessions.splice(0);
-
-    const frame: CollectionFrame = {
-      stackTraces: batch,
-      metrics: [],
-      traces: [],
-      sessionRecordings: recordings.length > 0 ? recordings : undefined,
-      sessions: sessions.length > 0 ? sessions : undefined,
-    };
-
-    const payload: ReportRequest = {
-      collectionFrames: [frame],
-      appVersion: this.version,
-      serverName: "",
-    };
-
-    let failed = false;
-    try {
-      const success = await sendReport(this.apiUrl, this.token, JSON.stringify(payload));
-      if (!success) {
-        failed = true;
-        this.pendingExceptions.unshift(...batch);
-        this.pendingRecordings.unshift(...recordings);
-        this.pendingSessions.unshift(...sessions);
-        if (this.debug) {
-          console.error("Traceway: sync failed, re-queued exceptions");
-        }
-      }
-    } catch (err) {
-      failed = true;
-      this.pendingExceptions.unshift(...batch);
-      this.pendingRecordings.unshift(...recordings);
-      this.pendingSessions.unshift(...sessions);
-      if (this.debug) {
-        console.error("Traceway: sync error:", err);
-      }
-    } finally {
-      this.isSyncing = false;
-      if (
-        this.pendingExceptions.length > 0 ||
-        this.pendingRecordings.length > 0 ||
-        this.pendingSessions.length > 0
-      ) {
-        if (failed) {
-          this.scheduleRetry();
-        } else {
-          this.doSync();
-        }
-      }
-    }
-  }
-
-  private hasPending(): boolean {
+  private canExportLog(eventName: string | undefined): boolean {
+    const signal = classifyLog(eventName);
+    if (signal !== "control") return this.control.canExport(signal);
+    if (!this.control.enabled()) return false;
     return (
-      this.pendingExceptions.length > 0 ||
-      this.pendingRecordings.length > 0 ||
-      this.pendingSessions.length > 0
+      ![EVENT_SESSION_START, EVENT_SESSION_END, EVENT_SESSION_UPDATE].includes(
+        eventName ?? "",
+      ) || this.control.settings().sessions.enabled
     );
   }
 
-  private reportFor(frame: Partial<CollectionFrame>): ReportRequest {
-    return {
-      collectionFrames: [{ stackTraces: [], metrics: [], traces: [], ...frame }],
-      appVersion: this.version,
-      serverName: "",
-    };
+  private telemetryHeaders(): Record<string, string> {
+    return this.options.telemetry
+      ? { ...this.options.telemetry.headers }
+      : { Authorization: `Bearer ${this.token}` };
+  }
+
+  private async sendOtlpJson(
+    kind: StoredBatch["kind"],
+    body: string,
+    keepalive = false,
+    sessionMetadata = false,
+  ): Promise<SendResult> {
+    body = filterRequest(
+      kind,
+      body,
+      (name) => this.canExportLog(name),
+      () => this.control.canExport("network"),
+    );
+    if (!body) return "drop";
+    try {
+      const response = await fetch(
+        sessionMetadata
+          ? `${this.endpoints.base}/api/otel/v1/logs`
+          : kind === "logs"
+            ? this.endpoints.logs
+            : this.endpoints.traces,
+        {
+          method: "POST",
+          keepalive:
+            keepalive && new TextEncoder().encode(body).byteLength < 60 * 1024,
+          headers: {
+            ...(sessionMetadata
+              ? { Authorization: `Bearer ${this.token}` }
+              : this.telemetryHeaders()),
+            "Content-Type": "application/json",
+          },
+          body,
+        },
+      );
+      if (response.ok) return "sent";
+      return response.status === 429 || response.status >= 500
+        ? "retry"
+        : "drop";
+    } catch {
+      return "retry";
+    }
+  }
+
+  private configCacheKey(): string {
+    return `traceway:config:${this.token}`;
+  }
+
+  private applyCachedConfig(): void {
+    const raw = storageGet(this.configCacheKey());
+    if (!raw) return;
+    try {
+      const cached = JSON.parse(raw) as { hash?: string; body?: string };
+      if (typeof cached.body !== "string" || typeof cached.hash !== "string")
+        return;
+      this.control.applyRemote(parseSettingsDocument(cached.body));
+      this.appliedConfigHash = Uint8Array.from(
+        cached.hash.match(/../g) ?? [],
+        (b) => parseInt(b, 16),
+      );
+    } catch {
+      // A cache this SDK cannot read is ignored; the first poll replaces it.
+    }
+  }
+
+  private startOpamp(): void {
+    const instanceUid = uuidToBytes(this.instanceId);
+    if (!instanceUid || typeof fetch === "undefined") return;
+    this.opamp = new OpampHttpClient({
+      endpoint: this.endpoints.opamp,
+      headers: { Authorization: `Bearer ${this.token}` },
+      instanceUid,
+      capabilities:
+        AgentCapabilities.ReportsStatus |
+        AgentCapabilities.AcceptsRemoteConfig |
+        AgentCapabilities.ReportsRemoteConfig |
+        AgentCapabilities.ReportsHeartbeat,
+      customCapabilities: [
+        "io.traceway.sdk.buffer/v1",
+        "io.traceway.sdk.capture/v1",
+      ],
+      appliedConfigHash: this.appliedConfigHash,
+      describe: () => this.describe(),
+      onRemoteConfig: (config) => this.applyRemoteConfig(config),
+      onUnauthorized: () => {
+        if (this.options.debug)
+          console.warn(
+            "Traceway: the project token was rejected; remote config is off",
+          );
+      },
+    });
+    this.opamp.start();
   }
 
   /**
-   * Sends what is pending through keepalive requests, which survive the page
-   * being unloaded or killed. Browsers reject keepalive bodies beyond a shared
-   * 64 KiB budget, so nothing is bundled: session rows go first on their own
-   * (the closing row must never share a fate with a large replay segment),
-   * then each exception with its own clip (the backend links a clip to its
-   * exception only within one request), then each segment. What does not fit
-   * stays pending for the regular sync, and a failed delivery is re-queued.
+   * What the server targets rules at: the resource (app, release, browser, OS), the session and every global
+   * attribute, such as `user.id`, set with setAttribute.
    */
-  private flushKeepalive(): void {
-    const send = (frame: Partial<CollectionFrame>, requeue: () => void): boolean => {
-      const budget = KEEPALIVE_BUDGET_BYTES - this.keepaliveInFlightBytes;
-      const { bytes, delivered } = sendReportKeepalive(
-        this.apiUrl,
-        this.token,
-        JSON.stringify(this.reportFor(frame)),
-        budget,
-      );
-      if (bytes === 0) return false;
-      this.keepaliveInFlightBytes += bytes;
-      void delivered.then((ok) => {
-        this.keepaliveInFlightBytes -= bytes;
-        if (!ok) {
-          requeue();
-          this.scheduleRetry();
-        }
-      });
-      return true;
+  private describe(): {
+    identifying: Record<string, AttributeValue>;
+    nonIdentifying: Record<string, AttributeValue>;
+  } {
+    const nonIdentifying: Record<string, AttributeValue> = {};
+    for (const [key, value] of Object.entries(this.resourceAttributes)) {
+      if (key === "service.name" || key === "service.instance.id") continue;
+      if (
+        typeof value === "string" ||
+        typeof value === "boolean" ||
+        typeof value === "number"
+      )
+        nonIdentifying[key] = value;
+      else if (Array.isArray(value)) nonIdentifying[key] = value.map(String);
+    }
+    let count = 0;
+    for (const [key, value] of Object.entries(this.globalAttributes)) {
+      if (count++ >= 64) break;
+      if (key.length <= 128 && value.length <= 1024)
+        nonIdentifying[key] = value;
+    }
+    const sessionId = this.sessions.currentId();
+    if (sessionId) nonIdentifying[ATTR_SESSION_ID] = sessionId;
+    return {
+      identifying: {
+        "service.name": String(
+          this.resourceAttributes["service.name"] ?? "browser",
+        ),
+        "service.instance.id": this.instanceId,
+      },
+      nonIdentifying,
     };
+  }
 
-    const sessions = this.pendingSessions.splice(0);
-    if (sessions.length > 0 && !send({ sessions }, () => this.pendingSessions.unshift(...sessions))) {
-      this.pendingSessions.unshift(...sessions);
+  private applyRemoteConfig(config: RemoteConfig) {
+    const object = config.configMap.traceway;
+    const body = object ? new TextDecoder().decode(object.body) : "{}";
+    let overlay: Record<string, unknown>;
+    try {
+      overlay = parseSettingsDocument(body);
+    } catch (err) {
+      return {
+        applied: false as const,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      };
     }
+    this.control.applyRemote(overlay);
+    const hash = Array.from(config.configHash, (b) =>
+      b.toString(16).padStart(2, "0"),
+    ).join("");
+    storageSet(this.configCacheKey(), JSON.stringify({ hash, body }));
+    this.logger?.emit({
+      eventName: EVENT_CONFIG_APPLIED,
+      severityNumber: SeverityNumber.INFO,
+      attributes: { "traceway.config.hash": hash },
+    });
+    return { applied: true as const };
+  }
 
-    const recordings = this.pendingRecordings.splice(0);
-    const unsentExceptions: ExceptionStackTrace[] = [];
-    for (const exception of this.pendingExceptions.splice(0)) {
-      const clipIndex = recordings.findIndex(
-        (r) => r.exceptionId !== undefined && r.exceptionId === exception.sessionRecordingId,
+  /** A targeting attribute changed: ask for the matching settings soon, once for a burst of changes. */
+  private describeChanged(): void {
+    if (!this.opamp || this.describeTimer !== null) return;
+    this.describeTimer = setTimeout(() => {
+      this.describeTimer = null;
+      void this.opamp?.poll();
+    }, 2_000);
+  }
+
+  private capturesKey(): string {
+    return `traceway:captures:${this.token}`;
+  }
+
+  /**
+   * Starts the dashboard's captures aimed at this client. The lookback flush runs once per capture, remembered
+   * across pages; streaming lasts until the capture's end on every page that sees it.
+   */
+  private runCaptures(settings: Settings): void {
+    if (!this.started) return;
+    this.control.setOverrides(
+      "remote",
+      settings.captures.map((capture) => ({
+        signals: capture.signals ?? ["*"],
+        replay: capture.replay === true,
+        untilMs: Date.parse(capture.until),
+        includeOff: true,
+      })),
+    );
+    this.scheduleOverrideExpiry();
+    const now = Date.now();
+    let done: Array<{ id: string; untilMs: number }> = [];
+    try {
+      done = (
+        JSON.parse(storageGet(this.capturesKey(), true) ?? "[]") as Array<{
+          id: string;
+          untilMs: number;
+        }>
+      ).filter((c) => c.untilMs > now);
+    } catch {
+      done = [];
+    }
+    let changed = false;
+    for (const capture of settings.captures) {
+      const untilMs = Date.parse(capture.until);
+      if (!(untilMs > now)) continue;
+      if (done.some((c) => c.id === capture.id)) continue;
+      const lookbackSeconds = capture.lookbackSeconds ?? 600;
+      if (lookbackSeconds > 0)
+        this.runAction({
+          type: "flush",
+          lookbackSeconds,
+          signals: capture.signals ?? ["*"],
+          replay: capture.replay === true,
+        });
+      this.logger?.emit({
+        eventName: EVENT_CAPTURE_STARTED,
+        severityNumber: SeverityNumber.INFO,
+        attributes: { "traceway.capture.id": capture.id },
+      });
+      done.push({ id: capture.id, untilMs });
+      changed = true;
+    }
+    if (changed) storageSet(this.capturesKey(), JSON.stringify(done), true);
+  }
+
+  private applyReplay(): void {
+    if (!this.started) return;
+    const settings = this.control.settings();
+    const session = this.sessions.current();
+    this.replay.apply(this.control.replayMode(), {
+      maskAllInputs: settings.replay.maskAllInputs,
+      sessionSampled:
+        session !== null &&
+        unitHash(session.id) < settings.replay.sessionSampleRate,
+      maxBytes: settings.buffer.replayMaxBytes,
+      maxAgeMs: settings.buffer.maxAgeSeconds * 1000,
+    });
+  }
+
+  private enrichLog(record: SdkLogRecord, signal: RecordSignal): boolean {
+    if (signal !== "errors" && signal !== "messages" && signal !== "custom")
+      return true;
+    const context =
+      signal === "custom"
+        ? this.globalAttributes
+        : { ...collectDefaultAttributes(), ...this.globalAttributes };
+    for (const [key, value] of Object.entries(context)) {
+      if (record.attributes[key] === undefined) record.setAttribute(key, value);
+    }
+    if (signal === "custom") return true;
+
+    const attrs = record.attributes;
+    const type =
+      attrs["exception.type"] === undefined
+        ? undefined
+        : String(attrs["exception.type"]);
+    const message =
+      signal === "messages"
+        ? typeof record.body === "string"
+          ? record.body
+          : String(attrs["exception.message"] ?? "")
+        : attrs["exception.message"] === undefined
+          ? undefined
+          : String(attrs["exception.message"]);
+    const stack =
+      attrs["exception.stacktrace"] === undefined
+        ? undefined
+        : String(attrs["exception.stacktrace"]);
+    // Patterns match the "Type: message" line only: matching stack frames would let a function named like a
+    // pattern (any handleTimeout for the default /timeout/i) silence every error that passes through it.
+    if (
+      this.ignored(
+        type && message ? `${type}: ${message}` : (message ?? type ?? ""),
+      )
+    ) {
+      return false;
+    }
+    if (this.options.beforeCapture) {
+      try {
+        if (
+          this.options.beforeCapture({
+            type,
+            message,
+            stack,
+            attributes: { ...attrs },
+          }) === false
+        )
+          return false;
+      } catch (err) {
+        if (this.options.debug)
+          console.error("Traceway: beforeCapture callback threw:", err);
+      }
+    }
+    if (signal === "errors") {
+      const suppressed = this.errorLimiter.accept(
+        JSON.stringify([type, message, stack]),
       );
-      const clip = clipIndex >= 0 ? recordings.splice(clipIndex, 1)[0]! : undefined;
-      const frame: Partial<CollectionFrame> = {
-        stackTraces: [exception],
-        sessionRecordings: clip ? [clip] : undefined,
-      };
-      const requeue = () => {
-        this.pendingExceptions.push(exception);
-        if (clip) this.pendingRecordings.push(clip);
-      };
-      if (!send(frame, requeue)) {
-        unsentExceptions.push(exception);
-        if (clip) recordings.push(clip);
+      if (suppressed === null) return false;
+      if (suppressed > 0)
+        record.setAttribute("traceway.error.suppressed_count", suppressed);
+      if (attrs[ATTR_EXCEPTION_ID] === undefined)
+        record.setAttribute(ATTR_EXCEPTION_ID, generateUUID());
+      if (stack && attrs[ATTR_DEBUG_IDS] === undefined) {
+        const debugIds = debugIdsForStackTrace(stack);
+        if (debugIds)
+          record.setAttribute(ATTR_DEBUG_IDS, JSON.stringify(debugIds));
       }
     }
-    this.pendingExceptions.unshift(...unsentExceptions);
+    return true;
+  }
 
-    const unsentRecordings: SessionRecordingPayload[] = [];
-    for (const recording of recordings) {
-      if (!send({ sessionRecordings: [recording] }, () => this.pendingRecordings.push(recording))) {
-        unsentRecordings.push(recording);
+  private ignored(text: string): boolean {
+    for (const pattern of this.ignoreErrors) {
+      if (typeof pattern === "string") {
+        if (text.includes(pattern)) return true;
+      } else {
+        pattern.lastIndex = 0;
+        if (pattern.test(text)) return true;
       }
     }
-    this.pendingRecordings.unshift(...unsentRecordings);
+    return false;
   }
 
-  private scheduleRetry(): void {
-    if (this.retryTimer !== null) return;
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = null;
-      this.doSync();
-    }, this.retryDelayMs);
+  private isSessionEvent(name: string | undefined): boolean {
+    return (
+      name === EVENT_SESSION_START ||
+      name === EVENT_SESSION_END ||
+      name === EVENT_SESSION_UPDATE
+    );
   }
 
-  async flush(timeoutMs?: number): Promise<void> {
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
+  private observe(observed: ObservedRecord): void {
+    if (
+      observed.routed === "stream" &&
+      observed.item.kind === "log" &&
+      this.isSessionEvent(observed.item.record.eventName)
+    ) {
+      this.sessionSink?.onEmit(observed.item.record as SdkLogRecord);
     }
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
+    this.persistence.checkpoint(this.sessions.currentId());
+    if (observed.signal === "control") return;
+    if (this.options.captureHttpServerErrors && observed.item.kind === "span") {
+      const status = observed.item.span.attributes["http.response.status_code"];
+      if (typeof status === "number" && status >= 500) {
+        const method = String(
+          observed.item.span.attributes["http.request.method"] ?? "",
+        );
+        const url = String(observed.item.span.attributes["url.full"] ?? "");
+        this.captureMessage(`HTTP ${status} ${method} ${url}`, {
+          "http.request.method": method,
+          "url.full": url,
+          "http.response.status_code": String(status),
+        });
+      }
     }
-    if (this.lifecycle) {
-      this.lifecycle.uninstall();
-    }
-    if (this.recordAllSessions) {
-      this.endSession(Date.now());
-    }
-    if (this.recorder) {
-      this.recorder.stop();
-    }
+    if (!this.control.enabled()) return;
+    const fired = this.triggers.observe({
+      timeMs: observed.timeMs,
+      lookup: observed.lookup,
+    });
+    for (const trigger of fired) this.runTrigger(trigger);
+    if (fired.length > 0) this.router?.sendIfStreaming(observed);
+  }
 
-    const syncPromise = this.doSync();
+  private runTrigger(fired: FiredTrigger): void {
+    const exceptionId = fired.cause.lookup(`attributes.${ATTR_EXCEPTION_ID}`);
+    for (const action of fired.actions) {
+      this.runAction(
+        action,
+        typeof exceptionId === "string" ? exceptionId : undefined,
+        fired.trigger.id,
+      );
+    }
+    const attributes: Record<string, string> = {
+      "traceway.trigger.id": fired.trigger.id,
+    };
+    if (fired.trigger.name)
+      attributes["traceway.trigger.name"] = fired.trigger.name;
+    this.logger?.emit({
+      eventName: EVENT_TRIGGER_FIRED,
+      severityNumber: SeverityNumber.INFO,
+      attributes,
+    });
+  }
 
-    if (timeoutMs !== undefined) {
-      await Promise.race([
-        syncPromise,
-        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-      ]);
+  runAction(
+    action: TriggerAction,
+    exceptionId?: string,
+    triggerId?: string,
+  ): void {
+    const now = Date.now();
+    switch (action.type) {
+      case "flush":
+        this.router?.flushBuffered(
+          now - action.lookbackSeconds * 1000,
+          selectorSet(action.signals),
+          now,
+        );
+        this.persistence.afterRestore(() =>
+          this.router?.flushBuffered(
+            now - action.lookbackSeconds * 1000,
+            selectorSet(action.signals),
+            now,
+          ),
+        );
+        if (action.replay)
+          this.replay.flush(
+            action.lookbackSeconds * 1000,
+            exceptionId,
+            this.unloading,
+          );
+        return;
+      case "stream":
+        this.streamFor(
+          action.signals ?? ["*"],
+          action.replay === true,
+          now + action.durationSeconds * 1000,
+        );
+        return;
+      case "startReplay":
+        this.streamFor([], true, now + action.durationSeconds * 1000);
+        return;
+      case "emit":
+        this.logger?.emit({
+          eventName: action.eventName,
+          severityNumber: SeverityNumber.INFO,
+          attributes: { ...action.attributes },
+        });
+        return;
+      case "capture":
+        this.startLocalCapture(action, exceptionId, triggerId ?? "local");
+        return;
+    }
+  }
+
+  private localCapturesKey(): string {
+    return `traceway:local-captures:${this.token}`;
+  }
+
+  private readLocalCaptures(): LocalCapture[] {
+    try {
+      const now = Date.now();
+      return (
+        JSON.parse(
+          storageGet(this.localCapturesKey()) ?? "[]",
+        ) as LocalCapture[]
+      ).filter((c) => c.untilMs > now);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * A capture a trigger started on this device. It is kept in localStorage, so the next pages keep streaming until
+   * it ends; while it runs, the same trigger only extends it instead of uploading the lookback again.
+   */
+  private startLocalCapture(
+    action: Extract<TriggerAction, { type: "capture" }>,
+    exceptionId: string | undefined,
+    triggerId: string,
+  ): void {
+    const now = Date.now();
+    const untilMs = now + action.durationSeconds * 1000;
+    const signals = action.signals ?? ["*"];
+    const replay = action.replay === true;
+    const captures = this.readLocalCaptures();
+    const running = captures.find((c) => c.triggerId === triggerId);
+    if (running) {
+      running.untilMs = Math.max(running.untilMs, untilMs);
     } else {
-      await syncPromise;
+      captures.push({
+        id: `${triggerId}:${now}`,
+        triggerId,
+        untilMs,
+        signals,
+        replay,
+      });
+      this.runAction(
+        {
+          type: "flush",
+          lookbackSeconds: action.lookbackSeconds ?? 60,
+          signals,
+          replay,
+        },
+        exceptionId,
+      );
+      this.logger?.emit({
+        eventName: EVENT_CAPTURE_STARTED,
+        severityNumber: SeverityNumber.INFO,
+        attributes: {
+          "traceway.capture.id": `${triggerId}:${now}`,
+          "traceway.capture.source": "trigger",
+          "traceway.trigger.id": triggerId,
+          "traceway.capture.until": new Date(untilMs).toISOString(),
+        },
+      });
     }
+    this.streamFor(
+      signals,
+      replay,
+      running?.untilMs ?? untilMs,
+      true,
+      `local:${triggerId}`,
+    );
+    storageSet(this.localCapturesKey(), JSON.stringify(captures));
+  }
+
+  /** `capture` brings back signals rules switched off, see `StreamOverride.includeOff`. */
+  private streamFor(
+    signals: SignalSelector,
+    replay: boolean,
+    untilMs: number,
+    capture = false,
+    owner?: string,
+  ): void {
+    const override = { signals, replay, untilMs, includeOff: capture };
+    if (owner) this.control.setOverrides(owner, [override]);
+    else this.control.addOverride(override);
+    this.applyReplay();
+    this.scheduleOverrideExpiry();
+  }
+
+  private scheduleOverrideExpiry(): void {
+    if (this.overrideTimer !== null) clearTimeout(this.overrideTimer);
+    this.overrideTimer = null;
+    const expiry = this.control.nextOverrideExpiry();
+    if (expiry === undefined) return;
+    this.overrideTimer = setTimeout(
+      () => {
+        this.overrideTimer = null;
+        this.applyReplay();
+        this.scheduleOverrideExpiry();
+      },
+      Math.max(0, expiry - Date.now()) + 1,
+    );
+  }
+
+  private emitSessionEvent(
+    eventName: string,
+    session: SessionInfo,
+    timestampMs?: number,
+  ): void {
+    if (!this.control.settings().sessions.enabled) return;
+    this.logger?.emit({
+      eventName,
+      severityNumber: SeverityNumber.INFO,
+      timestamp: timestampMs,
+      attributes: {
+        ...collectDefaultAttributes(),
+        ...this.sessions.entryAttributes(),
+        ...this.globalAttributes,
+        [ATTR_SESSION_ID]: session.id,
+        [ATTR_SESSION_STARTED_AT]: session.startedAtMs,
+      },
+    });
+  }
+
+  private refreshSession(): void {
+    const session = this.sessions.current();
+    if (session) this.emitSessionEvent(EVENT_SESSION_UPDATE, session);
+    this.describeChanged();
+  }
+
+  private onSessionStart(session: SessionInfo, resumed: boolean): void {
+    this.unloading = false;
+    this.triggers.resetSession();
+    this.replay.onSessionStart();
+    this.emitSessionEvent(
+      resumed ? EVENT_SESSION_UPDATE : EVENT_SESSION_START,
+      session,
+    );
+    this.applyReplay();
+    this.describeChanged();
+  }
+
+  private onSessionEnd(
+    session: SessionInfo,
+    endedAtMs: number,
+    unloading: boolean,
+  ): void {
+    this.unloading = unloading;
+    if (unloading) this.persistBuffer();
+    this.replay.onSessionEnd(unloading);
+    this.emitSessionEvent(EVENT_SESSION_END, session, endedAtMs);
+    if (unloading) void this.flush().catch(() => undefined);
+  }
+
+  private onHidden(): void {
+    this.persistBuffer();
+    this.replay.onHidden();
+    void this.flush().catch(() => undefined);
+  }
+
+  private onVisible(): void {
+    this.unloading = false;
+    this.replay.onVisible();
+    if (
+      this.opamp &&
+      this.opamp.millisSinceLastPoll() >= this.opamp.pollIntervalMs()
+    )
+      void this.opamp.poll();
+    void this.persistence.exporterOutbox()?.drain();
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/frontend",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "Traceway SDK for browser environments",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -25,8 +25,20 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/core": "1.2.0",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/api-logs": "0.223.0",
+    "@opentelemetry/browser-instrumentation": "0.9.0",
+    "@opentelemetry/core": "2.12.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.223.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.0",
+    "@opentelemetry/instrumentation": "0.223.0",
+    "@opentelemetry/otlp-transformer": "0.223.0",
+    "@opentelemetry/resources": "2.12.0",
+    "@opentelemetry/sdk-logs": "0.223.0",
+    "@opentelemetry/sdk-trace": "2.12.0",
+    "@tracewayapp/core": "2.0.0",
+    "@tracewayapp/opamp": "2.0.0",
     "fflate": "^0.8.2",
-    "rrweb": "^2.0.0-alpha.18"
+    "rrweb": "2.2.0"
   }
 }

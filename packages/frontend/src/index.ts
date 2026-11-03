@@ -1,156 +1,104 @@
-import { nowISO, generateUUID } from "@tracewayapp/core";
-import type { ExceptionStackTrace } from "@tracewayapp/core";
-import {
-  TracewayFrontendClient,
-  type TracewayFrontendOptions,
-} from "./client.js";
-import { formatBrowserStackTrace } from "./stack-trace.js";
-import { installGlobalHandlers } from "./global-handlers.js";
-import {
-  installFetchInstrumentation,
-  getActiveDistributedTraceId,
-} from "./fetch-instrumentation.js";
-import { installXhrInstrumentation } from "./xhr-instrumentation.js";
-import { installConsoleInstrumentation } from "./console-instrumentation.js";
-import { installNavigationInstrumentation } from "./navigation-instrumentation.js";
+import { TracewayFrontendClient, type TracewayFrontendOptions } from "./client.js";
 
 let client: TracewayFrontendClient | null = null;
 
-export function init(
-  connectionString: string,
-  options: TracewayFrontendOptions = {},
-): void {
+/**
+ * Starts the SDK. Calling it again is a no-op until `shutdown()`: the
+ * OpenTelemetry instrumentations patch browser globals once per page.
+ */
+export function init(connectionString: string, options: TracewayFrontendOptions = {}): void {
+  if (client) return;
   client = new TracewayFrontendClient(connectionString, options);
-  if (typeof window !== "undefined") {
-    installGlobalHandlers(client);
-    installFetchInstrumentation(client);
-    installXhrInstrumentation(client);
-    if (client.captureLogs) {
-      installConsoleInstrumentation(client);
-    }
-    if (client.captureNavigation) {
-      installNavigationInstrumentation(client);
-    }
-  }
+  client.start();
 }
 
-export function captureException(
-  error: Error,
-  options?: { distributedTraceId?: string },
-): void {
-  if (!client) return;
-  client.addException({
-    traceId: null,
-    stackTrace: formatBrowserStackTrace(error),
-    recordedAt: nowISO(),
-    isMessage: false,
-    distributedTraceId:
-      options?.distributedTraceId ?? getActiveDistributedTraceId(),
-  });
+export function getClient(): TracewayFrontendClient | null {
+  return client;
 }
 
-export function captureExceptionWithAttributes(
-  error: Error,
-  attributes?: Record<string, string>,
-  options?: { distributedTraceId?: string },
-): void {
-  if (!client) return;
-  client.addException({
-    traceId: null,
-    stackTrace: formatBrowserStackTrace(error),
-    recordedAt: nowISO(),
-    attributes,
-    isMessage: false,
-    distributedTraceId:
-      options?.distributedTraceId ?? getActiveDistributedTraceId(),
-  });
+export function captureException(error: unknown, attributes?: Record<string, string>): void {
+  client?.captureException(error, attributes);
 }
 
-export function captureMessage(msg: string): void {
-  if (!client) return;
-  client.addException({
-    traceId: null,
-    stackTrace: msg,
-    recordedAt: nowISO(),
-    isMessage: true,
-  });
+export function captureExceptionWithAttributes(error: unknown, attributes?: Record<string, string>): void {
+  client?.captureException(error, attributes);
+}
+
+export function captureMessage(message: string, attributes?: Record<string, string>): void {
+  client?.captureMessage(message, attributes);
 }
 
 /**
- * Records a custom user-defined breadcrumb. Use to log any app-level action
- * that should ride along with the next exception ("user_tapped_pay",
- * "cart_synced", etc.).
+ * Records an app-level breadcrumb ("user_tapped_pay", "cart_synced") that
+ * shows on the replay timeline and that remote triggers can match.
  */
-export function recordAction(
-  category: string,
-  name: string,
-  data?: Record<string, unknown>,
-): void {
-  if (!client) return;
-  client.recordAction(category, name, data);
+export function recordAction(category: string, name: string, data?: Record<string, unknown>): void {
+  client?.recordAction(category, name, data);
 }
 
+/** Records a named app event, e.g. `track("checkout_failed", { step: "payment" })`. */
+export function track(eventName: string, attributes?: Record<string, string | number | boolean>): void {
+  client?.track(eventName, attributes);
+}
+
+/** Sends everything that is queued for sending. Buffered telemetry stays on the device. */
 export async function flush(timeoutMs?: number): Promise<void> {
   if (!client) return;
-  await client.flush(timeoutMs);
+  const done = client.flush();
+  if (timeoutMs === undefined) return done;
+  await Promise.race([done, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
+}
+
+/** Fetches this client's remote collection settings now instead of at the next poll. */
+export async function refreshConfig(): Promise<void> {
+  await client?.refreshConfig();
+}
+
+/** Flushes, removes the instrumentations and stops recording. `init()` may be called again afterwards. */
+export async function shutdown(): Promise<void> {
+  const current = client;
+  client = null;
+  await current?.shutdown();
 }
 
 /**
- * Attach a key/value attribute to every session and exception emitted from
- * here on (e.g. `setAttribute("userId", "42")`). Persists in memory until
- * cleared. If a session is already open, the attribute lands on it via a
- * refresh upsert.
+ * Attaches a key/value attribute to every session and exception from here on
+ * (e.g. `setAttribute("user.id", "42")`). An open session is updated at once.
  */
 export function setAttribute(key: string, value: string): void {
-  if (!client) return;
-  client.setAttribute(key, value);
+  client?.setAttribute(key, value);
 }
 
-/** Bulk version of setAttribute. Caller's keys overwrite existing scope. */
 export function setAttributes(attrs: Record<string, string>): void {
-  if (!client) return;
-  client.setAttributes(attrs);
+  client?.setAttributes(attrs);
 }
 
-/** Remove a single key from the global scope. */
 export function removeAttribute(key: string): void {
-  if (!client) return;
-  client.removeAttribute(key);
+  client?.removeAttribute(key);
 }
 
-/** Clear all attributes set via setAttribute / setAttributes. */
 export function clearAttributes(): void {
-  if (!client) return;
-  client.clearAttributes();
+  client?.clearAttributes();
 }
 
-export { TracewayFrontendClient, DEFAULT_IGNORE_PATTERNS } from "./client.js";
-export type { TracewayFrontendOptions } from "./client.js";
-export { formatBrowserStackTrace } from "./stack-trace.js";
-export { installGlobalHandlers } from "./global-handlers.js";
-export { installConsoleInstrumentation } from "./console-instrumentation.js";
-export { installNavigationInstrumentation } from "./navigation-instrumentation.js";
+/** The id this browser profile reports to Traceway as `service.instance.id`; the dashboard can capture by it. */
+export function getInstanceId(): string | null {
+  return client?.instanceId ?? null;
+}
+
+export { TracewayFrontendClient, DEFAULT_IGNORE_PATTERNS, SDK_VERSION } from "./client.js";
+export type { TracewayFrontendOptions, CapturedException } from "./client.js";
 
 export type {
-  ExceptionStackTrace,
-  CollectionFrame,
-  ReportRequest,
-  SessionRecordingPayload,
+  Settings,
+  Trigger,
+  TriggerAction,
+  Capture,
+  Mode,
+  SignalName,
   TracewayEvent,
   LogEvent,
   NetworkEvent,
   NavigationEvent,
   CustomEvent,
 } from "@tracewayapp/core";
-
-export const DISTRIBUTED_TRACE_HEADER = "traceway-trace-id";
-
-export { getActiveDistributedTraceId } from "./fetch-instrumentation.js";
-
-export function createAxiosInterceptor() {
-  return (config: any) => {
-    config.headers = config.headers || {};
-    config.headers["traceway-trace-id"] = generateUUID();
-    return config;
-  };
-}
