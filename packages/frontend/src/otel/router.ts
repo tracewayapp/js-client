@@ -1,6 +1,6 @@
 import type { StoredBatch } from "../persistence/idb.js";
 import { logsToJson, spansToJson } from "../persistence/otlp-json.js";
-import type { Context } from "@opentelemetry/api";
+import { SpanStatusCode, type Context } from "@opentelemetry/api";
 import type {
   LogRecordProcessor,
   ReadableLogRecord,
@@ -43,6 +43,7 @@ export interface RouterHooks {
   enrichLog(record: SdkLogRecord, signal: RecordSignal): boolean;
   observe(record: ObservedRecord): void;
   sendStored(batch: StoredBatch): void;
+  admit?(item: BufferedItem): boolean;
 }
 
 export interface RouterSinks {
@@ -144,6 +145,14 @@ export class TelemetryRouter {
     if (sessionId && record.attributes[ATTR_SESSION_ID] === undefined) {
       record.setAttribute(ATTR_SESSION_ID, sessionId);
     }
+    if (signal !== "control") {
+      const captureIds = this.control
+        .settings()
+        .captures.filter((capture) => Date.parse(capture.until) > Date.now())
+        .map((capture) => capture.id);
+      if (captureIds.length)
+        record.setAttribute("traceway.capture.ids", JSON.stringify(captureIds));
+    }
     if (!this.hooks.enrichLog(record, signal)) return;
 
     const item: LiveItem = { kind: "log", record };
@@ -171,12 +180,33 @@ export class TelemetryRouter {
   stampSpan(span: Span): void {
     const sessionId = this.hooks.sessionId();
     if (sessionId) span.setAttribute(ATTR_SESSION_ID, sessionId);
+    const captureIds = this.control
+      .settings()
+      .captures.filter((capture) => Date.parse(capture.until) > Date.now())
+      .map((capture) => capture.id);
+    if (captureIds.length)
+      span.setAttribute("traceway.capture.ids", JSON.stringify(captureIds));
+    const baselineRate = this.control.settings().sessions.baselineSampleRate;
+    span.setAttribute(
+      "traceway.collection.source",
+      sessionId && unitHash(sessionId) < baselineRate
+        ? "baseline"
+        : "diagnostic",
+    );
+    span.setAttribute("traceway.collection.baseline_rate", baselineRate);
   }
 
   routeSpan(span: ReadableSpan): void {
     const item: LiveItem = { kind: "span", span };
     const timeMs = hrTimeToMs(span.endTime);
-    const routed = this.route("network", item, timeMs, () => true);
+    const routed = this.route(
+      "network",
+      item,
+      timeMs,
+      () => true,
+      span.attributes["traceway.interaction"] === true &&
+        span.status.code === SpanStatusCode.ERROR,
+    );
     this.hooks.observe({
       signal: "network",
       timeMs,
@@ -214,6 +244,7 @@ export class TelemetryRouter {
     item: LiveItem,
     timeMs: number,
     accept: () => boolean,
+    forceStream = false,
   ): "stream" | "buffer" | "off" | "filtered" {
     if (signal === "control") {
       if (!this.control.enabled()) return "off";
@@ -232,7 +263,7 @@ export class TelemetryRouter {
       ) &&
       sessionId !== null &&
       unitHash(sessionId) < this.control.settings().sessions.baselineSampleRate;
-    if (mode === "stream" || baselineSampled) {
+    if (mode === "stream" || baselineSampled || forceStream) {
       this.send(item);
       return "stream";
     }
@@ -251,6 +282,7 @@ export class TelemetryRouter {
   }
 
   private send(item: BufferedItem): void {
+    if (this.hooks.admit && !this.hooks.admit(item)) return;
     if (item.kind === "log") {
       this.sinks.logs.onEmit(item.record as SdkLogRecord);
     } else if (item.kind === "span") {

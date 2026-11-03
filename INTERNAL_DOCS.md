@@ -41,7 +41,7 @@ signal, then route by the effective mode: **stream** to the OTLP batch exporter,
 
 `ControlState` (`core/src/control`) computes the effective settings: SDK defaults (`defaultSettings`, which reproduce
 1.x: errors and messages stream, breadcrumbs and replay are buffered, the `default-exception` trigger uploads the last
-30 s with a replay clip, subject to a 5 s cooldown and 20 clips per session; `recordAllSessions` streams breadcrumbs and replay), then the remote overlay,
+600 s of breadcrumbs and a 30 s replay clip, with replay subject to a 5 s cooldown and 20 clips per session; `recordAllSessions` streams breadcrumbs and replay), then the remote overlay,
 clamped to the ceilings from `init()` options lowered to the document's plan `limits`, then temporary stream overrides
 from triggers and captures.
 
@@ -852,3 +852,12 @@ The connection string is parsed into:
 ## License
 
 MIT
+
+
+## Diagnostic collection accounting
+
+The frontend admission budget is shared by diagnostic logs/spans and replay segments: 50 MiB of serialized UTF-8 data and 10,000 events per session, persisted in sessionStorage. Error, lifecycle/control and web-vital logs are exempt; errors retain their separate limiter. Existing outbox batches were admitted before persistence and retries are not charged again. Replay counts rrweb events. Health events and session snapshots expose budget drops, error suppression, buffer evictions and terminal replay delivery failures. Limits are per session, not a project-wide wire-byte quota.
+
+Trigger fire counts/cooldowns survive reloads for the same session. Non-replay flush actions on the default exception trigger may still run when its replay cooldown or clip cap blocks a new clip. Disabled or sampled-out triggers do not bypass their policy.
+
+Explicit interaction handles activate an OTel span context through run/bind and captureException; they do not patch arbitrary async continuations. A failed interaction root streams when it ends after its error flush, respecting network ceilings. Browser diagnostic spans never produce endpoint/task/AI aggregate rows, including when the resource identifies the browser SDK in a mistakenly selected backend project.

@@ -7,6 +7,7 @@ export class ErrorLimiter {
   private acceptedByFingerprint = new Map<string, number>();
   private acceptedAt: number[] = [];
   private suppressed = 0;
+  totalSuppressed = 0;
   private readonly limits: ErrorLimits;
 
   constructor(
@@ -48,6 +49,7 @@ export class ErrorLimiter {
       this.acceptedByFingerprint.has(fingerprint)
     ) {
       this.suppressed++;
+      this.totalSuppressed++;
       return null;
     }
     this.acceptedAt.push(now);

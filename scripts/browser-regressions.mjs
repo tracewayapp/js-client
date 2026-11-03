@@ -435,6 +435,108 @@ try {
       );
     },
   );
+  await check(
+    "collection budget survives reload and interaction context stays isolated",
+    async () => {
+      const budgetPage = await browser.newPage();
+      try {
+        const initialize = async () => {
+          await budgetPage.goto(origin);
+          await budgetPage.evaluate(() =>
+            Traceway.init(`budget@${location.origin}`, {
+              baselineSampleRate: 1,
+              collectionLimits: { maxEvents: 2 },
+              captureLogs: false,
+              captureNavigation: false,
+              captureUserActions: false,
+              captureWebVitals: false,
+              captureResourceTiming: false,
+              sessionRecording: false,
+              remoteConfig: false,
+              exportDelayMs: 60000,
+            }),
+          );
+        };
+        await initialize();
+        await budgetPage.evaluate(async () => {
+          Traceway.track("budget-one");
+          Traceway.track("budget-two");
+          Traceway.track("budget-dropped");
+          Traceway.captureException(new Error("budget-still-reports-errors"));
+          await Traceway.flush();
+        });
+        assert(names().includes("budget-one"));
+        assert(names().includes("budget-two"));
+        assert(!names().includes("budget-dropped"));
+        await initialize();
+        await budgetPage.evaluate(async () => {
+          Traceway.track("budget-after-reload");
+          await Traceway.flush();
+        });
+        assert(!names().includes("budget-after-reload"));
+      } finally {
+        await budgetPage.close();
+      }
+      const interactionPage = await browser.newPage();
+      try {
+        await interactionPage.goto(origin);
+        const result = await interactionPage.evaluate(async () => {
+          Traceway.init(`interaction@${location.origin}`, {
+            remoteConfig: false,
+            baselineSampleRate: 1,
+            sessionRecording: false,
+            captureWebVitals: false,
+            captureResourceTiming: false,
+          });
+          const checkout = Traceway.startInteraction("checkout");
+          const search = Traceway.startInteraction("search");
+          await checkout.run(() => fetch("/checkout"));
+          await Promise.resolve();
+          checkout.captureException(new Error("bound-checkout-error"));
+          search.bind(() =>
+            Traceway.captureException(new Error("bound-search-error")),
+          )();
+          Traceway.captureException(new Error("unrelated-error"));
+          checkout.end();
+          search.end();
+          await Traceway.flush();
+          return { checkout: checkout.traceId, search: search.traceId };
+        });
+        const find = (text) =>
+          logs.find((log) =>
+            log.attributes?.some(
+              (attr) =>
+                attr.key === "exception.message" &&
+                attr.value.stringValue === text,
+            ),
+          );
+        assert.equal(find("bound-checkout-error").traceId, result.checkout);
+        assert.equal(find("bound-search-error").traceId, result.search);
+        assert(!find("unrelated-error").traceId);
+        const spans = requests
+          .filter((request) => request.path.endsWith("/traces"))
+          .flatMap((request) =>
+            JSON.parse(request.body).resourceSpans.flatMap((resource) =>
+              resource.scopeSpans.flatMap((scope) => scope.spans),
+            ),
+          );
+        const parent = spans.find(
+          (span) =>
+            span.name === "checkout" && span.traceId === result.checkout,
+        );
+        assert(parent);
+        assert(
+          spans.some(
+            (span) =>
+              span.traceId === result.checkout &&
+              span.parentSpanId === parent.spanId,
+          ),
+        );
+      } finally {
+        await interactionPage.close();
+      }
+    },
+  );
   assert.deepEqual(errors, []);
   console.log("Browser regression checks passed.");
 } finally {

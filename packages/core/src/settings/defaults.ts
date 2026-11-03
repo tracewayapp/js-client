@@ -13,7 +13,8 @@ export function defaultExceptionTrigger(): Trigger {
     maxPerSession: 20,
     steps: [{ match: { key: "event.name", op: "eq", value: "exception" } }],
     actions: [
-      { type: "flush", lookbackSeconds: 30, signals: ["*"], replay: true },
+      { type: "flush", lookbackSeconds: 600, signals: ["*"], replay: false },
+      { type: "flush", lookbackSeconds: 30, signals: [], replay: true },
     ],
   };
 }

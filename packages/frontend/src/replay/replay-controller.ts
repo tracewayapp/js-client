@@ -27,6 +27,7 @@ export interface ReplayApplyOptions {
  */
 export class ReplayController {
   private readonly recorder: SessionRecorder;
+  lastFlushSegments = 0;
   private mode: Mode = "off";
   private maskAllInputs = true;
   private buffered: BufferedSegment[] = [];
@@ -82,17 +83,17 @@ export class ReplayController {
    * the in-progress segment as it stands, tagged as the clip of `exceptionId`.
    */
   flush(lookbackMs: number, exceptionId?: string, unloading = false): void {
+    this.lastFlushSegments = 0;
     if (this.mode === "off") return;
+    this.trim();
     const since = Date.now() - lookbackMs;
     const out: RecordingSegment[] = [];
     const kept: BufferedSegment[] = [];
     for (const entry of this.buffered) {
       if (entry.endedAtMs >= since) {
-        out.push(entry.segment);
-        this.bufferedBytes -= entry.bytes;
-      } else {
-        kept.push(entry);
+        out.push({ ...entry.segment, ...(exceptionId ? { exceptionId } : {}) });
       }
+      kept.push(entry);
     }
     this.buffered = kept;
 
@@ -112,7 +113,8 @@ export class ReplayController {
       if (exceptionId) segment.exceptionId = exceptionId;
       if (segment.sessionId || segment.exceptionId) out.push(segment);
     }
-    if (out.length > 0) this.transport.send(out, { unloading });
+    if (out.length > 0)
+      this.lastFlushSegments = this.transport.send(out, { unloading });
   }
 
   /** The session ended: the in-progress segment is closed out under it. */
@@ -188,7 +190,7 @@ export class ReplayController {
 
 function estimateSegmentBytes(segment: RecordingSegment): number {
   try {
-    return JSON.stringify(segment).length;
+    return new TextEncoder().encode(JSON.stringify(segment)).byteLength;
   } catch {
     return 64 * 1024;
   }

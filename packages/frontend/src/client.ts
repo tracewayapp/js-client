@@ -1,4 +1,10 @@
-import { context, propagation } from "@opentelemetry/api";
+import { logsToJson, spansToJson } from "./persistence/otlp-json.js";
+import {
+  trace,
+  SpanStatusCode,
+  context,
+  propagation,
+} from "@opentelemetry/api";
 import type { Logger } from "@opentelemetry/api-logs";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
@@ -54,6 +60,10 @@ import {
 } from "@tracewayapp/core";
 import type { AttributeValue, RemoteConfig } from "@tracewayapp/opamp";
 import { AgentCapabilities, OpampHttpClient } from "@tracewayapp/opamp";
+import {
+  CollectionBudget,
+  type CollectionLimits,
+} from "./collection-budget.js";
 import { ErrorLimiter, type ErrorLimits } from "./error-limiter.js";
 import { debugIdsForStackTrace } from "./debug-ids.js";
 import { collectDefaultAttributes } from "./default-attributes.js";
@@ -142,6 +152,8 @@ export interface TracewayFrontendOptions {
   baselineSampleRate?: number;
   /** Local protection against repeated errors and error storms. */
   errorLimits?: Partial<ErrorLimits>;
+  /** Diagnostic uploads per session: 50 MiB and 10,000 events by default. Developer options may lower these ceilings. */
+  collectionLimits?: Partial<CollectionLimits>;
 
   /** The following allow a signal at all; remote config can only restrict them further. All default true. */
   captureLogs?: boolean;
@@ -235,6 +247,8 @@ export class TracewayFrontendClient {
   private sessionSink: BatchLogRecordProcessor | null = null;
   private sessionPersistence: TelemetryPersistence | null = null;
   private readonly errorLimiter: ErrorLimiter;
+  private readonly collectionBudget: CollectionBudget;
+  private healthTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly logSink: BatchLogRecordProcessor;
   private readonly spanSink: BatchSpanProcessor;
   private globalAttributes: Record<string, string>;
@@ -259,6 +273,10 @@ export class TracewayFrontendClient {
     this.token = token;
     this.options = options;
     this.errorLimiter = new ErrorLimiter(options.errorLimits);
+    this.collectionBudget = new CollectionBudget(
+      token,
+      options.collectionLimits,
+    );
     this.endpoints = resolveEndpoints(apiUrl);
     if (options.telemetry) {
       const url = new URL(options.telemetry.url);
@@ -312,7 +330,21 @@ export class TracewayFrontendClient {
       maxBytes: settings.buffer.maxBytes,
       maxAgeMs: settings.buffer.maxAgeSeconds * 1000,
     });
-    this.recordings = new RecordingsTransport(this.endpoints.recordings, token);
+    this.recordings = new RecordingsTransport(
+      this.endpoints.recordings,
+      token,
+      (...args) => fetch(...args),
+      (segment) => {
+        const accepted = this.collectionBudget.admit(
+          segment.sessionId ?? null,
+          new TextEncoder().encode(JSON.stringify(segment)).byteLength,
+          segment.events.length,
+        );
+        if (!accepted) this.scheduleHealth();
+        return accepted;
+      },
+      () => this.scheduleHealth(),
+    );
     this.sessions = new SessionManager({
       storeKey: `traceway:session:${token}`,
       onStart: (session, resumed) => this.onSessionStart(session, resumed),
@@ -400,6 +432,54 @@ export class TracewayFrontendClient {
         sessionId: () => this.sessions.currentId(),
         globalAttribute: (key) => this.globalAttributes[key],
         enrichLog: (record, signal) => this.enrichLog(record, signal),
+        admit: (item) => {
+          if (
+            item.kind === "log" &&
+            ["errors", "control", "webVitals"].includes(
+              classifyLog(item.record.eventName),
+            )
+          )
+            return true;
+          const body =
+            item.kind === "log"
+              ? logsToJson([item.record])
+              : item.kind === "span"
+                ? spansToJson([item.span])
+                : item.batch.body;
+          let events = 1;
+          if (item.kind === "stored") {
+            const request = JSON.parse(body);
+            events =
+              item.batch.kind === "logs"
+                ? (request.resourceLogs ?? []).reduce(
+                    (n: number, resource: any) =>
+                      n +
+                      (resource.scopeLogs ?? []).reduce(
+                        (m: number, scope: any) =>
+                          m + (scope.logRecords ?? []).length,
+                        0,
+                      ),
+                    0,
+                  )
+                : (request.resourceSpans ?? []).reduce(
+                    (n: number, resource: any) =>
+                      n +
+                      (resource.scopeSpans ?? []).reduce(
+                        (m: number, scope: any) =>
+                          m + (scope.spans ?? []).length,
+                        0,
+                      ),
+                    0,
+                  );
+          }
+          const accepted = this.collectionBudget.admit(
+            this.sessions.currentId(),
+            new TextEncoder().encode(body).byteLength,
+            events,
+          );
+          if (!accepted) this.scheduleHealth();
+          return accepted;
+        },
         observe: (observed) => this.observe(observed),
         sendStored: (batch) => this.persistence.sendStored(batch),
       },
@@ -415,6 +495,8 @@ export class TracewayFrontendClient {
         (typeof location !== "undefined" && location.hostname) ||
         "browser",
       "service.instance.id": this.instanceId,
+      "traceway.sdk.name": SCOPE_NAME,
+      "traceway.sdk.version": SDK_VERSION,
     };
     if (this.options.version)
       attributes["service.version"] = this.options.version;
@@ -501,11 +583,57 @@ export class TracewayFrontendClient {
     }
   }
 
+  startInteraction(name: string) {
+    const span = this.tracerProvider
+      ?.getTracer(SCOPE_NAME, SDK_VERSION)
+      .startSpan(name, {
+        attributes: { "traceway.interaction": true },
+      });
+    const interactionContext = span
+      ? trace.setSpan(context.active(), span)
+      : context.active();
+    let ended = false;
+    return {
+      traceId: span?.spanContext().traceId ?? null,
+      run: <T>(callback: () => T): T =>
+        context.with(interactionContext, callback),
+      bind:
+        <Args extends unknown[], Result>(callback: (...args: Args) => Result) =>
+        (...args: Args): Result =>
+          context.with(interactionContext, () => callback(...args)),
+      captureException: (
+        error: unknown,
+        attributes?: Record<string, string>,
+      ) => {
+        span?.setStatus({ code: SpanStatusCode.ERROR });
+        context.with(interactionContext, () =>
+          this.captureException(error, attributes),
+        );
+      },
+      end: () => {
+        if (!ended) {
+          ended = true;
+          span?.end();
+        }
+      },
+    };
+  }
+
   captureException(error: unknown, attributes?: Record<string, string>): void {
-    const err =
-      error instanceof Error
-        ? error
-        : new Error(typeof error === "string" ? error : JSON.stringify(error));
+    let err: Error;
+    if (error instanceof Error) err = error;
+    else {
+      let message: string;
+      try {
+        message =
+          typeof error === "string"
+            ? error
+            : (JSON.stringify(error) ?? String(error));
+      } catch {
+        message = "Non-Error exception (unserializable thrown value)";
+      }
+      err = new Error(message);
+    }
     this.logger?.emit({
       eventName: EVENT_EXCEPTION,
       severityNumber: SeverityNumber.ERROR,
@@ -616,6 +744,8 @@ export class TracewayFrontendClient {
   }
 
   async shutdown(): Promise<void> {
+    if (this.healthTimer !== null) clearTimeout(this.healthTimer);
+    this.healthTimer = null;
     if (this.overrideTimer !== null) clearTimeout(this.overrideTimer);
     this.overrideTimer = null;
     this.opamp?.stop();
@@ -915,14 +1045,33 @@ export class TracewayFrontendClient {
     });
   }
 
+  private scheduleHealth(): void {
+    if (this.healthTimer !== null) return;
+    this.healthTimer = setTimeout(() => {
+      this.healthTimer = null;
+      this.logger?.emit({
+        eventName: "traceway.collection.health",
+        severityNumber: SeverityNumber.INFO,
+        attributes: {
+          ...this.collectionBudget.snapshot(),
+          "traceway.error.suppressed_total": this.errorLimiter.totalSuppressed,
+          "traceway.context.evicted": this.buffer.evictedCount,
+          "traceway.replay.failed_segments": this.recordings.failedSegments,
+        },
+      });
+      const session = this.sessions.current();
+      if (session) this.emitSessionEvent(EVENT_SESSION_UPDATE, session);
+    }, 1000);
+  }
+
   private enrichLog(record: SdkLogRecord, signal: RecordSignal): boolean {
     if (signal !== "errors" && signal !== "messages" && signal !== "custom")
       return true;
-    const context =
+    const inheritedAttributes =
       signal === "custom"
         ? this.globalAttributes
         : { ...collectDefaultAttributes(), ...this.globalAttributes };
-    for (const [key, value] of Object.entries(context)) {
+    for (const [key, value] of Object.entries(inheritedAttributes)) {
       if (record.attributes[key] === undefined) record.setAttribute(key, value);
     }
     if (signal === "custom") return true;
@@ -973,9 +1122,15 @@ export class TracewayFrontendClient {
       const suppressed = this.errorLimiter.accept(
         JSON.stringify([type, message, stack]),
       );
-      if (suppressed === null) return false;
+      if (suppressed === null) {
+        this.scheduleHealth();
+        return false;
+      }
       if (suppressed > 0)
         record.setAttribute("traceway.error.suppressed_count", suppressed);
+      trace
+        .getSpan(context.active())
+        ?.setStatus({ code: SpanStatusCode.ERROR });
       if (attrs[ATTR_EXCEPTION_ID] === undefined)
         record.setAttribute(ATTR_EXCEPTION_ID, generateUUID());
       if (stack && attrs[ATTR_DEBUG_IDS] === undefined) {
@@ -1036,7 +1191,71 @@ export class TracewayFrontendClient {
       timeMs: observed.timeMs,
       lookup: observed.lookup,
     });
+    if (observed.signal === "errors" && observed.item.kind === "log") {
+      const record = observed.item.record as SdkLogRecord;
+      const defaultTrigger = this.control
+        .settings()
+        .triggers.find((trigger) => trigger.id === "default-exception");
+      const replayRequested = fired.some((trigger) =>
+        trigger.actions.some((action) => "replay" in action && action.replay),
+      );
+      record.setAttribute(
+        "traceway.replay.status",
+        this.control.replayMode() === "off"
+          ? "disabled"
+          : replayRequested
+            ? "requested"
+            : (this.triggers.skipped.get("default-exception") ??
+              (defaultTrigger?.enabled === false
+                ? "trigger_disabled"
+                : "not_triggered")),
+      );
+      const contextActions =
+        defaultTrigger?.actions.filter(
+          (action) => action.type === "flush" && !action.replay,
+        ) ?? [];
+      const skipped = this.triggers.skipped.get("default-exception");
+      if (skipped === "cooldown" || skipped === "session_clip_limit") {
+        for (const action of contextActions) this.runAction(action);
+      }
+      record.setAttribute(
+        "traceway.context.lookback_seconds",
+        Math.max(
+          0,
+          ...contextActions.map((action) =>
+            action.type === "flush" ? action.lookbackSeconds : 0,
+          ),
+        ),
+      );
+      record.setAttribute("traceway.context.evicted", this.buffer.evictedCount);
+      for (const [key, value] of Object.entries(
+        this.collectionBudget.snapshot(),
+      ))
+        record.setAttribute(key, value);
+    }
+    if (fired.length > 0)
+      storageSet(
+        `traceway:trigger-limits:${this.token}`,
+        JSON.stringify({
+          sessionId: this.sessions.currentId(),
+          limits: this.triggers.sessionLimits,
+        }),
+        true,
+      );
     for (const trigger of fired) this.runTrigger(trigger);
+    if (observed.signal === "errors" && observed.item.kind === "log") {
+      const record = observed.item.record as SdkLogRecord;
+      if (
+        record.attributes["traceway.replay.status"] === "requested" &&
+        this.replay.lastFlushSegments === 0
+      )
+        record.setAttribute(
+          "traceway.replay.status",
+          this.collectionBudget.snapshot()["traceway.collection.dropped"]! > 0
+            ? "collection_limit"
+            : "buffer_unavailable",
+        );
+    }
     if (fired.length > 0) this.router?.sendIfStreaming(observed);
   }
 
@@ -1229,6 +1448,10 @@ export class TracewayFrontendClient {
         ...this.globalAttributes,
         [ATTR_SESSION_ID]: session.id,
         [ATTR_SESSION_STARTED_AT]: session.startedAtMs,
+        ...this.collectionBudget.snapshot(),
+        "traceway.error.suppressed_total": this.errorLimiter.totalSuppressed,
+        "traceway.context.evicted": this.buffer.evictedCount,
+        "traceway.replay.failed_segments": this.recordings.failedSegments,
       },
     });
   }
@@ -1240,8 +1463,16 @@ export class TracewayFrontendClient {
   }
 
   private onSessionStart(session: SessionInfo, resumed: boolean): void {
+    this.collectionBudget.admit(session.id, 0, 0);
     this.unloading = false;
     this.triggers.resetSession();
+    try {
+      const saved = JSON.parse(
+        storageGet(`traceway:trigger-limits:${this.token}`, true) ?? "{}",
+      );
+      if (saved.sessionId === session.id)
+        this.triggers.restoreSessionLimits(saved.limits);
+    } catch {}
     this.replay.onSessionStart();
     this.emitSessionEvent(
       resumed ? EVENT_SESSION_UPDATE : EVENT_SESSION_START,

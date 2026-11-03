@@ -1,4 +1,7 @@
-import { TracewayFrontendClient, type TracewayFrontendOptions } from "./client.js";
+import {
+  TracewayFrontendClient,
+  type TracewayFrontendOptions,
+} from "./client.js";
 
 let client: TracewayFrontendClient | null = null;
 
@@ -6,7 +9,10 @@ let client: TracewayFrontendClient | null = null;
  * Starts the SDK. Calling it again is a no-op until `shutdown()`: the
  * OpenTelemetry instrumentations patch browser globals once per page.
  */
-export function init(connectionString: string, options: TracewayFrontendOptions = {}): void {
+export function init(
+  connectionString: string,
+  options: TracewayFrontendOptions = {},
+): void {
   if (client) return;
   client = new TracewayFrontendClient(connectionString, options);
   client.start();
@@ -16,15 +22,24 @@ export function getClient(): TracewayFrontendClient | null {
   return client;
 }
 
-export function captureException(error: unknown, attributes?: Record<string, string>): void {
+export function captureException(
+  error: unknown,
+  attributes?: Record<string, string>,
+): void {
   client?.captureException(error, attributes);
 }
 
-export function captureExceptionWithAttributes(error: unknown, attributes?: Record<string, string>): void {
+export function captureExceptionWithAttributes(
+  error: unknown,
+  attributes?: Record<string, string>,
+): void {
   client?.captureException(error, attributes);
 }
 
-export function captureMessage(message: string, attributes?: Record<string, string>): void {
+export function captureMessage(
+  message: string,
+  attributes?: Record<string, string>,
+): void {
   client?.captureMessage(message, attributes);
 }
 
@@ -32,12 +47,19 @@ export function captureMessage(message: string, attributes?: Record<string, stri
  * Records an app-level breadcrumb ("user_tapped_pay", "cart_synced") that
  * shows on the replay timeline and that remote triggers can match.
  */
-export function recordAction(category: string, name: string, data?: Record<string, unknown>): void {
+export function recordAction(
+  category: string,
+  name: string,
+  data?: Record<string, unknown>,
+): void {
   client?.recordAction(category, name, data);
 }
 
 /** Records a named app event, e.g. `track("checkout_failed", { step: "payment" })`. */
-export function track(eventName: string, attributes?: Record<string, string | number | boolean>): void {
+export function track(
+  eventName: string,
+  attributes?: Record<string, string | number | boolean>,
+): void {
   client?.track(eventName, attributes);
 }
 
@@ -46,7 +68,10 @@ export async function flush(timeoutMs?: number): Promise<void> {
   if (!client) return;
   const done = client.flush();
   if (timeoutMs === undefined) return done;
-  await Promise.race([done, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
+  await Promise.race([
+    done,
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
 }
 
 /** Fetches this client's remote collection settings now instead of at the next poll. */
@@ -86,7 +111,11 @@ export function getInstanceId(): string | null {
   return client?.instanceId ?? null;
 }
 
-export { TracewayFrontendClient, DEFAULT_IGNORE_PATTERNS, SDK_VERSION } from "./client.js";
+export {
+  TracewayFrontendClient,
+  DEFAULT_IGNORE_PATTERNS,
+  SDK_VERSION,
+} from "./client.js";
 export type { TracewayFrontendOptions, CapturedException } from "./client.js";
 
 export type {
@@ -102,3 +131,7 @@ export type {
   NavigationEvent,
   CustomEvent,
 } from "@tracewayapp/core";
+
+export function startInteraction(name: string) {
+  return client?.startInteraction(name);
+}

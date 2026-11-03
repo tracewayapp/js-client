@@ -56,6 +56,102 @@ afterEach(async () => {
 });
 
 describe("TracewayFrontendClient", () => {
+  it("retains earlier breadcrumbs but respects a disabled error trigger", async () => {
+    start();
+    client["logger"]!.emit({
+      eventName: "earlier-context",
+      timestamp: new Date(Date.now() - 120_000),
+    });
+    client.captureException(new Error("context test"));
+    expect(events(await exported(), "earlier-context")).toHaveLength(1);
+    client.control.applyRemote({
+      triggers: [{ id: "default-exception", enabled: false }],
+    });
+    client.track("private-buffer");
+    client.captureException(new Error("disabled trigger"));
+    expect(events(await exported(), "private-buffer")).toHaveLength(0);
+  });
+
+  it("keeps the replay clip limit across a page reload in the same session", async () => {
+    start({ sessionRecording: true });
+    client.control.applyRemote({
+      triggers: [{ id: "default-exception", maxPerSession: 1 }],
+    });
+    client.captureException(new Error("first clip"));
+    await exported();
+    const session = client.currentSessionId();
+    await client.shutdown();
+    start({ sessionRecording: true });
+    expect(client.currentSessionId()).toBe(session);
+    client.control.applyRemote({
+      triggers: [{ id: "default-exception", maxPerSession: 1 }],
+    });
+    client.captureException(new Error("after reload"));
+    const errors = events(await exported(), "exception");
+    expect(errors[0]!.attributes["traceway.replay.status"]).toBe(
+      "session_clip_limit",
+    );
+  });
+
+  it("keeps errors and health metadata when the diagnostic budget is exhausted", async () => {
+    start({
+      baselineSampleRate: 1,
+      collectionLimits: { maxEvents: 2 },
+      captureLogs: false,
+      captureNavigation: false,
+      captureUserActions: false,
+    });
+    client.track("one");
+    client.track("two");
+    client.track("dropped");
+    client.captureException(new Error("budget error"));
+    const records = await exported();
+    expect(events(records, "one")).toHaveLength(1);
+    expect(events(records, "two")).toHaveLength(1);
+    expect(events(records, "dropped")).toHaveLength(0);
+    expect(events(records, "exception")).toHaveLength(1);
+    expect(
+      events(records, "exception")[0]!.attributes[
+        "traceway.collection.dropped"
+      ],
+    ).toBe(1);
+  });
+
+  it("uploads the failed interaction root when it ends after the exception flush", async () => {
+    const spans = new InMemorySpanExporter();
+    start({ spanExporter: spans });
+    const interaction = client.startInteraction("failed-root");
+    interaction.bind(() =>
+      client.captureException(new Error("interaction failed")),
+    )();
+    await exported();
+    interaction.end();
+    await exported();
+    expect(
+      spans
+        .getFinishedSpans()
+        .find((span) => span.name === "failed-root")
+        ?.spanContext().traceId,
+    ).toBe(interaction.traceId);
+  });
+
+  it("binds overlapping async interaction callbacks without linking unrelated errors", async () => {
+    start();
+    const first = client.startInteraction("checkout");
+    const second = client.startInteraction("search");
+    await Promise.resolve();
+    first.bind(() => client.captureException(new Error("checkout failed")))();
+    second.captureException(new Error("search failed"));
+    client.captureException(new Error("unrelated"));
+    first.end();
+    second.end();
+    const errors = events(await exported(), "exception");
+    expect(errors[0]!.spanContext?.traceId).toBe(first.traceId);
+    expect(errors[1]!.spanContext?.traceId).toBe(second.traceId);
+    expect(errors[2]!.spanContext).toBeUndefined();
+    expect(first.traceId).not.toBe(second.traceId);
+  });
+
   it("keeps healthy metadata and web vitals enabled without streaming healthy breadcrumbs or replay", async () => {
     start({ captureWebVitals: true, sessionRecording: true });
     client.track("healthy");

@@ -32,12 +32,17 @@ interface TriggerState {
  */
 export class TriggerEngine {
   private triggers: Trigger[] = [];
+  readonly skipped = new Map<string, string>();
+  sessionLimits: Record<string, { fires: number; lastFireMs: number }> =
+    Object.create(null);
   private states = new Map<string, TriggerState>();
 
   constructor(private readonly random: () => number = Math.random) {}
 
   setTriggers(triggers: Trigger[]): void {
-    this.triggers = triggers.filter((t) => t.enabled !== false && t.steps.length > 0 && t.actions.length > 0);
+    this.triggers = triggers.filter(
+      (t) => t.enabled !== false && t.steps.length > 0 && t.actions.length > 0,
+    );
     const next = new Map<string, TriggerState>();
     for (const trigger of this.triggers) {
       const signature = JSON.stringify(trigger.steps);
@@ -46,13 +51,24 @@ export class TriggerEngine {
         trigger.id,
         prev && prev.signature === signature
           ? prev
-          : { signature, step: 0, lastStepMs: 0, hits: [], fires: prev?.fires ?? 0, lastFireMs: prev?.lastFireMs ?? 0 },
+          : {
+              signature,
+              step: 0,
+              lastStepMs: 0,
+              hits: [],
+              fires: prev?.fires ?? this.sessionLimits[trigger.id]?.fires ?? 0,
+              lastFireMs:
+                prev?.lastFireMs ??
+                this.sessionLimits[trigger.id]?.lastFireMs ??
+                0,
+            },
       );
     }
     this.states = next;
   }
 
   resetSession(): void {
+    this.sessionLimits = Object.create(null);
     for (const state of this.states.values()) {
       state.step = 0;
       state.lastStepMs = 0;
@@ -62,28 +78,61 @@ export class TriggerEngine {
     }
   }
 
+  restoreSessionLimits(saved: unknown): void {
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
+    for (const [id, value] of Object.entries(saved)) {
+      if (
+        !value ||
+        !Number.isFinite(value.fires) ||
+        value.fires < 0 ||
+        !Number.isFinite(value.lastFireMs)
+      )
+        continue;
+      this.sessionLimits[id] = {
+        fires: value.fires,
+        lastFireMs: value.lastFireMs,
+      };
+      const state = this.states.get(id);
+      if (state) {
+        state.fires = value.fires;
+        state.lastFireMs = value.lastFireMs;
+      }
+    }
+  }
+
   observe(event: ObservedEvent): FiredTrigger[] {
+    this.skipped.clear();
     const fired: FiredTrigger[] = [];
     for (const trigger of this.triggers) {
       const state = this.states.get(trigger.id);
       if (!state) continue;
       if (state.step > 0) {
         const within = trigger.steps[state.step]!.withinSeconds;
-        if (within && event.timeMs - state.lastStepMs > within * 1000) restart(state);
+        if (within && event.timeMs - state.lastStepMs > within * 1000)
+          restart(state);
       }
       if (!this.advance(trigger, state, event)) continue;
       if (!this.mayFire(trigger, state, event.timeMs)) continue;
       state.fires++;
       state.lastFireMs = event.timeMs;
+      this.sessionLimits[trigger.id] = {
+        fires: state.fires,
+        lastFireMs: state.lastFireMs,
+      };
       fired.push({ trigger, actions: trigger.actions, cause: event });
     }
     return fired;
   }
 
   /** Feeds one record to a trigger; true when it completed the last step. */
-  private advance(trigger: Trigger, state: TriggerState, event: ObservedEvent): boolean {
+  private advance(
+    trigger: Trigger,
+    state: TriggerState,
+    event: ObservedEvent,
+  ): boolean {
     if (!matches(trigger.steps[state.step]!.match, event.lookup)) {
-      if (state.step === 0 || !matches(trigger.steps[0]!.match, event.lookup)) return false;
+      if (state.step === 0 || !matches(trigger.steps[0]!.match, event.lookup))
+        return false;
       restart(state);
     }
     const step = trigger.steps[state.step]!;
@@ -104,13 +153,30 @@ export class TriggerEngine {
     return true;
   }
 
-  private mayFire(trigger: Trigger, state: TriggerState, nowMs: number): boolean {
-    if (trigger.maxPerSession !== undefined && state.fires >= trigger.maxPerSession) return false;
-    if (trigger.cooldownSeconds && state.fires > 0 && nowMs - state.lastFireMs < trigger.cooldownSeconds * 1000) {
+  private mayFire(
+    trigger: Trigger,
+    state: TriggerState,
+    nowMs: number,
+  ): boolean {
+    if (
+      trigger.maxPerSession !== undefined &&
+      state.fires >= trigger.maxPerSession
+    ) {
+      this.skipped.set(trigger.id, "session_clip_limit");
+      return false;
+    }
+    if (
+      trigger.cooldownSeconds &&
+      state.fires > 0 &&
+      nowMs - state.lastFireMs < trigger.cooldownSeconds * 1000
+    ) {
+      this.skipped.set(trigger.id, "cooldown");
       return false;
     }
     const sampleRate = trigger.sampleRate ?? 1;
-    return sampleRate >= 1 || this.random() < sampleRate;
+    const accepted = sampleRate >= 1 || this.random() < sampleRate;
+    if (!accepted) this.skipped.set(trigger.id, "sampled_out");
+    return accepted;
   }
 }
 

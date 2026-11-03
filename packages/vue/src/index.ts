@@ -14,6 +14,7 @@ export {
   removeAttribute,
   clearAttributes,
   track,
+  startInteraction,
   refreshConfig,
   shutdown,
   getInstanceId,

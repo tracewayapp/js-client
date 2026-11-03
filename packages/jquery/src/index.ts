@@ -53,6 +53,7 @@ export {
 
 export {
   track,
+  startInteraction,
   refreshConfig,
   shutdown,
   getInstanceId,

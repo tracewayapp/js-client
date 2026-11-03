@@ -28,7 +28,10 @@ function setup() {
   const sent: RecordingSegment[][] = [];
   const transport = {
     discard: () => {},
-    send: (segments: RecordingSegment[]) => sent.push(segments),
+    send: (segments: RecordingSegment[]) => {
+      sent.push(segments);
+      return segments.length;
+    },
   } as unknown as RecordingsTransport;
   const session = new SessionManager({
     storeKey: "test",
@@ -91,7 +94,7 @@ describe("ReplayController", () => {
       sessionId: session.currentId(),
       segmentIndex: 0,
     });
-    expect(completed!.exceptionId).toBeUndefined();
+    expect(completed!.exceptionId).toBe("0195f2a0-0000-7000-8000-00000000abcd");
     expect(clip).toMatchObject({
       sessionId: session.currentId(),
       segmentIndex: 1,
@@ -100,7 +103,8 @@ describe("ReplayController", () => {
 
     emit!({ type: 3, timestamp: t0 + SEGMENT_MS + 1 });
     replay.flush(60_000);
-    expect(sent[1]![0]).toMatchObject({ segmentIndex: 1 });
+    expect(sent[1]!.some((segment) => segment.segmentIndex === 0)).toBe(true);
+    expect(sent[1]!.some((segment) => segment.segmentIndex === 1)).toBe(true);
     replay.stop();
     session.stop();
   });
@@ -155,7 +159,10 @@ describe("ReplayController", () => {
     session.start();
     const id = session.currentId();
     replay = new ReplayController(session, {
-      send: (segments: RecordingSegment[]) => sent.push(segments),
+      send: (segments: RecordingSegment[]) => {
+        sent.push(segments);
+        return segments.length;
+      },
     } as unknown as RecordingsTransport);
     await started(replay, "stream");
     emit!({ type: 2, timestamp: Date.now() });

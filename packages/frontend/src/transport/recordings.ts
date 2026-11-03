@@ -28,6 +28,7 @@ const PERMANENT_FAILURES = new Set([400, 401, 403, 404, 413, 422]);
  */
 export class RecordingsTransport {
   private queue: Batch[] = [];
+  failedSegments = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private inFlight: Promise<void> | null = null;
   private generation = 0;
@@ -36,12 +37,15 @@ export class RecordingsTransport {
     private readonly url: string,
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
+    private readonly admit: (segment: RecordingSegment) => boolean = () => true,
+    private readonly onFailure: () => void = () => {},
   ) {}
 
   send(
     segments: RecordingSegment[],
     options: { unloading?: boolean } = {},
-  ): void {
+  ): number {
+    segments = segments.filter(this.admit);
     for (let i = 0; i < segments.length; i += MAX_SEGMENTS_PER_REQUEST) {
       this.queue.push({
         segments: segments.slice(i, i + MAX_SEGMENTS_PER_REQUEST),
@@ -53,6 +57,7 @@ export class RecordingsTransport {
     } else {
       this.schedule(0);
     }
+    return segments.length;
   }
 
   discard(): void {
@@ -113,7 +118,11 @@ export class RecordingsTransport {
         continue;
       }
       budget -= body.byteLength;
-      void this.request(body, true).catch(() => undefined);
+      void this.request(body, true)
+        .then((response) => {
+          if (!response.ok) this.recordFailure(batch.segments.length);
+        })
+        .catch(() => this.recordFailure(batch.segments.length));
     }
     this.queue = remaining;
   }
@@ -127,7 +136,11 @@ export class RecordingsTransport {
     } catch {
       return this.retryDelay(batch, null);
     }
-    if (response.ok || PERMANENT_FAILURES.has(response.status)) return null;
+    if (response.ok) return null;
+    if (PERMANENT_FAILURES.has(response.status)) {
+      this.recordFailure(batch.segments.length);
+      return null;
+    }
     const retryAfter = Number(response.headers.get("Retry-After"));
     return this.retryDelay(
       batch,
@@ -136,8 +149,16 @@ export class RecordingsTransport {
   }
 
   private retryDelay(batch: Batch, requested: number | null): number | null {
-    if (batch.attempts > RETRY_DELAYS_MS.length) return null;
+    if (batch.attempts > RETRY_DELAYS_MS.length) {
+      this.recordFailure(batch.segments.length);
+      return null;
+    }
     return requested ?? RETRY_DELAYS_MS[batch.attempts - 1]!;
+  }
+
+  private recordFailure(count: number): void {
+    this.failedSegments += count;
+    this.onFailure();
   }
 
   private encode(segments: RecordingSegment[]): Uint8Array {

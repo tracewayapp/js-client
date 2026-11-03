@@ -117,6 +117,7 @@ await flush();
 | `remoteConfig` | `true` | Fetch collection settings from Traceway over OpAMP (see below) |
 | `sessionRecording` | `true` | Allow rrweb session replay at all |
 | `sessionRecordingSegmentDuration` | `30000` | Replay segment length (ms) |
+| `collectionLimits` | `{ maxBytes: 52428800, maxEvents: 10000 }` | Shared per-session diagnostic upload ceiling; can be lowered |
 | `baselineSampleRate` | `0` | Stable healthy-session breadcrumb/request sample, from 0 to 1; does not stream replay |
 | `errorLimits` | `{ maxPerMinute: 60, duplicateWindowMs: 1000 }` | Per-client rolling error limit and duplicate suppression |
 | `recordAllSessions` | `false` | Stream every replay segment and every breadcrumb by default instead of keeping them for error clips |
@@ -152,7 +153,7 @@ to record events triggers can match.
 
 Console calls, `fetch` / XHR, route changes, clicks and `recordAction` / `track` events are recorded as OpenTelemetry
 log records and spans, tagged with the session. By default they are **buffered** on the device: an error uploads the
-last 30 seconds of them with the exception, and the replay player shows them next to the recording. With
+last 10 minutes of breadcrumbs and a 30-second replay clip with the exception, and the replay player shows them next to the recording. With
 `recordAllSessions`, or when remote settings say so, they stream; remote settings can also switch them off. Replay
 segments carry only the recording, so each breadcrumb is uploaded once.
 
@@ -281,7 +282,7 @@ Exception events use OTLP logs with `eventName: "exception"` and structured `exc
 
 ## Production collection policy
 
-Production defaults keep session lifecycle metadata and web vitals on, with healthy breadcrumbs and replay buffered locally. An accepted exception uploads the preceding 30 seconds; no full-session replay is uploaded by default. Error clips have a 5-second cooldown and a limit of 20 per session.
+Production defaults keep session lifecycle metadata and web vitals on, with healthy breadcrumbs and replay buffered locally. An accepted exception uploads up to 10 minutes of buffered breadcrumbs and a 30-second replay clip; no full-session replay is uploaded by default. Error clips have a 5-second cooldown and a limit of 20 per session.
 
 Errors are not sampled by default. Duplicate exceptions (same type, message and stack) within 1 second are suppressed, and each running client accepts at most 60 errors in a rolling minute. The next accepted error carries the aggregate `traceway.error.suppressed_count`. Configure `errorLimits: { maxPerMinute: 60, duplicateWindowMs: 1000 }` to tune these limits; they reset when the SDK is recreated.
 

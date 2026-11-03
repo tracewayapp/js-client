@@ -22,6 +22,7 @@ const CONTROL_EVENTS = new Set([
   EVENT_TRIGGER_FIRED,
   EVENT_CAPTURE_STARTED,
   EVENT_CONFIG_APPLIED,
+  "traceway.collection.health",
 ]);
 
 /** `control` records describe the SDK itself (sessions, triggers, config) and are always sent. */
@@ -50,7 +51,14 @@ export function classifyLog(eventName: string | undefined): RecordSignal {
   return CONTROL_EVENTS.has(eventName) ? "control" : "custom";
 }
 
-const SEVERITY_NUMBERS: Record<string, number> = { trace: 1, debug: 5, info: 9, warn: 13, error: 17, fatal: 21 };
+const SEVERITY_NUMBERS: Record<string, number> = {
+  trace: 1,
+  debug: 5,
+  info: 9,
+  warn: 13,
+  error: 17,
+  fatal: 21,
+};
 
 export function severityNumberOf(severity: string): number {
   return SEVERITY_NUMBERS[severity] ?? 0;
