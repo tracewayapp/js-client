@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/frontend",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Traceway SDK for browser environments",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -27,7 +27,7 @@
   "dependencies": {
     "@rrweb/record": "2.1.7",
     "@rrweb/types": "2.1.7",
-    "@tracewayapp/core": "1.2.0",
+    "@tracewayapp/core": "1.2.1",
     "fflate": "^0.8.2"
   }
 }
