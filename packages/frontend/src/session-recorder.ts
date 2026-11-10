@@ -1,5 +1,5 @@
-import type { eventWithTime } from "rrweb";
-import { record } from "rrweb";
+import type { eventWithTime } from "@rrweb/types";
+import { record } from "@rrweb/record";
 
 export interface SessionRecorderOptions {
   segmentDuration?: number;
