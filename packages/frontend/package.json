@@ -39,6 +39,7 @@
     "@tracewayapp/core": "2.0.0",
     "@tracewayapp/opamp": "2.0.0",
     "fflate": "^0.8.2",
-    "rrweb": "2.2.0"
+    "@rrweb/record": "2.1.7",
+    "@rrweb/types": "2.1.7"
   }
 }

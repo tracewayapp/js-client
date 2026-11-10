@@ -1,6 +1,6 @@
-import type { eventWithTime } from "rrweb";
+import type { eventWithTime } from "@rrweb/types";
 
-type RecordFn = typeof import("rrweb").record;
+type RecordFn = typeof import("@rrweb/record").record;
 
 export interface SessionRecorderOptions {
   segmentDuration?: number;
@@ -58,7 +58,7 @@ export class SessionRecorder {
     this.maskAllInputs = options.maskAllInputs ?? true;
     if (this.stopFn) return Promise.resolve();
     if (this.starting) return this.starting;
-    this.starting = import("rrweb")
+    this.starting = import("@rrweb/record")
       .then(({ record }) => {
         this.recordFn = record;
         if (!this.wanted || this.stopFn) return;

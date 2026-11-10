@@ -8,7 +8,7 @@ import type {
 } from "@opentelemetry/sdk-logs";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
 
-vi.mock("rrweb", () => ({
+vi.mock("@rrweb/record", () => ({
   record: Object.assign(
     vi.fn(() => () => {}),
     { takeFullSnapshot: vi.fn() },

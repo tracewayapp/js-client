@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it, vi } from "vitest";
 
-vi.mock("rrweb", () => {
+vi.mock("@rrweb/record", () => {
   let emit: ((e: unknown) => void) | null = null;
   const record = Object.assign(
     vi.fn((opts: { emit: (e: unknown) => void }) => {

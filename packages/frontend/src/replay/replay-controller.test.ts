@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 let emit: ((e: unknown) => void) | null = null;
-vi.mock("rrweb", () => {
+vi.mock("@rrweb/record", () => {
   const record = Object.assign(
     vi.fn((opts: { emit: (e: unknown) => void }) => {
       emit = opts.emit;
@@ -19,7 +19,7 @@ import type {
   RecordingSegment,
   RecordingsTransport,
 } from "../transport/recordings.js";
-import { record } from "rrweb";
+import { record } from "@rrweb/record";
 import { ReplayController } from "./replay-controller.js";
 
 const SEGMENT_MS = 30_000;

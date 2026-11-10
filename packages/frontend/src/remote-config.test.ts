@@ -4,7 +4,7 @@ import { InMemoryLogRecordExporter } from "@opentelemetry/sdk-logs";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
 import { encodeServerToAgent } from "@tracewayapp/opamp";
 
-vi.mock("rrweb", () => {
+vi.mock("@rrweb/record", () => {
   const record = Object.assign(
     vi.fn(() => () => {}),
     { takeFullSnapshot: vi.fn() },
