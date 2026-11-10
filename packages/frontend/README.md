@@ -114,6 +114,7 @@ await flush();
 | `debug` | `false` | Print debug info to the console |
 | `ignoreErrors` | sensible defaults | `string \| RegExp` patterns matched against `Type: message`; matching exceptions are dropped |
 | `beforeCapture` | none | `({ type, message, stack, attributes }) => boolean`; return `false` to drop |
+| `transport` | `"auto"` | Detect older servers and use `/api/report`; `"legacy"` forces that protocol, `"otlp"` disables fallback |
 | `remoteConfig` | `true` | Fetch collection settings from Traceway over OpAMP (see below) |
 | `sessionRecording` | `true` | Allow rrweb session replay at all |
 | `sessionRecordingSegmentDuration` | `30000` | Replay segment length (ms) |
@@ -287,3 +288,19 @@ Production defaults keep session lifecycle metadata and web vitals on, with heal
 Errors are not sampled by default. Duplicate exceptions (same type, message and stack) within 1 second are suppressed, and each running client accepts at most 60 errors in a rolling minute. The next accepted error carries the aggregate `traceway.error.suppressed_count`. Configure `errorLimits: { maxPerMinute: 60, duplicateWindowMs: 1000 }` to tune these limits; they reset when the SDK is recreated.
 
 For an optional stable sample of healthy-session breadcrumbs and request spans, use `baselineSampleRate: 0.01` (1%). The default is 0. Selection uses the session ID and persists across page reloads within that session. It does not enable replay or override explicitly disabled signals, signal filters, or exporter limits. Web vitals remain enabled independently, so performance diagnosis is not restricted to sessions with errors.
+
+### Older Traceway servers
+
+The default transport probes OpAMP before exporting. A missing endpoint (404, 405, or 501) selects the legacy
+`/api/report` protocol for exceptions, messages, sessions, replay, and replay breadcrumbs. Existing connection
+strings ending in `/api/report` continue to work. Exception clips travel in the same report as their exception,
+which older servers require to link replay correctly.
+
+A cross-origin server without an OpAMP CORS route appears to browsers as a network failure. The initial failure
+also selects legacy reporting, while OpAMP retries with backoff. A later successful handshake switches to OTLP
+and remote settings. Once OpAMP has connected, a temporary outage keeps the last applied settings and OTLP
+transport. Authentication failures do not select legacy mode. Explicit external `telemetry` destinations are not
+automatically redirected to `/api/report`.
+
+For a known older server, use `transport: "legacy"` to skip OpAMP entirely. If you disable `remoteConfig`, automatic
+server detection is disabled too; set `transport: "legacy"` when using that option with an older server.

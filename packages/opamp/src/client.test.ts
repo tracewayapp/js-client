@@ -195,3 +195,53 @@ describe("OpampHttpClient", () => {
     expect(applied).toHaveLength(0);
   });
 });
+
+describe("legacy capability detection", () => {
+  it.each([404, 405, 501])(
+    "stops polling after an unsupported endpoint (%s)",
+    async (status) => {
+      const onUnsupported = vi.fn();
+      responses.push(reply(status));
+      const { opamp } = client({ onUnsupported });
+      opamp.start();
+      await opamp.refresh();
+      expect(onUnsupported).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(requests).toHaveLength(1);
+      opamp.stop();
+    },
+  );
+
+  it.each([401, 403, 429, 500, 503])(
+    "does not mistake status %s for an older server",
+    async (status) => {
+      const onUnsupported = vi.fn();
+      responses.push(reply(status));
+      const { opamp } = client({ onUnsupported });
+      opamp.start();
+      await opamp.poll();
+      expect(onUnsupported).not.toHaveBeenCalled();
+      opamp.stop();
+    },
+  );
+
+  it("aborts a stalled capability probe so telemetry can continue", async () => {
+    const onUnsupported = vi.fn();
+    const { opamp } = client({
+      onUnsupported,
+      requestTimeoutMs: 100,
+      fetchImpl: async (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init!.signal!.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        }),
+    });
+    opamp.start();
+    const pending = opamp.poll();
+    await vi.advanceTimersByTimeAsync(100);
+    await pending;
+    expect(onUnsupported).not.toHaveBeenCalled();
+    opamp.stop();
+  });
+});

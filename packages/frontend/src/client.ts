@@ -1,3 +1,4 @@
+import { LegacyTransport } from "./transport/legacy.js";
 import { logsToJson, spansToJson } from "./persistence/otlp-json.js";
 import {
   trace,
@@ -172,6 +173,8 @@ export interface TracewayFrontendOptions {
    * release. The options above stay the ceiling: remote settings can only restrict them. Default true.
    */
   remoteConfig?: boolean;
+  /** Auto detects pre-OpAMP servers; legacy forces /api/report without a probe. */
+  transport?: "auto" | "legacy" | "otlp";
   /** Delay between OTLP exports, in milliseconds. Default 1000. */
   exportDelayMs?: number;
 
@@ -261,6 +264,7 @@ export class TracewayFrontendClient {
   private ownsContextManager = false;
   private unloading = false;
   private started = false;
+  private readonly legacy: LegacyTransport;
   private opamp: OpampHttpClient | null = null;
   private resourceAttributes: Record<string, unknown> = {};
   private appliedConfigHash: Uint8Array | undefined;
@@ -278,6 +282,12 @@ export class TracewayFrontendClient {
       options.collectionLimits,
     );
     this.endpoints = resolveEndpoints(apiUrl);
+    this.legacy = new LegacyTransport(
+      this.endpoints.base,
+      token,
+      options.version ?? "",
+    );
+    this.legacy.enabled = options.transport === "legacy";
     if (options.telemetry) {
       const url = new URL(options.telemetry.url);
       if (
@@ -333,7 +343,7 @@ export class TracewayFrontendClient {
     this.recordings = new RecordingsTransport(
       this.endpoints.recordings,
       token,
-      (...args) => fetch(...args),
+      (url, init) => this.legacy.recordings(String(url), init),
       (segment) => {
         const accepted = this.collectionBudget.admit(
           segment.sessionId ?? null,
@@ -372,10 +382,12 @@ export class TracewayFrontendClient {
     this.logSink = new BatchLogRecordProcessor({
       exporter: new PersistingLogExporter(
         options.logExporter ??
-          new OTLPLogExporter({
-            url: this.endpoints.logs,
-            headers: authHeaders,
-          }),
+          this.legacy.wrapLogs(
+            new OTLPLogExporter({
+              url: this.endpoints.logs,
+              headers: authHeaders,
+            }),
+          ),
         () => this.persistence.exporterOutbox(),
         (eventName) => this.canExportLog(eventName),
       ),
@@ -384,10 +396,12 @@ export class TracewayFrontendClient {
     this.spanSink = new BatchSpanProcessor({
       exporter: new PersistingSpanExporter(
         options.spanExporter ??
-          new OTLPTraceExporter({
-            url: this.endpoints.traces,
-            headers: authHeaders,
-          }),
+          this.legacy.wrapSpans(
+            new OTLPTraceExporter({
+              url: this.endpoints.traces,
+              headers: authHeaders,
+            }),
+          ),
         () => this.persistence.exporterOutbox(),
         () => this.control.canExport("network"),
       ),
@@ -417,7 +431,8 @@ export class TracewayFrontendClient {
       });
     }
     this.control.onChange(() => this.applySettings());
-    if (options.remoteConfig !== false) this.applyCachedConfig();
+    if (options.remoteConfig !== false && options.transport !== "legacy")
+      this.applyCachedConfig();
   }
 
   start(): void {
@@ -535,6 +550,7 @@ export class TracewayFrontendClient {
       this.endpoints.traces,
       this.endpoints.opamp,
       this.endpoints.recordings,
+      `${this.endpoints.base}/api/report`,
     ];
     const ownUrls = new RegExp(
       `^(?:${telemetryUrls.map(escapeRegExp).join("|")})(?:[?#]|$)`,
@@ -571,7 +587,11 @@ export class TracewayFrontendClient {
     });
 
     this.applySettings();
-    if (this.options.remoteConfig !== false) this.startOpamp();
+    if (
+      this.options.remoteConfig !== false &&
+      this.options.transport !== "legacy"
+    )
+      this.startOpamp();
     for (const capture of this.readLocalCaptures()) {
       this.streamFor(
         capture.signals,
@@ -825,6 +845,16 @@ export class TracewayFrontendClient {
     );
     if (!body) return "drop";
     try {
+      await this.legacy.ready;
+      if (this.legacy.enabled) {
+        if (kind === "traces") return "sent";
+        const response = await this.legacy.sendLogs(body, keepalive);
+        return response.ok
+          ? "sent"
+          : response.status === 429 || response.status >= 500
+            ? "retry"
+            : "drop";
+      }
       const response = await fetch(
         sessionMetadata
           ? `${this.endpoints.base}/api/otel/v1/logs`
@@ -877,6 +907,9 @@ export class TracewayFrontendClient {
   private startOpamp(): void {
     const instanceUid = uuidToBytes(this.instanceId);
     if (!instanceUid || typeof fetch === "undefined") return;
+    let connected = false;
+    const canUseLegacy =
+      this.options.transport !== "otlp" && !this.options.telemetry;
     this.opamp = new OpampHttpClient({
       endpoint: this.endpoints.opamp,
       headers: { Authorization: `Bearer ${this.token}` },
@@ -893,6 +926,19 @@ export class TracewayFrontendClient {
       appliedConfigHash: this.appliedConfigHash,
       describe: () => this.describe(),
       onRemoteConfig: (config) => this.applyRemoteConfig(config),
+      onUnavailable: () => {
+        if (!connected && canUseLegacy) this.legacy.enabled = true;
+      },
+      onConnected: () => {
+        connected = true;
+        this.legacy.enabled = false;
+      },
+      onUnsupported: () => {
+        if (canUseLegacy) {
+          this.legacy.enabled = true;
+          this.control.applyRemote({});
+        }
+      },
       onUnauthorized: () => {
         if (this.options.debug)
           console.warn(
@@ -901,6 +947,7 @@ export class TracewayFrontendClient {
       },
     });
     this.opamp.start();
+    this.legacy.ready = this.opamp.poll();
   }
 
   /**
@@ -1118,6 +1165,8 @@ export class TracewayFrontendClient {
           console.error("Traceway: beforeCapture callback threw:", err);
       }
     }
+    if (signal === "messages" && attrs[ATTR_EXCEPTION_ID] === undefined)
+      record.setAttribute(ATTR_EXCEPTION_ID, generateUUID());
     if (signal === "errors") {
       const suppressed = this.errorLimiter.accept(
         JSON.stringify([type, message, stack]),
@@ -1163,6 +1212,17 @@ export class TracewayFrontendClient {
   }
 
   private observe(observed: ObservedRecord): void {
+    this.legacy.observe(observed);
+    if (
+      this.legacy.enabled &&
+      observed.signal === "messages" &&
+      observed.routed === "stream"
+    ) {
+      this.runAction(
+        { type: "flush", signals: ["*"], lookbackSeconds: 30, replay: true },
+        String(observed.lookup(`attributes.${ATTR_EXCEPTION_ID}`)),
+      );
+    }
     if (
       observed.routed === "stream" &&
       observed.item.kind === "log" &&

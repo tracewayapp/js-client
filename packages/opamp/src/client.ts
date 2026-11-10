@@ -23,8 +23,7 @@ export interface RemoteConfig {
 }
 
 export type ApplyResult =
-  | { applied: true }
-  | { applied: false; errorMessage: string };
+  { applied: true } | { applied: false; errorMessage: string };
 
 export interface OpampClientOptions {
   /** The server's OpAMP endpoint, e.g. https://traceway.example.com/api/otel/v1/opamp. */
@@ -42,8 +41,14 @@ export interface OpampClientOptions {
   onInstanceUidChange?: (uid: Uint8Array) => void;
   /** Called once when the server rejects the credentials; the client stops polling. */
   onUnauthorized?: () => void;
+  /** A pre-OpAMP server: stop polling and let the SDK use its legacy protocol. */
+  onUnsupported?: () => void;
+  /** Fetch failed, including a missing CORS preflight on older cross-origin servers. */
+  onUnavailable?: () => void;
+  onConnected?: () => void;
   defaultPollIntervalMs?: number;
   fetchImpl?: typeof fetch;
+  requestTimeoutMs?: number;
 }
 
 const MIN_POLL_INTERVAL_MS = 30_000;
@@ -151,22 +156,48 @@ export class OpampHttpClient {
   }
 
   private async exchange(): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      this.options.requestTimeoutMs ?? 10_000,
+    );
+    try {
+      await this.exchangeWithSignal(controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async exchangeWithSignal(signal: AbortSignal): Promise<void> {
     this.lastPollAt = Date.now();
     let response: Response;
     try {
-      response = await this.send({
-        instanceUid: this.uid,
-        sequenceNum: this.sequenceNum++,
-        agentDescription: this.options.describe(),
-        capabilities: this.options.capabilities,
-        remoteConfigStatus: this.status,
-        customCapabilities: this.options.customCapabilities,
-      });
+      response = await this.send(
+        {
+          instanceUid: this.uid,
+          sequenceNum: this.sequenceNum++,
+          agentDescription: this.options.describe(),
+          capabilities: this.options.capabilities,
+          remoteConfigStatus: this.status,
+          customCapabilities: this.options.customCapabilities,
+        },
+        signal,
+      );
     } catch {
+      this.options.onUnavailable?.();
       this.backOff(null);
       return;
     }
 
+    if (
+      response.status === 404 ||
+      response.status === 405 ||
+      response.status === 501
+    ) {
+      this.stop();
+      this.options.onUnsupported?.();
+      return;
+    }
     if (response.status === 401 || response.status === 403) {
       this.stop();
       this.options.onUnauthorized?.();
@@ -204,6 +235,7 @@ export class OpampHttpClient {
     }
     if (this.stopped) return;
     this.backoffMs = 0;
+    this.options.onConnected?.();
     this.handle(message);
   }
 
@@ -274,9 +306,10 @@ export class OpampHttpClient {
     this.schedule(Math.max(this.backoffMs, 1_000));
   }
 
-  private send(message: AgentToServer): Promise<Response> {
+  private send(message: AgentToServer, signal: AbortSignal): Promise<Response> {
     return this.fetchImpl(this.options.endpoint, {
       method: "POST",
+      signal,
       headers: {
         ...this.options.headers,
         "Content-Type": "application/x-protobuf",
