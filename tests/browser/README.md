@@ -32,5 +32,7 @@ npx playwright test live.spec.ts
 Without those environment variables, live-server tests are explicitly skipped. The regular HTTP fixture tests
 still run. The fixture server on port 4318 is managed and stopped by Playwright.
 
-Initial live validation used Traceway `main` at `4d53d9c9` (without OpAMP) and
-`otel-browser-sdk` at `851b3435` (with OpAMP). All four framework integrations passed against both.
+Live validation was rerun against current Traceway `main` at `4e730e78` (without OpAMP)
+and the exact head of [PR #426](https://github.com/tracewayapp/traceway/pull/426),
+`851b3435` (with OpAMP). All eight live cases passed: vanilla, React, Svelte and Vue against both servers.
+The earlier `main` baseline at `4d53d9c9` also passed.
