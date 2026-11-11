@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/frontend",
-  "version": "2.0.0",
+  "version": "2.0.0-beta.1",
   "description": "Traceway SDK for browser environments",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -36,8 +36,8 @@
     "@opentelemetry/resources": "2.12.0",
     "@opentelemetry/sdk-logs": "0.223.0",
     "@opentelemetry/sdk-trace": "2.12.0",
-    "@tracewayapp/core": "2.0.0",
-    "@tracewayapp/opamp": "2.0.0",
+    "@tracewayapp/core": "2.0.0-beta.1",
+    "@tracewayapp/opamp": "2.0.0-beta.1",
     "fflate": "^0.8.2",
     "@rrweb/record": "2.1.7",
     "@rrweb/types": "2.1.7"
