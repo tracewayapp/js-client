@@ -1,5 +1,6 @@
 import type { eventWithTime } from "@rrweb/types";
-import { record } from "@rrweb/record";
+
+type RecordFn = typeof import("@rrweb/record").record;
 
 export interface SessionRecorderOptions {
   segmentDuration?: number;
@@ -10,7 +11,11 @@ export interface SessionRecorderOptions {
    * each completed segment onto the upload queue immediately. Segment length
    * is set by `segmentDuration` (default 30 s).
    */
-  onSegmentReady?: (segment: { events: eventWithTime[]; startedAt: string; endedAt: string }) => void;
+  onSegmentReady?: (segment: {
+    events: eventWithTime[];
+    startedAt: string;
+    endedAt: string;
+  }) => void;
   /**
    * Fires once per rrweb event. Used by the lifecycle layer as the activity
    * heartbeat — every DOM mutation/input rrweb sees becomes an activity tick,
@@ -30,6 +35,10 @@ export class SessionRecorder {
   private current: Segment;
   private previous: Segment | null = null;
   private stopFn: (() => void) | null = null;
+  private recordFn: RecordFn | null = null;
+  private starting: Promise<void> | null = null;
+  private wanted = false;
+  private maskAllInputs = true;
   private onSegmentReady: SessionRecorderOptions["onSegmentReady"];
   private onActivity: SessionRecorderOptions["onActivity"];
 
@@ -40,20 +49,63 @@ export class SessionRecorder {
     this.onActivity = options.onActivity;
   }
 
-  start(): void {
-    this.stopFn =
-      record({
-        emit: (event) => {
-          this.onEvent(event);
-        },
-      }) ?? null;
+  /**
+   * Starts recording. rrweb is loaded on first use, so a page whose replay
+   * is switched off never downloads or runs it.
+   */
+  start(options: { maskAllInputs?: boolean } = {}): Promise<void> {
+    this.wanted = true;
+    this.maskAllInputs = options.maskAllInputs ?? true;
+    if (this.stopFn) return Promise.resolve();
+    if (this.starting) return this.starting;
+    this.starting = import("@rrweb/record")
+      .then(({ record }) => {
+        this.recordFn = record;
+        if (!this.wanted || this.stopFn) return;
+        this.current = this.newSegment();
+        this.previous = null;
+        this.stopFn =
+          record({
+            emit: (event) => {
+              this.onEvent(event);
+            },
+            maskAllInputs: this.maskAllInputs,
+          }) ?? null;
+      })
+      .finally(() => {
+        this.starting = null;
+      });
+    return this.starting;
   }
 
   stop(): void {
+    this.wanted = false;
+    this.current = this.newSegment();
+    this.previous = null;
     if (this.stopFn) {
       this.stopFn();
       this.stopFn = null;
     }
+  }
+
+  isRecording(): boolean {
+    return this.stopFn !== null;
+  }
+
+  /** The in-progress segment as it stands, without rotating it; null when empty. */
+  peekCurrent(): {
+    events: eventWithTime[];
+    startedAt: string;
+    endedAt: string;
+  } | null {
+    if (this.current.events.length === 0) return null;
+    const lastTs =
+      this.current.events[this.current.events.length - 1]!.timestamp;
+    return {
+      events: this.current.events.slice(),
+      startedAt: this.current.startedAt,
+      endedAt: new Date(lastTs).toISOString(),
+    };
   }
 
   // Rotation is driven off rrweb event timestamps rather than wall-clock
@@ -78,12 +130,12 @@ export class SessionRecorder {
         event.timestamp - this.current.startedAtMs >= 2 * this.segmentDuration;
       this.previous = tooStale ? null : this.current;
       this.current = this.newSegment();
-      record.takeFullSnapshot();
+      this.recordFn?.takeFullSnapshot();
       // Notify subscribers about the completed segment after we've rotated so
       // they observe a stable recorder state. `endedAt` is the timestamp of
       // the last event included in the segment.
       if (this.onSegmentReady && completed.events.length > 0) {
-        const lastTs = completed.events[completed.events.length - 1].timestamp;
+        const lastTs = completed.events[completed.events.length - 1]!.timestamp;
         try {
           this.onSegmentReady({
             events: completed.events,
@@ -107,11 +159,15 @@ export class SessionRecorder {
    * triggers (pagehide / inactivity) to drain the in-flight segment before
    * upload. Returns `null` when there are no events to drain.
    */
-  drainCurrent(): { events: eventWithTime[]; startedAt: string; endedAt: string } | null {
+  drainCurrent(): {
+    events: eventWithTime[];
+    startedAt: string;
+    endedAt: string;
+  } | null {
     if (this.current.events.length === 0) return null;
     const completed = this.current;
     this.current = this.newSegment();
-    const lastTs = completed.events[completed.events.length - 1].timestamp;
+    const lastTs = completed.events[completed.events.length - 1]!.timestamp;
     return {
       events: completed.events,
       startedAt: completed.startedAt,
@@ -178,7 +234,7 @@ export class SessionRecorder {
     this.previous = null;
     this.current = this.newSegment();
     if (this.stopFn) {
-      record.takeFullSnapshot();
+      this.recordFn?.takeFullSnapshot();
     }
   }
 
@@ -186,7 +242,7 @@ export class SessionRecorder {
     this.previous = null;
     this.current = this.newSegment();
     if (this.stopFn) {
-      record.takeFullSnapshot();
+      this.recordFn?.takeFullSnapshot();
     }
   }
 }

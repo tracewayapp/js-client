@@ -25,7 +25,7 @@ Every package below lives in `packages/<name>/` and is published as `@tracewayap
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| [`@tracewayapp/frontend`](packages/frontend) | <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a> | Browser SDK — `window.onerror`, `unhandledrejection`, console logs, `fetch` / XHR actions, History API navigation, rrweb session replay, gzip transport |
+| [`@tracewayapp/frontend`](packages/frontend) | <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a> | Browser SDK — built on OpenTelemetry (2.x): errors, console, navigation, clicks, web vitals, `fetch` / XHR spans with `traceparent`, rrweb session replay; what it sends is controlled remotely over OpAMP |
 | [`@tracewayapp/react`](packages/react) | <a href="https://www.npmjs.com/package/@tracewayapp/react"><img src="https://img.shields.io/npm/v/@tracewayapp/react.svg" alt="npm"></a> | React wrapper — `<TracewayProvider>`, `<TracewayErrorBoundary>`, `useTraceway()` hook |
 | [`@tracewayapp/vue`](packages/vue) | <a href="https://www.npmjs.com/package/@tracewayapp/vue"><img src="https://img.shields.io/npm/v/@tracewayapp/vue.svg" alt="npm"></a> | Vue 3 plugin + `useTraceway()` composable |
 | [`@tracewayapp/svelte`](packages/svelte) | <a href="https://www.npmjs.com/package/@tracewayapp/svelte"><img src="https://img.shields.io/npm/v/@tracewayapp/svelte.svg" alt="npm"></a> | Svelte / SvelteKit context-based setup |
@@ -41,7 +41,8 @@ Every package below lives in `packages/<name>/` and is published as `@tracewayap
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| [`@tracewayapp/core`](packages/core) | <a href="https://www.npmjs.com/package/@tracewayapp/core"><img src="https://img.shields.io/npm/v/@tracewayapp/core.svg" alt="npm"></a> | Shared types and utilities consumed by every other SDK. Zero runtime dependencies. You probably don't need to install this directly |
+| [`@tracewayapp/core`](packages/core) | <a href="https://www.npmjs.com/package/@tracewayapp/core"><img src="https://img.shields.io/npm/v/@tracewayapp/core.svg" alt="npm"></a> | Shared types and utilities consumed by every other SDK, plus the 2.x control plane (settings, triggers, buffer). Zero runtime dependencies. You probably don't need to install this directly |
+| [`@tracewayapp/opamp`](packages/opamp) | — | Minimal OpAMP client over plain HTTP (fetch), used by the browser SDK for remote config. Zero runtime dependencies |
 
 ### Tooling
 
@@ -83,7 +84,9 @@ These packages are no longer actively developed. New backend integrations should
 └────────┘ └────────┘ └────────┘ └────────┘ └────────┘
 ```
 
-`@tracewayapp/core` is platform-agnostic. `frontend` is the browser SDK with rrweb; the framework wrappers (`react`, `vue`, `svelte`, `jquery`) are thin layers on top. `react-native` does **not** depend on `frontend` — it builds directly on `core` so the bundle stays free of `rrweb`, `CompressionStream`, and other browser-only APIs that don't exist on Hermes / JSC.
+In 2.x, `frontend` exports OpenTelemetry (OTLP/HTTP JSON) and polls Traceway over OpAMP (`@tracewayapp/opamp`) for its collection settings; replay goes to a separate recordings endpoint. See `INTERNAL_DOCS.md` for the design.
+
+`@tracewayapp/core` is platform-agnostic. `frontend` is the browser SDK with rrweb; the framework wrappers (`react`, `vue`, `svelte`, `jquery`) are thin layers on top. `react-native` does **not** depend on `frontend` — it builds directly on `core` so the bundle stays free of `rrweb` and other browser-only APIs that don't exist on Hermes / JSC.
 
 ## Getting started as a user
 
@@ -117,7 +120,7 @@ Then [generate a connection string](https://docs.tracewayapp.com) on your Tracew
 js-client/
 ├── packages/
 │   ├── core/              # Foundation — types, utilities, zero deps
-│   ├── frontend/          # Browser SDK (rrweb, CompressionStream)
+│   ├── frontend/          # Browser SDK (rrweb, browser instrumentation)
 │   │   └── examples/
 │   │       └── browser-demo/
 │   ├── react/
@@ -205,7 +208,7 @@ The Expo example for React Native has a slightly different invocation — see [`
 
 ## Publishing
 
-`publish.sh` is the only sanctioned release path. It bumps every active `@tracewayapp/*` package to the same version, syncs cross-package dependency references (so `@tracewayapp/react`'s `dependencies."@tracewayapp/frontend"` always matches the new version), runs the build, and publishes each package to npm in topological order:
+`publish.sh` is the interactive stable-release path. It bumps every active `@tracewayapp/*` package to the same version, syncs cross-package dependency references (so `@tracewayapp/react`'s `dependencies."@tracewayapp/frontend"` always matches the new version), runs the build, and publishes each package to npm in topological order:
 
 ```bash
 ./publish.sh
@@ -216,7 +219,28 @@ The Expo example for React Native has a slightly different invocation — see [`
 #   - publishes each package to npm
 ```
 
-The script is idempotent — it checks `npm whoami` first, only re-publishes packages that don't already have the target version, and aborts cleanly if any single package fails (no commit or tag is created on failure; fix the issue and re-run).
+For the first v2 beta, merge this branch into `main`, then run:
+
+```bash
+./release-beta-2.0.0
+```
+
+No version, tag, or environment variables are needed. This executable publishes **2.0.0-beta.1** under the npm
+**beta** tag, including `@tracewayapp/opamp`, while leaving `latest` on v1. It requires a clean `main`, fetches
+and fast-forwards from `origin/main`, updates every workspace version and internal dependency, installs from the
+updated lockfile, builds, runs unit tests, bundle checks, the framework browser suite, and browser regressions.
+It installs the Playwright Chromium browser automatically; the machine must have Chromium's system libraries.
+The optional live-server tests are run separately before release, as documented in [the browser test guide](tests/browser/README.md).
+
+It packs and checks all packages before publication, commits and tags the release locally, publishes in dependency
+order, then pushes `main` and `v2.0.0-beta.1` together. npm may still require browser login or 2FA. No additional
+release prompts are added. If publication or pushing fails, fix the reported problem and rerun the same command;
+it skips already-published versions only when their tarball integrity matches. Failed preparation restores the
+original manifests and lockfile. A successful release needs no separate Git push.
+
+Install the beta with `npm install @tracewayapp/frontend@beta` (or `react@beta`, `vue@beta`, `svelte@beta`).
+This script deliberately releases only `2.0.0-beta.1`; it does not increment versions on subsequent runs.
+Test the release workflow without npm publication using `node --test tests/release/beta.test.cjs`.
 
 For the deprecated `backend` and `nestjs` packages, `deprecate.sh` is a separate one-shot that publishes the final pinned `1.0.3` version with a deprecation notice and `npm deprecate`'s every prior version.
 

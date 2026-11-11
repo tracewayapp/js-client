@@ -1,0 +1,244 @@
+#!/usr/bin/env node
+/* One-command release of 2.0.0-beta.1. Run after merging v2 into main. */
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const { spawnSync } = require("node:child_process");
+
+const VERSION = "2.0.0-beta.1";
+const TAG = `v${VERSION}`;
+const REGISTRY = "https://registry.npmjs.org/";
+process.chdir(__dirname);
+
+function command(program, args, capture = false) {
+  const result = spawnSync(program, args, {
+    stdio: capture ? ["inherit", "pipe", "pipe"] : "inherit",
+    encoding: "utf8",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0)
+    throw new Error(
+      `${program} ${args.join(" ")} failed${capture ? `: ${result.stderr}` : ""}`,
+    );
+  return result.stdout?.trim();
+}
+const git = (...args) => command("git", args, true);
+function npm(args, capture = false) {
+  return command("npm", [...args, "--registry", REGISTRY], capture);
+}
+function published(name) {
+  const result = spawnSync(
+    "npm",
+    [
+      "view",
+      `${name}@${VERSION}`,
+      "dist.integrity",
+      "--json",
+      "--registry",
+      REGISTRY,
+    ],
+    { encoding: "utf8" },
+  );
+  if (result.error) throw result.error;
+  if (result.status === 0) {
+    const integrity = JSON.parse(result.stdout);
+    if (typeof integrity !== "string")
+      throw new Error(`Invalid registry response for ${name}`);
+    return integrity;
+  }
+  let code;
+  try {
+    code = JSON.parse(result.stdout).error?.code;
+  } catch {
+    /* npm also writes errors to stderr */
+  }
+  if (code === "E404") return null;
+  throw new Error(`Cannot check ${name}: ${result.stderr || result.stdout}`);
+}
+
+function release() {
+  if (process.argv.includes("--help")) {
+    console.log(
+      "Run ./release-beta-2.0.0 on clean main after merging v2. Publishes 2.0.0-beta.1 under beta, then pushes main and its release tag. npm may request login/2FA. Rerun the same command after a partial publish failure.",
+    );
+    return;
+  }
+  if (process.argv.length !== 2)
+    throw new Error("No arguments needed; run ./release-beta-2.0.0");
+  if (git("branch", "--show-current") !== "main")
+    throw new Error("Merge v2 into main and switch to main first.");
+  if (git("status", "--porcelain"))
+    throw new Error("Commit or stash local changes before releasing.");
+  git("fetch", "origin", "main", "--tags");
+  git("merge", "--ff-only", "origin/main");
+  git("var", "GIT_AUTHOR_IDENT");
+  git("var", "GIT_COMMITTER_IDENT");
+  const existingTag = spawnSync(
+    "git",
+    ["rev-parse", "--verify", `refs/tags/${TAG}`],
+    { encoding: "utf8" },
+  );
+  // A local commit can survive a failed tag creation; allow that exact release to resume too.
+  const resume =
+    existingTag.status === 0 ||
+    git("log", "-1", "--format=%s") === `v${VERSION}`;
+  if (
+    existingTag.status === 0 &&
+    git("rev-parse", `${TAG}^{commit}`) !== git("rev-parse", "HEAD")
+  ) {
+    throw new Error(
+      `${TAG} already belongs to a different commit. This script only releases ${VERSION}.`,
+    );
+  }
+
+  const root = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  const packages = root.workspaces.map((dir) => {
+    const file = path.join(dir, "package.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (data.private || !data.name.startsWith("@tracewayapp/"))
+      throw new Error(`Unexpected release workspace: ${dir}`);
+    if (data.version !== (resume ? VERSION : "2.0.0"))
+      throw new Error(`Unexpected version for ${data.name}: ${data.version}`);
+    if (data.publishConfig?.tag && data.publishConfig.tag !== "beta")
+      throw new Error(`Conflicting publishConfig.tag in ${file}`);
+    return { dir, file, data };
+  });
+  const byName = new Map(packages.map((pkg) => [pkg.data.name, pkg]));
+  if (!byName.has("@tracewayapp/opamp"))
+    throw new Error("Missing OpAMP workspace; merge v2 first.");
+  // Publish dependencies first, regardless of the order in package.json.
+  const ordered = [],
+    visiting = new Set(),
+    visited = new Set();
+  function visit(pkg) {
+    if (visited.has(pkg.data.name)) return;
+    if (visiting.has(pkg.data.name))
+      throw new Error("Workspace dependency cycle");
+    visiting.add(pkg.data.name);
+    for (const name of Object.keys({
+      ...pkg.data.dependencies,
+      ...pkg.data.optionalDependencies,
+      ...pkg.data.peerDependencies,
+    })) {
+      if (byName.has(name)) visit(byName.get(name));
+    }
+    visiting.delete(pkg.data.name);
+    visited.add(pkg.data.name);
+    ordered.push(pkg);
+  }
+  packages.forEach(visit);
+
+  const authenticated = spawnSync("npm", ["whoami", "--registry", REGISTRY], {
+    stdio: "ignore",
+  });
+  if (authenticated.status !== 0) npm(["login"]);
+  console.log(
+    `Releasing ${VERSION} under npm tag beta (${ordered.length} packages). latest stays on v1.`,
+  );
+  const originals = new Map(
+    [...packages.map((pkg) => pkg.file), "package-lock.json"].map((file) => [
+      file,
+      fs.readFileSync(file),
+    ]),
+  );
+  let prepared = resume;
+  const tarballs = fs.mkdtempSync(path.join(os.tmpdir(), "traceway-beta-"));
+  try {
+    if (!resume) {
+      for (const pkg of packages) {
+        pkg.data.version = VERSION;
+        for (const field of [
+          "dependencies",
+          "devDependencies",
+          "peerDependencies",
+          "optionalDependencies",
+        ]) {
+          for (const name of Object.keys(pkg.data[field] || {})) {
+            if (byName.has(name)) pkg.data[field][name] = VERSION;
+          }
+        }
+        fs.writeFileSync(pkg.file, JSON.stringify(pkg.data, null, 2) + "\n");
+      }
+      npm(["install", "--package-lock-only", "--ignore-scripts"]);
+    }
+    npm(["ci"]);
+    npm(["run", "build"]);
+    npm(["test"]);
+    npm(["run", "size"]);
+    command("npx", ["--no-install", "playwright", "install", "chromium"]);
+    command("npx", [
+      "--no-install",
+      "playwright",
+      "test",
+      "compatibility.spec.ts",
+    ]);
+    command("node", ["scripts/browser-regressions.mjs"]);
+
+    // Pack everything and check immutable registry versions before publishing anything.
+    for (const pkg of ordered) {
+      const [packed] = JSON.parse(
+        npm(
+          ["pack", `./${pkg.dir}`, "--pack-destination", tarballs, "--json"],
+          true,
+        ),
+      );
+      if (packed.version !== VERSION || packed.name !== pkg.data.name)
+        throw new Error(`Unexpected tarball for ${pkg.data.name}`);
+      pkg.tarball = path.join(tarballs, packed.filename);
+      pkg.integrity = packed.integrity;
+      pkg.existing = published(pkg.data.name);
+      if (pkg.existing && pkg.existing !== pkg.integrity)
+        throw new Error(
+          `${pkg.data.name}@${VERSION} already exists with different contents.`,
+        );
+    }
+    if (!resume) {
+      git("add", "--", ...originals.keys());
+      git("commit", "-m", `v${VERSION}`);
+      prepared = true;
+    }
+    if (existingTag.status !== 0) git("tag", TAG);
+    for (const pkg of ordered) {
+      if (pkg.existing) {
+        console.log(`Already published: ${pkg.data.name}@${VERSION}`);
+        npm(["dist-tag", "add", `${pkg.data.name}@${VERSION}`, "beta"]);
+      } else {
+        npm(["publish", pkg.tarball, "--tag", "beta", "--access", "public"]);
+      }
+      if (published(pkg.data.name) !== pkg.integrity)
+        throw new Error(`Registry integrity check failed for ${pkg.data.name}`);
+    }
+    command("git", [
+      "push",
+      "--atomic",
+      "origin",
+      "HEAD:refs/heads/main",
+      `refs/tags/${TAG}`,
+    ]);
+    console.log(
+      `Released ${VERSION} under beta and pushed main + ${TAG}. Install with npm install @tracewayapp/frontend@beta (or react/vue/svelte@beta).`,
+    );
+  } catch (error) {
+    if (!prepared) {
+      for (const [file, contents] of originals)
+        fs.writeFileSync(file, contents);
+      git("restore", "--staged", "--", ...originals.keys());
+      console.error(
+        "Restored package versions and lockfile; nothing was published.",
+      );
+    } else {
+      console.error(
+        "Release commit retained. Fix the reported failure and rerun ./release-beta-2.0.0 to resume.",
+      );
+    }
+    throw error;
+  } finally {
+    fs.rmSync(tarballs, { recursive: true, force: true });
+  }
+}
+try {
+  release();
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
+}

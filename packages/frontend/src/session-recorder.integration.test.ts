@@ -19,7 +19,7 @@ describe("SessionRecorder with the real recorder", () => {
       <div id="shadow"></div>
     `;
     recorder = new SessionRecorder();
-    recorder.start();
+    await recorder.start({ maskAllInputs: false });
     expect(recorder.getClipEvents().some((event) => event.type === EventType.FullSnapshot)).toBe(true);
 
     document.querySelector("p")!.textContent = "Updated text";
@@ -70,7 +70,7 @@ describe("SessionRecorder with the real recorder", () => {
       onSegmentReady: ready,
       onActivity: activity,
     });
-    recorder.start();
+    await recorder.start({ maskAllInputs: false });
     await new Promise((resolve) => setTimeout(resolve, 80));
     document.querySelector("p")!.textContent = "After rotation";
     await vi.waitFor(() => {
@@ -88,7 +88,7 @@ describe("SessionRecorder with the real recorder", () => {
     document.querySelector("p")!.textContent = "After stop";
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(JSON.stringify(recorder.getClipEvents())).toBe(stoppedEvents);
-    expect(recorder.drainCurrent()?.events.length).toBeGreaterThan(0);
+    expect(recorder.drainCurrent()).toBeNull();
     expect(recorder.hasSegments()).toBe(false);
   });
 });

@@ -13,9 +13,11 @@ export {
   setAttributes,
   removeAttribute,
   clearAttributes,
-  getActiveDistributedTraceId,
-  createAxiosInterceptor,
-  DISTRIBUTED_TRACE_HEADER,
+  track,
+  startInteraction,
+  refreshConfig,
+  shutdown,
+  getInstanceId,
   DEFAULT_IGNORE_PATTERNS,
 } from "@tracewayapp/frontend";
 export type { TracewayFrontendOptions } from "@tracewayapp/frontend";

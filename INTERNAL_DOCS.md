@@ -1,5 +1,129 @@
 # Traceway JavaScript Client
 
+## Version 2 (branch `v2`, unreleased)
+
+2.x rebuilds the browser SDK (`@tracewayapp/frontend`) on OpenTelemetry and lets the Traceway server decide, per group
+of clients, what each one sends. Everything below this section describes 1.x and the packages 2.x leaves unchanged
+(`react-native` still speaks the native `/api/report` protocol and builds against the 1.x types `@tracewayapp/core`
+keeps exporting).
+
+### Transport
+
+| What | Endpoint | Format |
+|------|----------|--------|
+| Exceptions, messages, console, navigation, user actions, web vitals, resource timing, custom events, session lifecycle | `POST /api/otel/v1/logs` | OTLP/HTTP JSON log records, told apart by `eventName` |
+| fetch / XHR | `POST /api/otel/v1/traces` | OTLP/HTTP JSON CLIENT spans; W3C `traceparent` to same-origin URLs and `propagateTraceHeaderCorsUrls` |
+| Session replay | `POST /api/recordings` | `{segments, debugIds?}`, gzipped JSON, not OTLP |
+| Remote config | `POST /api/otel/v1/opamp` | OpAMP over plain HTTP (protobuf) |
+
+The connection string is unchanged (`<token>@<server>`, a trailing `/api/report` is stripped); `resolveEndpoints` in
+`core` derives every URL. All requests carry `Authorization: Bearer <project token>`.
+
+Event names the backend acts on: `exception` (an issue; `traceway.exception.id` is a client UUID the replay clip uses,
+`traceway.debug_ids` a JSON map for source maps), `traceway.message` (a message issue), `session.start`,
+`session.end`, `traceway.session.update` (session rows; every one carries `traceway.session.started_at` in Unix ms and
+the full attribute snapshot). `session.id` is a UUID on every record and span.
+
+### Pipeline
+
+The SDK builds its own `LoggerProvider` and `TracerProvider` (never the global ones, so an app's own OpenTelemetry is
+untouched) and registers the Browser SIG instrumentations from `@opentelemetry/browser-instrumentation` against them.
+Only the W3C propagator and the context manager are set globally, and only when the page has none. Versions are pinned
+exactly to the line `browser-instrumentation` 0.9.0 uses (api 1.9.1, core/sdk-trace 2.12.0, sdk-logs/exporters
+0.223.0); mixing in OTel JS 3.0 would duplicate the API singletons.
+
+Every record passes `TelemetryRouter` (`frontend/src/otel/router.ts`): stamp `session.id`, enrich exceptions (id,
+debug ids, default and global attributes, `ignoreErrors` on the `Type: message` line, `beforeCapture`), classify the
+signal, then route by the effective mode: **stream** to the OTLP batch exporter, **buffer** into the in-memory
+`RingBuffer`, **off** dropped. After routing, the trigger engine sees the record, so a flush it causes includes it.
+
+### Settings, triggers and captures
+
+`ControlState` (`core/src/control`) computes the effective settings: SDK defaults (`defaultSettings`, which reproduce
+1.x: errors and messages stream, breadcrumbs and replay are buffered, the `default-exception` trigger uploads the last
+600 s of breadcrumbs and a 30 s replay clip, with replay subject to a 5 s cooldown and 20 clips per session; `recordAllSessions` streams breadcrumbs and replay), then the remote overlay,
+clamped to the ceilings from `init()` options lowered to the document's plan `limits`, then temporary stream overrides
+from triggers and captures.
+
+Triggers (`core/src/triggers`) are sequences of matcher steps with `withinSeconds` gaps, per-session state, sample
+rate, cooldown and per-session cap. Before routing errors, the frontend ErrorLimiter suppresses identical type/message/stack within 1 s and accepts at most 60 errors per rolling minute per running client. The next accepted error carries the aggregate suppressed count. Healthy lifecycle metadata and web vitals remain on. Optional sessions.baselineSampleRate (default 0) uses a session-ID hash to stream buffered breadcrumbs and request spans consistently across reloads; it never streams replay or overrides an off signal. A step can need `count` matching records within a sliding `periodSeconds` ("5 error
+lines in a minute"). Actions: `flush` (lookback upload, optionally replay), `stream` (send the listed signals for N
+seconds, this page only), `startReplay`, `emit`, and `capture` (lookback upload, then stream for `durationSeconds`;
+kept in localStorage under `traceway:local-captures:<token>` so later pages keep streaming; while it runs the same
+trigger only extends it). Every fire emits `traceway.trigger.fired`; a capture also emits `traceway.capture.started`
+with `traceway.capture.source: trigger`.
+
+Log lines are matched with `body` and the operators `icontains`, `starts_with` and `glob` (`*`/`?`, case-insensitive,
+linear-time, at most 4 KB of the value looked at). There is no regex operator on purpose: a pattern from the server
+would run with backtracking on the page's main thread. Matching sees every record, including those of a signal that
+is off.
+
+A capture, whether from the dashboard or the `capture` action, also brings back what rules switched off: its `"*"` is
+every signal the defaults collect (resource timing, off by default, has to be named), so `includeOff` on the override.
+The record that fired a capture trigger is sent too when its signal was off (`TelemetryRouter.sendIfStreaming`), so the
+log line that started a capture is in it. Nothing passes the `init()` ceilings, the `enabled` kill switch, or the plan
+`limits` the server adds to the document (`applyLimits`: what the organization's plan drops at ingest). The `stream`
+action keeps the narrower rule: `"*"` there covers only signals that are not off.
+
+Captures arrive in the settings document from the dashboard. The lookback flush runs once per capture id (remembered
+in sessionStorage per tab), streaming lasts until `until` on every page; `traceway.capture.started` marks the start.
+
+### External telemetry destination
+
+Browser options accept `telemetry: { url, headers? }`. The URL is a standard OTLP/HTTP base; logs and spans append `/v1/logs` and `/v1/traces`. All HTTP telemetry paths, including restored buffers and outbox retries, share those endpoints and headers. External requests never inherit the Traceway token. OpAMP and replay remain on the connection-string server. Session lifecycle logs are copied there through a separate batched exporter and durable retry queue, so replay can be opened even when application telemetry goes elsewhere. Instrumentation excludes both destinations, and persistence is scoped by project token plus destination URLs so changing collectors cannot forward old queued telemetry to a new platform. Legacy `/api/report` ingestion remains supported; the dashboard merges legacy recording breadcrumbs with the OTLP timeline.
+
+### Breadcrumbs
+
+Breadcrumbs are telemetry and nothing else: console lines, navigation, clicks, `recordAction` and `track` are log
+records, fetch/XHR are CLIENT spans, all with `session.id`. Replay segments carry rrweb events only, so a breadcrumb is
+stored once and its mode decides whether it is sent at all (1.x copied the last seconds of them into every segment).
+The dashboard reads them back per session with `GET /api/sessions/:id/timeline`. `recordAllSessions` streams them by
+default along with replay, so a fully recorded session also has its whole timeline.
+
+### OpAMP
+
+`@tracewayapp/opamp` is a spec-generic plain-HTTP OpAMP client with a hand-written protobuf codec for the ~15 fields
+used (`messages.test.ts` checks it byte for byte against opamp-go). It sends full state on every poll, so the stateless
+server never needs `ReportFullState` round trips; follows the server's heartbeat (min 30 s); reports
+`RemoteConfigStatus` right after applying; backs off on errors and honours Retry-After; does not retry 413; stops on
+401/403. The browser SDK polls at start, every heartbeat, when a tab becomes visible after an interval, and two seconds
+after a global attribute or the session changes (`refreshConfig()` polls now). The last applied document is cached in
+localStorage and applied synchronously at the next `init()`.
+
+### Persistence
+
+`TelemetryPersistence` owns restore/checkpoint/durable delivery. Restored OTLP requests enter the same `RingBuffer`
+as live SDK records, so byte and age limits apply to the combined history. Whole serialized records are counted,
+including log bodies. `BufferStore` updates IndexedDB snapshots atomically; a sessionStorage checkpoint covers
+navigation because the browser may abandon asynchronous IndexedDB writes on pagehide. Replay is not persisted.
+
+`Outbox` retries with backoff while the page is open and drains on `online`, visibility recovery, and startup. Web
+Locks serialize drains between tabs. Pruning on drain retains at most 200 batches, at most 24 hours old, below 8
+attempts. Export policy is rechecked for live batches and persisted JSON requests. Turning persistence off stops
+its timers and clears stored telemetry; the remote-config cache is separate.
+
+### Replay
+
+rrweb (2.2) is imported lazily, so it loads only when replay is not off. `ReplayController` streams completed
+segments, or keeps them in a byte- and age-bounded buffer; a flush uploads the buffered segments in the lookback window
+plus the in-progress segment as the clip of the triggering exception (it keeps its segment index, so the full segment
+later overwrites it on the server).
+
+### Tests
+
+`npm run test:browser` builds the browser bundle and runs Chromium against a disposable local HTTP fixture. Install
+the browser once with `npx playwright install chromium`. It covers remote cancellation, hard limits, real rrweb
+masking changes, navigation across three pages, final replay on pagehide, and outbox recovery. No cloud service is used.
+
+`npm test` covers the units. `packages/frontend/src/e2e.live.test.ts` runs against a live server when
+`TRACEWAY_E2E_CONNECTION`, `TRACEWAY_E2E_JWT` and `TRACEWAY_E2E_PROJECT` are set (the project needs a rule streaming
+custom events for `user.id = e2e-user`).
+
+---
+
+# 1.x reference
+
+
 A monorepo containing JavaScript/TypeScript SDKs for Traceway error tracking.
 
 ## Packages
@@ -651,14 +775,14 @@ The `frontend` and `jquery` packages include IIFE builds that work in plain `<sc
 
 | Package | Global Variable | CDN URL |
 |---------|----------------|---------|
-| `@tracewayapp/frontend` | `window.Traceway` | `https://cdn.jsdelivr.net/npm/@tracewayapp/frontend@1/dist/traceway.iife.global.js` |
-| `@tracewayapp/jquery` | `window.TracewayJQuery` | `https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@1/dist/traceway-jquery.iife.global.js` |
+| `@tracewayapp/frontend` | `window.Traceway` | `https://cdn.jsdelivr.net/npm/@tracewayapp/frontend@2/dist/traceway.iife.global.js` |
+| `@tracewayapp/jquery` | `window.TracewayJQuery` | `https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@2/dist/traceway-jquery.iife.global.js` |
 
 ### Usage
 
 ```html
 <!-- Framework-agnostic -->
-<script src="https://cdn.jsdelivr.net/npm/@tracewayapp/frontend@1/dist/traceway.iife.global.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tracewayapp/frontend@2/dist/traceway.iife.global.js"></script>
 <script>
   Traceway.init("your-token@https://your-server.com/api/report");
 </script>
@@ -667,7 +791,7 @@ The `frontend` and `jquery` packages include IIFE builds that work in plain `<sc
 ```html
 <!-- jQuery -->
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@1/dist/traceway-jquery.iife.global.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@2/dist/traceway-jquery.iife.global.js"></script>
 <script>
   TracewayJQuery.init("your-token@https://your-server.com/api/report");
 </script>
@@ -728,3 +852,12 @@ The connection string is parsed into:
 ## License
 
 MIT
+
+
+## Diagnostic collection accounting
+
+The frontend admission budget is shared by diagnostic logs/spans and replay segments: 50 MiB of serialized UTF-8 data and 10,000 events per session, persisted in sessionStorage. Error, lifecycle/control and web-vital logs are exempt; errors retain their separate limiter. Existing outbox batches were admitted before persistence and retries are not charged again. Replay counts rrweb events. Health events and session snapshots expose budget drops, error suppression, buffer evictions and terminal replay delivery failures. Limits are per session, not a project-wide wire-byte quota.
+
+Trigger fire counts/cooldowns survive reloads for the same session. Non-replay flush actions on the default exception trigger may still run when its replay cooldown or clip cap blocks a new clip. Disabled or sampled-out triggers do not bypass their policy.
+
+Explicit interaction handles activate an OTel span context through run/bind and captureException; they do not patch arbitrary async continuations. A failed interaction root streams when it ends after its error flush, respecting network ceilings. Browser diagnostic spans never produce endpoint/task/AI aggregate rows, including when the resource identifies the browser SDK in a mistakenly selected backend project.

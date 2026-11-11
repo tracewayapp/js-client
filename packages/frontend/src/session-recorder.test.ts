@@ -70,9 +70,9 @@ describe("SessionRecorder exception clip", () => {
     vi.clearAllMocks();
   });
 
-  it("bounds the clip to a single segment over a long-running session", () => {
+  it("bounds the clip to a single segment over a long-running session", async () => {
     const rec = new SessionRecorder({ segmentDuration: SEGMENT_MS });
-    rec.start();
+    await rec.start();
 
     // Initial snapshot, then ~85 s of activity at 1 s cadence → two rotations
     // (at +30 s and +60 s), with the error landing 25 s into the third segment.
@@ -98,9 +98,9 @@ describe("SessionRecorder exception clip", () => {
     expect(clip.every((e) => e.timestamp >= checkoutTs)).toBe(true);
   });
 
-  it("stays bounded even when the error fires just before a rotation", () => {
+  it("stays bounded even when the error fires just before a rotation", async () => {
     const rec = new SessionRecorder({ segmentDuration: SEGMENT_MS });
-    rec.start();
+    await rec.start();
     emitSnapshot(T0);
     // Run right up to (but not past) the 2x boundary so `previous` is retained.
     for (let t = T0; t <= T0 + 59_000; t += 1_000) emitIncremental(t);
@@ -117,13 +117,13 @@ describe("SessionRecorder full-session path is unchanged", () => {
     vi.clearAllMocks();
   });
 
-  it("still hands every completed segment to onSegmentReady and keeps two in getSegments", () => {
+  it("still hands every completed segment to onSegmentReady and keeps two in getSegments", async () => {
     const ready: Array<{ events: unknown[]; startedAt: string; endedAt: string }> = [];
     const rec = new SessionRecorder({
       segmentDuration: SEGMENT_MS,
       onSegmentReady: (seg) => ready.push(seg),
     });
-    rec.start();
+    await rec.start();
 
     emitSnapshot(T0);
     for (let t = T0; t <= T0 + 85_000; t += 1_000) emitIncremental(t);

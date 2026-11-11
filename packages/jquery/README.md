@@ -21,7 +21,6 @@ Error tracking and session replay for jQuery apps. Adds an `$.ajaxError` handler
 
 - One-line `init()` that registers a `jq(document).ajaxError(...)` handler
 - Failed `$.ajax` calls captured as exceptions with `url`, `method`, `status` attributes
-- Reads incoming `traceway-trace-id` response headers to correlate with the backend
 - Inherits everything from [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend): `window.onerror`, `unhandledrejection`, console logs, `fetch` / `XHR` actions, History API navigation, rrweb session replay
 - Works with `jQuery`, `$`, or `$.ajax` — picks whichever is on the page
 - Gzip-compressed transport, debounced batching, retry on failure
@@ -36,7 +35,7 @@ Or via CDN:
 
 ```html
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@1/dist/traceway-jquery.iife.global.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@2/dist/traceway-jquery.iife.global.js"></script>
 <script>
   TracewayJQuery.init("your-token@https://traceway.example.com/api/report");
 </script>
@@ -117,7 +116,7 @@ init("your-token@https://traceway.example.com/api/report", {
 
 ## Distributed Tracing
 
-If the response to a failed `$.ajax` call contains a `traceway-trace-id` header (set by a Traceway-instrumented backend), the SDK reads it and attaches it to the captured exception so the dashboard can stitch the failed request into the same trace. Falls back to the SDK's in-flight distributed-trace id if the header is missing.
+The failed request's own fetch/XHR span carries the W3C `traceparent`, so a backend instrumented with OpenTelemetry joins the same trace.
 
 ## Options
 
