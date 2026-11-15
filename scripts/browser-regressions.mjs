@@ -537,6 +537,84 @@ try {
       }
     },
   );
+  await check(
+    "long tasks and route timing stay off until remote config streams them",
+    async () => {
+      const perfPage = await browser.newPage();
+      const attribute = (log, key) => {
+        const value = log.attributes?.find((attr) => attr.key === key)?.value;
+        return (
+          value?.stringValue ?? Number(value?.intValue ?? value?.doubleValue)
+        );
+      };
+      const exercise = (path) =>
+        perfPage.evaluate(async (path) => {
+          // The browser does not time a script DevTools evaluates, so the block runs in a task of the page.
+          await new Promise((resolve) =>
+            setTimeout(() => {
+              const until = performance.now() + 200;
+              while (performance.now() < until);
+              resolve();
+            }, 0),
+          );
+          history.pushState(null, "", path);
+          await fetch("/data");
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          document.body.appendChild(document.createElement("section"));
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          await Traceway.flush();
+        }, path);
+      try {
+        document = { schemaVersion: 1 };
+        await perfPage.goto(origin);
+        await perfPage.evaluate(async () => {
+          Traceway.init(`perf@${location.origin}`, {
+            captureWebVitals: false,
+            captureResourceTiming: false,
+            sessionRecording: false,
+            exportDelayMs: 60000,
+          });
+          await Traceway.refreshConfig();
+        });
+        await exercise("/off");
+        assert(!names().includes("browser.long_task"));
+        assert(!names().includes("browser.route_timing"));
+
+        document = {
+          schemaVersion: 1,
+          signals: {
+            longTasks: { mode: "stream" },
+            routeTiming: { mode: "stream" },
+          },
+        };
+        await perfPage.evaluate(() => Traceway.refreshConfig());
+        await exercise("/orders");
+        const blocks = logs.filter(
+          (log) => log.eventName === "browser.long_task",
+        );
+        assert(
+          blocks.some(
+            (log) => attribute(log, "browser.long_task.duration") >= 150,
+          ),
+          "the 200 ms block is reported",
+        );
+        const routes = logs.filter(
+          (log) => log.eventName === "browser.route_timing",
+        );
+        assert.equal(routes.length, 1);
+        assert.equal(attribute(routes[0], "url.full"), `${origin}/orders`);
+        assert.equal(
+          attribute(routes[0], "browser.route_timing.outcome"),
+          "settled",
+        );
+        assert.equal(attribute(routes[0], "browser.route_timing.requests"), 1);
+        const duration = attribute(routes[0], "browser.route_timing.duration");
+        assert(duration >= 300 && duration < 1000, `route took ${duration} ms`);
+      } finally {
+        await perfPage.close();
+      }
+    },
+  );
   assert.deepEqual(errors, []);
   console.log("Browser regression checks passed.");
 } finally {

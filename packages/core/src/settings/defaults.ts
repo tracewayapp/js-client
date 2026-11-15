@@ -44,6 +44,8 @@ export function defaultSettings(
       userActions: { mode: breadcrumbs, sampleRate: 1 },
       webVitals: { mode: "stream", sampleRate: 1 },
       resourceTiming: { mode: "off", sampleRate: 1 },
+      longTasks: { mode: "off", sampleRate: 1 },
+      routeTiming: { mode: "off", sampleRate: 1 },
       custom: { mode: breadcrumbs, sampleRate: 1 },
     },
     sessions: {
@@ -77,6 +79,8 @@ export interface CeilingOptions {
   captureUserActions?: boolean;
   captureWebVitals?: boolean;
   captureResourceTiming?: boolean;
+  captureLongTasks?: boolean;
+  captureRouteTiming?: boolean;
   sessions?: boolean;
 }
 
@@ -91,6 +95,8 @@ export function ceilingsFrom(options: CeilingOptions = {}): Ceilings {
   signals.userActions = allow(options.captureUserActions);
   signals.webVitals = allow(options.captureWebVitals);
   signals.resourceTiming = allow(options.captureResourceTiming);
+  signals.longTasks = allow(options.captureLongTasks);
+  signals.routeTiming = allow(options.captureRouteTiming);
   return {
     enabled: options.enabled !== false,
     signals,

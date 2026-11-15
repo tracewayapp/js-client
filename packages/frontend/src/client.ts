@@ -69,6 +69,8 @@ import { ErrorLimiter, type ErrorLimits } from "./error-limiter.js";
 import { debugIdsForStackTrace } from "./debug-ids.js";
 import { collectDefaultAttributes } from "./default-attributes.js";
 import { browserResourceAttributes } from "./otel/browser-resource.js";
+import { LongTaskInstrumentation } from "./otel/long-tasks.js";
+import { RouteTimingInstrumentation } from "./otel/route-timing.js";
 import type { RecordSignal } from "./otel/events.js";
 import {
   ATTR_DEBUG_IDS,
@@ -163,6 +165,10 @@ export interface TracewayFrontendOptions {
   captureUserActions?: boolean;
   captureWebVitals?: boolean;
   captureResourceTiming?: boolean;
+  /** Main-thread blocks of 50 ms or more. Off until remote config, a trigger or a capture turns it on. */
+  captureLongTasks?: boolean;
+  /** How long single-page-app route changes take to render. Off until remote config, a trigger or a capture turns it on. */
+  captureRouteTiming?: boolean;
 
   /** Report fetch/XHR responses with status >= 500 as message issues. Default false. */
   captureHttpServerErrors?: boolean;
@@ -260,6 +266,7 @@ export class TracewayFrontendClient {
   private loggerProvider: LoggerProvider | null = null;
   private tracerProvider: TracerProvider | null = null;
   private deregisterInstrumentations: (() => void) | null = null;
+  private routeTiming: RouteTimingInstrumentation | null = null;
   private ownsPropagator = false;
   private ownsContextManager = false;
   private unloading = false;
@@ -332,6 +339,8 @@ export class TracewayFrontendClient {
         captureUserActions: options.captureUserActions,
         captureWebVitals: options.captureWebVitals,
         captureResourceTiming: options.captureResourceTiming,
+        captureLongTasks: options.captureLongTasks,
+        captureRouteTiming: options.captureRouteTiming,
         sessions: options.sessions,
       }),
     );
@@ -529,7 +538,11 @@ export class TracewayFrontendClient {
     this.tracerProvider = new TracerProvider({
       resource,
       spanProcessors: [
-        new ControlSpanProcessor(() => this.router, this.spanSink),
+        new ControlSpanProcessor(
+          () => this.router,
+          this.spanSink,
+          () => this.routeTiming,
+        ),
       ],
     });
     this.logger = this.loggerProvider.getLogger(SCOPE_NAME, SDK_VERSION);
@@ -579,6 +592,12 @@ export class TracewayFrontendClient {
         new ResourceTimingInstrumentation(),
         new NavigationTimingInstrumentation(),
       );
+    }
+    if (this.options.captureLongTasks !== false)
+      instrumentations.push(new LongTaskInstrumentation());
+    if (this.options.captureRouteTiming !== false) {
+      this.routeTiming = new RouteTimingInstrumentation();
+      instrumentations.push(this.routeTiming);
     }
     this.deregisterInstrumentations = registerInstrumentations({
       instrumentations,
@@ -774,6 +793,7 @@ export class TracewayFrontendClient {
     this.sessions.close();
     this.deregisterInstrumentations?.();
     this.deregisterInstrumentations = null;
+    this.routeTiming = null;
     await this.flush().catch(() => undefined);
     this.persistence.stop();
     this.sessionPersistence?.stop();

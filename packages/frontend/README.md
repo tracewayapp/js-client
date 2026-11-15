@@ -26,6 +26,7 @@ This is the framework-agnostic browser SDK. Use it directly in vanilla JS / TS, 
 - **rrweb session replay** — an error clip by default; stream whole sessions with `recordAllSessions` or a remote rule
 - **Breadcrumbs** — console, `fetch` / XHR, navigation, clicks and custom events, kept on the device and uploaded with an error
 - **Web vitals** and resource timing
+- **Long tasks** and **route change timing**, off until remote config, a trigger or a capture turns them on
 - **Auto-collected attributes** — `url`, `path`, `referrer`, `userAgent`, `language`, `platform`, `viewport`, `screen`, `timezone` stamped on every session and exception
 - **Global attribute scope** — `setAttribute("user.id", "42")` and friends to attach app-level identifiers (tenant, user id, feature flag) to every subsequent session and exception
 - Distributed tracing — `fetch` / XHR spans with the W3C `traceparent` header
@@ -123,7 +124,7 @@ await flush();
 | `errorLimits` | `{ maxPerMinute: 60, duplicateWindowMs: 1000 }` | Per-client rolling error limit and duplicate suppression |
 | `recordAllSessions` | `false` | Stream every replay segment and every breadcrumb by default instead of keeping them for error clips |
 | `sessions` | `true` | Record session start and end |
-| `captureLogs`, `captureNetwork`, `captureNavigation`, `captureUserActions`, `captureWebVitals`, `captureResourceTiming` | `true` | Allow a signal at all |
+| `captureLogs`, `captureNetwork`, `captureNavigation`, `captureUserActions`, `captureWebVitals`, `captureResourceTiming`, `captureLongTasks`, `captureRouteTiming` | `true` | Allow a signal at all |
 | `captureHttpServerErrors` | `false` | Report fetch / XHR responses with status >= 500 as message issues |
 | `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that get the W3C `traceparent` header (same-origin requests always do) |
 | `exportDelayMs` | `1000` | Delay between OTLP exports |

@@ -11,7 +11,7 @@ keeps exporting).
 
 | What | Endpoint | Format |
 |------|----------|--------|
-| Exceptions, messages, console, navigation, user actions, web vitals, resource timing, custom events, session lifecycle | `POST /api/otel/v1/logs` | OTLP/HTTP JSON log records, told apart by `eventName` |
+| Exceptions, messages, console, navigation, user actions, web vitals, resource timing, long tasks, route timing, custom events, session lifecycle | `POST /api/otel/v1/logs` | OTLP/HTTP JSON log records, told apart by `eventName` |
 | fetch / XHR | `POST /api/otel/v1/traces` | OTLP/HTTP JSON CLIENT spans; W3C `traceparent` to same-origin URLs and `propagateTraceHeaderCorsUrls` |
 | Session replay | `POST /api/recordings` | `{segments, debugIds?}`, gzipped JSON, not OTLP |
 | Remote config | `POST /api/otel/v1/opamp` | OpAMP over plain HTTP (protobuf) |
@@ -37,6 +37,34 @@ debug ids, default and global attributes, `ignoreErrors` on the `Type: message` 
 signal, then route by the effective mode: **stream** to the OTLP batch exporter, **buffer** into the in-memory
 `RingBuffer`, **off** dropped. After routing, the trigger engine sees the record, so a flush it causes includes it.
 
+### Performance signals
+
+Web vitals (`browser.web_vital`: LCP, INP, CLS, FCP, TTFB; stream by default) and resource and navigation timing
+(`resourceTiming`, off by default) come from the Browser SIG instrumentations. Two more are the SDK's own, built on
+`LogInstrumentation` (`frontend/src/otel/performance-instrumentation.ts`), each its own signal and off by default:
+
+- `longTasks` (`otel/long-tasks.ts`, event `browser.long_task`): main-thread blocks of 50 ms or more. It observes
+  both `long-animation-frame` and `longtask` and reports each block once. Frames are preferred because they name the
+  blocking script, but Chromium drops a frame's entry when a history change runs in the same task (every route
+  change that renders synchronously), so a long task no frame covers within a second is reported on its own. At
+  most 30 per minute. Chromium only.
+- `routeTiming` (`otel/route-timing.ts`, event `browser.route_timing`): from a History API change of path or query
+  until the page is quiet, meaning no DOM mutation, finished resource or traced request in flight for 500 ms; the
+  duration ends at the last activity. `ControlSpanProcessor` reports CLIENT spans to it (`RequestActivity`), so only
+  requests the SDK traces and that started after the route change are waited for. Outcome `settled`, `timeout`
+  (30 s) or `interrupted` (the next route change); a tab going hidden discards the measurement. A load still in
+  flight that has not touched the DOM (a lazy chunk, an image) is not visible to it.
+
+Both instrumentations run whenever the `init()` ceiling allows (`captureLongTasks`, `captureRouteTiming`), also
+while their signal is off: that is what lets a trigger match `signal eq longTasks` with
+`attributes.browser.long_task.duration gte 1000` on a device that uploads none of it. Turning one on is a rule
+(`signals.longTasks.mode`, for everyone or for the clients its conditions match), or a `stream`/`capture` action or
+a dashboard capture that names the signal; `"*"` does not include them, as with resource timing. Adding a signal
+means `SIGNALS` and `defaultSettings`/`ceilingsFrom` in `core`, `classifyLog` in `otel/events.ts`, and the server's
+`sdkconfig` package and dashboard list.
+
+React Native has none of this: it does not speak OpAMP and sends no performance measurements.
+
 ### Settings, triggers and captures
 
 `ControlState` (`core/src/control`) computes the effective settings: SDK defaults (`defaultSettings`, which reproduce
@@ -59,7 +87,7 @@ would run with backtracking on the page's main thread. Matching sees every recor
 is off.
 
 A capture, whether from the dashboard or the `capture` action, also brings back what rules switched off: its `"*"` is
-every signal the defaults collect (resource timing, off by default, has to be named), so `includeOff` on the override.
+every signal the defaults collect (resource timing, long tasks and route timing, off by default, have to be named), so `includeOff` on the override.
 The record that fired a capture trigger is sent too when its signal was off (`TelemetryRouter.sendIfStreaming`), so the
 log line that started a capture is in it. Nothing passes the `init()` ceilings, the `enabled` kill switch, or the plan
 `limits` the server adds to the document (`applyLimits`: what the organization's plan drops at ingest). The `stream`

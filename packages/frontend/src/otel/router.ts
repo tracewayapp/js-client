@@ -1,6 +1,6 @@
 import type { StoredBatch } from "../persistence/idb.js";
 import { logsToJson, spansToJson } from "../persistence/otlp-json.js";
-import { SpanStatusCode, type Context } from "@opentelemetry/api";
+import { SpanKind, SpanStatusCode, type Context } from "@opentelemetry/api";
 import type {
   LogRecordProcessor,
   ReadableLogRecord,
@@ -316,15 +316,23 @@ export class ControlLogProcessor implements LogRecordProcessor {
   }
 }
 
+/** Told about the requests the SDK traces while they are in flight. */
+export interface RequestActivity {
+  requestStarted(request: unknown): void;
+  requestEnded(request: unknown): void;
+}
+
 export class ControlSpanProcessor implements SpanProcessor {
   constructor(
     private readonly router: () => TelemetryRouter | null,
     private readonly sink: SpanProcessor,
+    private readonly activity: () => RequestActivity | null = () => null,
   ) {}
 
   onStart(span: Span, _parentContext: Context): void {
     try {
       this.router()?.stampSpan(span);
+      if (span.kind === SpanKind.CLIENT) this.activity()?.requestStarted(span);
     } catch {
       // ignore
     }
@@ -332,6 +340,7 @@ export class ControlSpanProcessor implements SpanProcessor {
 
   onEnd(span: ReadableSpan): void {
     try {
+      if (span.kind === SpanKind.CLIENT) this.activity()?.requestEnded(span);
       this.router()?.routeSpan(span);
     } catch {
       // ignore

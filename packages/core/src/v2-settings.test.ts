@@ -263,6 +263,51 @@ describe("ControlState", () => {
     expect(all.signals.resourceTiming.mode).toBe("off");
   });
 
+  it("keeps long tasks and route timing off until a rule, trigger or capture names them", () => {
+    const now = 1_000;
+    const state = new ControlState(
+      defaultSettings({ recordAllSessions: true }),
+      ceilingsFrom({ captureRouteTiming: false }),
+      () => now,
+    );
+    expect(state.modeFor("longTasks")).toBe("off");
+    expect(state.modeFor("routeTiming")).toBe("off");
+
+    state.addOverride({
+      signals: ["*"],
+      replay: false,
+      untilMs: 2_000,
+      includeOff: true,
+    });
+    expect(state.modeFor("longTasks")).toBe("off");
+
+    state.addOverride({
+      signals: ["longTasks", "routeTiming"],
+      replay: false,
+      untilMs: 2_000,
+    });
+    expect(state.modeFor("longTasks")).toBe("stream");
+    expect(state.modeFor("routeTiming")).toBe("off");
+
+    state.applyRemote({
+      signals: {
+        longTasks: { mode: "buffer", sampleRate: 0.25 },
+        routeTiming: { mode: "stream" },
+      },
+    });
+    expect(state.settings().signals.longTasks).toEqual({
+      mode: "buffer",
+      sampleRate: 0.25,
+    });
+    expect(state.settings().signals.routeTiming.mode).toBe("off");
+
+    state.applyRemote({
+      signals: { longTasks: { mode: "stream" } },
+      limits: { signals: { longTasks: "off" } },
+    });
+    expect(state.modeFor("longTasks")).toBe("off");
+  });
+
   it("notifies listeners and honours the kill switch", () => {
     const state = new ControlState(defaultSettings(), ceilingsFrom());
     const seen: boolean[] = [];

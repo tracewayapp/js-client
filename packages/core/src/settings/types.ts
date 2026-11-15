@@ -18,6 +18,8 @@ export const SIGNALS = [
   "userActions",
   "webVitals",
   "resourceTiming",
+  "longTasks",
+  "routeTiming",
   "custom",
 ] as const;
 
