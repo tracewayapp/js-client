@@ -3,6 +3,7 @@ export interface TracewayEndpoints {
   base: string;
   logs: string;
   traces: string;
+  metrics: string;
   opamp: string;
   recordings: string;
 }
@@ -22,6 +23,7 @@ export function resolveEndpoints(apiUrl: string): TracewayEndpoints {
     base,
     logs: `${base}/api/otel/v1/logs`,
     traces: `${base}/api/otel/v1/traces`,
+    metrics: `${base}/api/otel/v1/metrics`,
     opamp: `${base}/api/otel/v1/opamp`,
     recordings: `${base}/api/recordings`,
   };

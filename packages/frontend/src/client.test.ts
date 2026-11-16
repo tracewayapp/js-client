@@ -152,13 +152,13 @@ describe("TracewayFrontendClient", () => {
     expect(first.traceId).not.toBe(second.traceId);
   });
 
-  it("keeps healthy metadata and web vitals enabled without streaming healthy breadcrumbs or replay", async () => {
+  it("keeps healthy metadata without streaming healthy breadcrumbs, web vital events or replay", async () => {
     start({ captureWebVitals: true, sessionRecording: true });
     client.track("healthy");
     const records = await exported();
     expect(events(records, "healthy")).toHaveLength(0);
     expect(events(records, "session.start")).toHaveLength(1);
-    expect(client.control.settings().signals.webVitals.mode).toBe("stream");
+    expect(client.control.settings().signals.webVitals.mode).toBe("buffer");
     expect(client.control.settings().replay.mode).toBe("buffer");
     expect(client.control.settings().sessions.baselineSampleRate).toBe(0);
   });

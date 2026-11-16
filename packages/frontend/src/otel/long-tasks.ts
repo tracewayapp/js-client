@@ -94,6 +94,15 @@ export class LongTaskInstrumentation extends LogInstrumentation {
 
   private report(entry: LongEntry): void {
     if (!this.enabled) return;
+    // Before the cap below, which protects the event buffer: the aggregate counts every block.
+    this.sink?.longTask(
+      entry.duration,
+      typeof entry.blockingDuration === "number"
+        ? entry.blockingDuration
+        : undefined,
+      entry.entryType,
+      entry.scripts,
+    );
     const now = Date.now();
     this.recent = this.recent.filter((time) => time > now - 60_000);
     if (this.recent.length >= MAX_PER_MINUTE) return;

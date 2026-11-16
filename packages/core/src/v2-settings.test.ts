@@ -308,6 +308,33 @@ describe("ControlState", () => {
     expect(state.modeFor("longTasks")).toBe("off");
   });
 
+  it("keeps metrics on by default and lets a rule, the page or the plan lower them", () => {
+    const state = new ControlState(defaultSettings(), ceilingsFrom());
+    expect(state.metrics()).toEqual({
+      enabled: true,
+      sampleRate: 1,
+      flushSeconds: 300,
+    });
+    expect(state.settings().signals.webVitals.mode).toBe("buffer");
+
+    state.applyRemote({ metrics: { sampleRate: 0.1, flushSeconds: 5 } });
+    expect(state.metrics()).toMatchObject({ sampleRate: 0.1, flushSeconds: 30 });
+
+    state.applyRemote({ metrics: { enabled: false } });
+    expect(state.metrics()).toBeNull();
+    state.applyRemote({ limits: { metrics: "off" } });
+    expect(state.metrics()).toBeNull();
+    state.applyRemote({ enabled: false });
+    expect(state.metrics()).toBeNull();
+
+    const page = new ControlState(
+      defaultSettings(),
+      ceilingsFrom({ captureMetrics: false }),
+    );
+    page.applyRemote({ metrics: { enabled: true } });
+    expect(page.metrics()).toBeNull();
+  });
+
   it("notifies listeners and honours the kill switch", () => {
     const state = new ControlState(defaultSettings(), ceilingsFrom());
     const seen: boolean[] = [];

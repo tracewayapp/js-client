@@ -151,6 +151,17 @@ export interface Capture {
   replay?: boolean;
 }
 
+/**
+ * The aggregates: device histograms and counters uploaded as OTLP metrics. Separate from the per-signal settings,
+ * which govern the detailed events of the same measurements.
+ */
+export interface MetricsSettings {
+  enabled: boolean;
+  /** Share of sessions that record metrics. The payload carries it so the server can weight counts by 1/rate. */
+  sampleRate: number;
+  flushSeconds: number;
+}
+
 export interface Settings {
   schemaVersion: 1;
   /** Kill switch: when false nothing but the OpAMP poll leaves the device. */
@@ -158,6 +169,7 @@ export interface Settings {
   signals: Record<SignalName, SignalSettings>;
   sessions: { enabled: boolean; baselineSampleRate: number };
   replay: ReplaySettings;
+  metrics: MetricsSettings;
   buffer: BufferSettings;
   triggers: Trigger[];
   captures: Capture[];
@@ -169,4 +181,5 @@ export interface Ceilings {
   signals: Record<SignalName, Mode>;
   replay: Mode;
   sessions: boolean;
+  metrics: boolean;
 }

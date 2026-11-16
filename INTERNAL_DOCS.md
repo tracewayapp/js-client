@@ -39,7 +39,8 @@ signal, then route by the effective mode: **stream** to the OTLP batch exporter,
 
 ### Performance signals
 
-Web vitals (`browser.web_vital`: LCP, INP, CLS, FCP, TTFB; stream by default) and resource and navigation timing
+Web vitals (`browser.web_vital`: LCP, INP, CLS, FCP, TTFB; buffered by default since 2.1, because their numbers travel as
+metrics, see below) and resource and navigation timing
 (`resourceTiming`, off by default) come from the Browser SIG instrumentations. Two more are the SDK's own, built on
 `LogInstrumentation` (`frontend/src/otel/performance-instrumentation.ts`), each its own signal and off by default:
 
@@ -62,6 +63,69 @@ while their signal is off: that is what lets a trigger match `signal eq longTask
 a dashboard capture that names the signal; `"*"` does not include them, as with resource timing. Adding a signal
 means `SIGNALS` and `defaultSettings`/`ceilingsFrom` in `core`, `classifyLog` in `otel/events.ts`, and the server's
 `sdkconfig` package and dashboard list.
+
+### Performance metrics (2.1)
+
+Every measurement has two outputs. The event above goes through the router, where its signal's mode decides. The
+number also goes into a device aggregate that is uploaded whatever the signal's mode is: aggregates always travel,
+events only when a rule, trigger or capture asks.
+
+- `core/src/metrics/`: `Histogram` (base-2 exponential buckets at scale 3, about 4.5% relative error),
+  `MetricAggregator` (one cell per metric and dimension set; at most 200 cells, past which `url.path` folds to
+  `other`; up to 3 exemplars per cell, each a session id and, when known, the culprit as `traceway.target`),
+  `encodeMetrics` (a hand-written OTLP JSON encoder: delta
+  `exponentialHistogram` and delta `sum`; `@opentelemetry/sdk-metrics` would not fit the bundle budget) and
+  `normalizePath`. No dependencies, so another SDK can reuse it.
+- `frontend/src/otel/metrics-recorder.ts` (`MetricsRecorder`): long tasks and route timing call it directly through
+  `LogInstrumentation.sink`, before the 30-a-minute cap of the event. Web vitals, navigation timing, errors and
+  clicks come from third-party instrumentations, so they are read from the log records in `client.observe`.
+  Requests come from CLIENT spans (`ControlSpanProcessor`).
+- A web vital can be reported more than once per page (CLS and INP grow) and an uploaded histogram cannot be taken
+  back: the latest value waits in the recorder until the next flush, and each vital instance is counted once.
+- A page view is counted when its view ends, so a route template that arrives after the history change still
+  names it. `setRoute(template)` names the view (`useTracewayRoute`, `trackRouter`, `trackRoute` in the framework
+  packages); without it the path is normalized (`/orders/8841` becomes `/orders/:id`). The server applies the same
+  rules (`backend/app/clientmetrics/route.go`), so the two tables of test cases must stay equal.
+- Upload: one `fetch` to `/api/otel/v1/metrics` per flush, `keepalive` when the page is hidden or unloading, never
+  through the outbox. One bounded retry (`otel/metrics-pending.ts`, localStorage key
+  `traceway:metrics:pending:<token>`, 3 payloads, 64 KB, 24 h, oldest dropped first): a hidden-page payload is stored
+  before it is sent and removed when the answer is a 2xx or a permanent 4xx (400, 401, 403, 413, 422), since a page
+  that dies never sees the answer; any other payload is stored only after a known failure (no answer, 429, 5xx).
+  Stored payloads are resent once, at `start()` and after an interval flush that worked, with `traceway.retry: true`
+  and a new `traceway.sent_at` (data point times unchanged), and are removed before the resend whatever its result.
+  Every payload carries a random `traceway.batch_id` (32 hex), by which the server drops a resend it already has;
+  two tabs resending the same payload is covered by the same rule. The recorder registers its own `visibilitychange` and `pagehide` listeners
+  after the instrumentations, because the web vitals library reports its final values from its own listeners on the
+  same events. The session ends on `pagehide` before those arrive, so the recorder keeps the last session id.
+- The resource carries only the dimension attributes (no session, user or instance id), `traceway.sample_rate`
+  (the server weights counts by 1/rate), `traceway.sent_at` (the server corrects the device clock with it) and
+  `traceway.metrics: aggregated`. The same marker is on the log resource, so a server does not count an uploaded
+  performance event a second time.
+- Users (`browser.user`, `browser.user.affected{issue}`): the device counts its browser profile once per UTC day,
+  and once per day per issue (`js_error`, `poor_lcp`, `poor_inp`, `poor_cls`, `rage_click`, `failed_request`), from
+  a record in localStorage (`traceway:metrics:user:<token>`, `{d, i}`), so "users affected" is a ratio of two
+  counters and no id is sent. Without working storage these are not counted at all. They are sampled by the profile
+  (`unitHash(instanceId)`, the id itself never leaves in a metrics payload) and not by the session, and carry no
+  point dimensions.
+- Attribution: the web vitals instrumentation is created with `includeRawAttribution`, and `webVitalTarget`
+  (`client.ts`) keeps only the element selector of the library's attribution as the event attribute
+  `browser.web_vital.target` and drops the body. A non-good LCP, INP or CLS with a target counts
+  `browser.web_vital.attribution{vital, rating, target}`, and a poor one puts the target on its exemplar.
+  `browser.long_task.script_time{script}` is the time per script (origin + path) of a long animation frame.
+- Per-view vitals (`otel/view-vitals.ts`): `browser.view.inp` and `browser.view.cls` with `view_type: load | soft`,
+  measured with the recorder's own `event` (40 ms threshold) and `layout-shift` observers and the page rules (the
+  worst interaction, one forgiven per 50; the largest 1 s gap / 5 s shift window). Recorded when the view ends.
+  Entries are assigned by arrival, so the click that causes a route change counts for the view it leads to. A view
+  that is hidden and shown again is measured once per visible stretch, because an uploaded value cannot be taken
+  back; a later stretch without a shift adds no second zero. Interactions under 40 ms are not observed, as in the
+  web vitals library, so a view with only such interactions has no INP.
+- Global dimensions: `metricDimensions` in `init()` and `setMetricDimension(key, value | null)`, two keys at most
+  (`[a-z][a-z0-9_]{0,31}`), sent as resource attributes `custom.<key>`.
+- Settings: top-level `metrics: {enabled, sampleRate, flushSeconds}` (defaults true, 1, 300; flush at least 30 s),
+  ceiling `captureMetrics`, plan limit `limits.metrics: "off"`. Sampling is per session (`unitHash(session.id)`).
+- Public API: `metric(name, value, dims?)`, `count(name, n?, dims?)`, `setRoute(template)`,
+  `setMetricDimension(key, value)`. Custom names are
+  lowercase dotted and cannot start with `browser.`, `app.` or `traceway.`; two dimensions at most.
 
 React Native has none of this: it does not speak OpAMP and sends no performance measurements.
 

@@ -327,6 +327,7 @@ export class ControlSpanProcessor implements SpanProcessor {
     private readonly router: () => TelemetryRouter | null,
     private readonly sink: SpanProcessor,
     private readonly activity: () => RequestActivity | null = () => null,
+    private readonly requestEnded: (span: ReadableSpan) => void = () => {},
   ) {}
 
   onStart(span: Span, _parentContext: Context): void {
@@ -340,7 +341,10 @@ export class ControlSpanProcessor implements SpanProcessor {
 
   onEnd(span: ReadableSpan): void {
     try {
-      if (span.kind === SpanKind.CLIENT) this.activity()?.requestEnded(span);
+      if (span.kind === SpanKind.CLIENT) {
+        this.activity()?.requestEnded(span);
+        this.requestEnded(span);
+      }
       this.router()?.routeSpan(span);
     } catch {
       // ignore

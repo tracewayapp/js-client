@@ -7,6 +7,7 @@ import {
 } from "../settings/merge.js";
 import type {
   Ceilings,
+  MetricsSettings,
   Mode,
   Settings,
   SignalName,
@@ -153,6 +154,12 @@ export class ControlState {
       return lowerMode("stream", this.ceilings.replay);
     }
     return base;
+  }
+
+  /** The aggregates setting, or null when metrics are off (kill switch, `init()` ceiling, plan limit or a rule). */
+  metrics(): MetricsSettings | null {
+    const metrics = this.effective.metrics;
+    return this.effective.enabled && metrics.enabled ? metrics : null;
   }
 
   sampleRate(signal: SignalName): number {

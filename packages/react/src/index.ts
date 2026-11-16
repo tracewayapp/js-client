@@ -4,6 +4,7 @@ export type {
   TracewayContextValue,
 } from "./provider.js";
 export { useTraceway } from "./use-traceway.js";
+export { useTracewayRoute } from "./use-traceway-route.js";
 export { useTracewayAttributes } from "./use-traceway-attributes.js";
 export { TracewayAttributes } from "./traceway-attributes.js";
 export type { TracewayAttributesProps } from "./traceway-attributes.js";
@@ -26,6 +27,10 @@ export {
   removeAttribute,
   clearAttributes,
   track,
+  metric,
+  count,
+  setMetricDimension,
+  setRoute,
   startInteraction,
   refreshConfig,
   shutdown,

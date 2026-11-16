@@ -1,5 +1,6 @@
 export { createTracewayPlugin, TracewayKey } from "./plugin.js";
 export { useTraceway } from "./use-traceway.js";
+export { trackRouter } from "./track-router.js";
 export { useTracewayAttributes } from "./use-traceway-attributes.js";
 export { TracewayAttributes } from "./traceway-attributes.js";
 export type { TracewayAttributesProps } from "./traceway-attributes.js";
@@ -14,6 +15,10 @@ export {
   removeAttribute,
   clearAttributes,
   track,
+  metric,
+  count,
+  setMetricDimension,
+  setRoute,
   startInteraction,
   refreshConfig,
   shutdown,

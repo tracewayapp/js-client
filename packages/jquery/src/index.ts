@@ -53,6 +53,10 @@ export {
 
 export {
   track,
+  metric,
+  count,
+  setMetricDimension,
+  setRoute,
   startInteraction,
   refreshConfig,
   shutdown,

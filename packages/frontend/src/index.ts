@@ -63,6 +63,43 @@ export function track(
   client?.track(eventName, attributes);
 }
 
+/**
+ * Records one observation of a custom distribution, e.g. `metric("checkout.duration", 840, { plan: "pro" })`.
+ * Values are aggregated on the device into a histogram; at most two dimensions are kept.
+ */
+export function metric(
+  name: string,
+  value: number,
+  dims?: Record<string, string | number | boolean>,
+): void {
+  client?.metric(name, value, dims);
+}
+
+/** Adds to a custom counter, e.g. `count("cart.item_added")`. */
+export function count(
+  name: string,
+  n?: number,
+  dims?: Record<string, string | number | boolean>,
+): void {
+  client?.count(name, n, dims);
+}
+
+/**
+ * Names the page being shown by its route template (`/orders/:id`), so metrics group by route and not by URL.
+ * Without it the SDK replaces id-like path segments itself. The framework packages call this from the router.
+ */
+export function setRoute(template: string | null): void {
+  client?.setRoute(template);
+}
+
+/**
+ * Sets a dimension of your own on every performance metric from now on, e.g. `setMetricDimension("plan", "pro")`;
+ * `null` removes it. At most two keys with a small set of values each: never a user id.
+ */
+export function setMetricDimension(key: string, value: string | null): void {
+  client?.setMetricDimension(key, value);
+}
+
 /** Sends everything that is queued for sending. Buffered telemetry stays on the device. */
 export async function flush(timeoutMs?: number): Promise<void> {
   if (!client) return;

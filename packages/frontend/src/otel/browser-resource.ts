@@ -22,6 +22,9 @@ const UA_OS: Array<[string, RegExp]> = [
   ["Linux", /Linux/],
 ];
 
+/** Bounded on purpose: the major version is a metric dimension. macOS and Windows freeze theirs in the UA. */
+const OS_MAJOR = /(?:Android |iPhone OS |CPU OS |Windows NT |Mac OS X )(\d+)/;
+
 export function browserFromUserAgent(ua: string): { name?: string; version?: string; os?: string } {
   const out: { name?: string; version?: string; os?: string } = {};
   for (const [name, re] of UA_BROWSERS) {
@@ -56,8 +59,13 @@ export function browserResourceAttributes(): Record<string, string | boolean | s
     if (navigator.language) attrs["browser.language"] = navigator.language;
     const parsed = browserFromUserAgent(ua);
     if (parsed.name) attrs["browser.name"] = parsed.name;
-    if (parsed.version) attrs["browser.version"] = parsed.version;
+    if (parsed.version) {
+      attrs["browser.version"] = parsed.version;
+      attrs["browser.major"] = parsed.version.split(".")[0]!;
+    }
     if (parsed.os) attrs["os.name"] = parsed.os;
+    const osMajor = ua.match(OS_MAJOR)?.[1];
+    if (osMajor) attrs["os.major"] = osMajor;
 
     const data = (navigator as Navigator & { userAgentData?: UserAgentData }).userAgentData;
     if (data) {
@@ -65,6 +73,18 @@ export function browserResourceAttributes(): Record<string, string | boolean | s
       if (data.platform) attrs["browser.platform"] = data.platform;
       if (data.brands?.length) attrs["browser.brands"] = data.brands.map((b) => `${b.brand} ${b.version}`);
     }
+    attrs["device.form_factor"] =
+      data?.mobile === true || /Mobi|iPhone|iPod/.test(ua)
+        ? "phone"
+        : /iPad|Tablet|Android/.test(ua)
+          ? "tablet"
+          : "desktop";
+    const { deviceMemory, hardwareConcurrency: cores } = navigator as Navigator & {
+      deviceMemory?: number;
+    };
+    const size = deviceMemory ?? (cores ? cores : undefined);
+    if (size !== undefined)
+      attrs["device.class"] = size <= 2 ? "low" : size <= 4 ? "mid" : "high";
   } catch {
     // Locked-down environments can throw on navigator access.
   }

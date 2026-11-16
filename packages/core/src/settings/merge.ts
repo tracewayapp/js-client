@@ -37,6 +37,8 @@ const MAX_MATCHER_DEPTH = 8;
 const MAX_STEP_COUNT = 1000;
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 const MAX_BUFFER_AGE_SECONDS = 24 * 60 * 60;
+const MIN_METRICS_FLUSH_SECONDS = 30;
+const MAX_METRICS_FLUSH_SECONDS = 60 * 60;
 
 type Json = Record<string, unknown>;
 
@@ -331,6 +333,19 @@ export function applyOverlay(base: Settings, overlay: Json): Settings {
       out.replay.maskAllInputs = overlay.replay.maskAllInputs;
   }
 
+  if (isObject(overlay.metrics)) {
+    if (typeof overlay.metrics.enabled === "boolean")
+      out.metrics.enabled = overlay.metrics.enabled;
+    const sampleRate = rate(overlay.metrics.sampleRate);
+    if (sampleRate !== undefined) out.metrics.sampleRate = sampleRate;
+    const flush = positive(
+      overlay.metrics.flushSeconds,
+      MAX_METRICS_FLUSH_SECONDS,
+    );
+    if (flush !== undefined)
+      out.metrics.flushSeconds = Math.max(MIN_METRICS_FLUSH_SECONDS, flush);
+  }
+
   if (isObject(overlay.buffer)) {
     const maxBytes = positive(overlay.buffer.maxBytes, MAX_BUFFER_BYTES);
     if (maxBytes !== undefined) out.buffer.maxBytes = maxBytes;
@@ -397,6 +412,7 @@ export function applyLimits(
     }
   }
   if (isMode(limits.replay)) out.replay = lowerMode(out.replay, limits.replay);
+  if (limits.metrics === "off") out.metrics = false;
   return out;
 }
 
@@ -415,5 +431,6 @@ export function clampToCeilings(
   }
   out.replay.mode = lowerMode(out.replay.mode, ceilings.replay);
   out.sessions.enabled = out.sessions.enabled && ceilings.sessions;
+  out.metrics.enabled = out.metrics.enabled && ceilings.metrics;
   return out;
 }

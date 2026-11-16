@@ -5,8 +5,9 @@ import { gzipSync } from "node:zlib";
 const budgets = [
   // The IIFE inlines rrweb (~60 KB gzipped); ESM consumers load it lazily, only when replay is on.
   { file: "packages/frontend/dist/traceway.iife.global.js", maxKb: 145 },
-  // Includes the pre-OpAMP /api/report compatibility adapter, and the long task and route timing instrumentations.
-  { file: "packages/frontend/dist/index.mjs", maxKb: 29 },
+  // Includes the pre-OpAMP /api/report compatibility adapter, the long task and route timing instrumentations,
+  // and the metrics recorder with its retry store and per-view INP/CLS.
+  { file: "packages/frontend/dist/index.mjs", maxKb: 37 },
   { file: "packages/opamp/dist/index.mjs", maxKb: 6 },
 ];
 

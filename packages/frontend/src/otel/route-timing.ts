@@ -115,6 +115,7 @@ export class RouteTimingInstrumentation extends LogInstrumentation {
     const from = this.lastUrl;
     this.lastUrl = to;
     if (this.current) this.finish("interrupted");
+    this.sink?.routeChanged();
     if (document.visibilityState === "hidden") return;
 
     const now = performance.now();
@@ -181,6 +182,7 @@ export class RouteTimingInstrumentation extends LogInstrumentation {
     this.discard();
     const endMs =
       outcome === "settled" ? current.lastActivityMs : performance.now();
+    this.sink?.routeTiming(endMs - current.startMs, outcome, current.type);
     this.logger?.emit({
       eventName: EVENT_ROUTE_TIMING,
       severityNumber: SeverityNumber.INFO,

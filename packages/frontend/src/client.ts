@@ -98,6 +98,10 @@ import { ReplayController } from "./replay/replay-controller.js";
 import type { SessionInfo } from "./session/session-manager.js";
 import { SessionManager } from "./session/session-manager.js";
 import { RecordingsTransport } from "./transport/recordings.js";
+import {
+  ATTR_WEB_VITAL_TARGET,
+  MetricsRecorder,
+} from "./otel/metrics-recorder.js";
 import { TelemetryPersistence } from "./persistence/telemetry-persistence.js";
 import type { StoredBatch } from "./persistence/idb.js";
 import { filterRequest } from "./persistence/otlp-json.js";
@@ -107,7 +111,7 @@ import {
   PersistingSpanExporter,
 } from "./persistence/persisting-exporters.js";
 
-export const SDK_VERSION = "2.0.0";
+export const SDK_VERSION = "2.1.0";
 const SCOPE_NAME = "@tracewayapp/frontend";
 
 export const DEFAULT_IGNORE_PATTERNS: Array<string | RegExp> = [
@@ -169,6 +173,16 @@ export interface TracewayFrontendOptions {
   captureLongTasks?: boolean;
   /** How long single-page-app route changes take to render. Off until remote config, a trigger or a capture turns it on. */
   captureRouteTiming?: boolean;
+  /**
+   * Performance metrics: histograms and counters aggregated on the device and uploaded as one small payload per
+   * flush. Independent of the events above, which stay on the device until a trigger or capture asks. Default true.
+   */
+  captureMetrics?: boolean;
+  /**
+   * Dimensions of your own on every performance metric, e.g. `{ plan: "pro" }`, to break dashboards down by them.
+   * At most two keys (`[a-z][a-z0-9_]`, up to 32 characters) with a small set of values each: never a user id.
+   */
+  metricDimensions?: Record<string, string>;
 
   /** Report fetch/XHR responses with status >= 500 as message issues. Default false. */
   captureHttpServerErrors?: boolean;
@@ -229,6 +243,30 @@ interface LocalCapture {
   replay: boolean;
 }
 
+/**
+ * The web vitals instrumentation only exposes the library's attribution as a JSON body. The one field worth
+ * keeping is the element behind the value; the rest would make every event several kilobytes.
+ */
+function webVitalTarget(record: {
+  body?: unknown;
+  attributes?: Record<string, unknown>;
+}): void {
+  const body = record.body;
+  delete record.body;
+  if (typeof body !== "string" || !record.attributes) return;
+  try {
+    const attribution = JSON.parse(body);
+    const target =
+      attribution.target ??
+      attribution.interactionTarget ??
+      attribution.largestShiftTarget;
+    if (typeof target === "string" && target)
+      record.attributes[ATTR_WEB_VITAL_TARGET] = target.slice(0, 100);
+  } catch {
+    // An event without a target is still a measurement.
+  }
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -267,6 +305,7 @@ export class TracewayFrontendClient {
   private tracerProvider: TracerProvider | null = null;
   private deregisterInstrumentations: (() => void) | null = null;
   private routeTiming: RouteTimingInstrumentation | null = null;
+  private readonly metrics: MetricsRecorder;
   private ownsPropagator = false;
   private ownsContextManager = false;
   private unloading = false;
@@ -311,6 +350,7 @@ export class TracewayFrontendClient {
       const base = url.toString().replace(/\/+$/, "");
       this.endpoints.logs = base + "/v1/logs";
       this.endpoints.traces = base + "/v1/traces";
+      this.endpoints.metrics = base + "/v1/metrics";
     }
     const instanceKey = `traceway:instance:${this.token}`;
     const storedInstanceId = storageGet(instanceKey);
@@ -341,6 +381,7 @@ export class TracewayFrontendClient {
         captureResourceTiming: options.captureResourceTiming,
         captureLongTasks: options.captureLongTasks,
         captureRouteTiming: options.captureRouteTiming,
+        captureMetrics: options.captureMetrics,
         sessions: options.sessions,
       }),
     );
@@ -439,6 +480,20 @@ export class TracewayFrontendClient {
         scheduledDelayMillis: exportDelay,
       });
     }
+    this.metrics = new MetricsRecorder({
+      control: this.control,
+      sessionId: () => this.sessions.currentId(),
+      resource: () => this.resourceAttributes,
+      send: (body, keepalive) => this.sendMetrics(body, keepalive),
+      scope: { name: SCOPE_NAME, version: SDK_VERSION },
+      storage: {
+        get: (name) => storageGet(`traceway:metrics:${name}:${this.token}`),
+        set: (name, value) =>
+          storageSet(`traceway:metrics:${name}:${this.token}`, value),
+      },
+      profileId: () => this.instanceId,
+      dimensions: options.metricDimensions,
+    });
     this.control.onChange(() => this.applySettings());
     if (options.remoteConfig !== false && options.transport !== "legacy")
       this.applyCachedConfig();
@@ -526,6 +581,10 @@ export class TracewayFrontendClient {
       attributes["service.version"] = this.options.version;
     if (this.options.environment)
       attributes["deployment.environment.name"] = this.options.environment;
+    // Tells the server the numbers of the performance events below arrive as aggregates, so it does not count
+    // an uploaded event a second time.
+    if (this.options.captureMetrics !== false && !this.legacy.enabled)
+      attributes["traceway.metrics"] = "aggregated";
     const resource = defaultResource().merge(
       resourceFromAttributes(attributes),
     );
@@ -542,6 +601,7 @@ export class TracewayFrontendClient {
           () => this.router,
           this.spanSink,
           () => this.routeTiming,
+          (span) => this.metrics.onRequest(span),
         ),
       ],
     });
@@ -561,6 +621,7 @@ export class TracewayFrontendClient {
       `${this.endpoints.base}/api/otel/v1/logs`,
       this.endpoints.logs,
       this.endpoints.traces,
+      this.endpoints.metrics,
       this.endpoints.opamp,
       this.endpoints.recordings,
       `${this.endpoints.base}/api/report`,
@@ -586,17 +647,26 @@ export class TracewayFrontendClient {
     if (this.options.captureUserActions !== false)
       instrumentations.push(new UserActionInstrumentation());
     if (this.options.captureWebVitals !== false)
-      instrumentations.push(new WebVitalsInstrumentation());
+      instrumentations.push(
+        new WebVitalsInstrumentation({
+          includeRawAttribution: true,
+          applyCustomLogRecordData: webVitalTarget,
+        }),
+      );
     if (this.options.captureResourceTiming !== false) {
       instrumentations.push(
         new ResourceTimingInstrumentation(),
         new NavigationTimingInstrumentation(),
       );
     }
-    if (this.options.captureLongTasks !== false)
-      instrumentations.push(new LongTaskInstrumentation());
+    if (this.options.captureLongTasks !== false) {
+      const longTasks = new LongTaskInstrumentation();
+      longTasks.sink = this.metrics;
+      instrumentations.push(longTasks);
+    }
     if (this.options.captureRouteTiming !== false) {
       this.routeTiming = new RouteTimingInstrumentation();
+      this.routeTiming.sink = this.metrics;
       instrumentations.push(this.routeTiming);
     }
     this.deregisterInstrumentations = registerInstrumentations({
@@ -604,6 +674,9 @@ export class TracewayFrontendClient {
       tracerProvider: this.tracerProvider,
       loggerProvider: this.loggerProvider,
     });
+    this.metrics.start();
+    const sessionId = this.sessions.currentId();
+    if (sessionId) this.metrics.sessionStarted(sessionId);
 
     this.applySettings();
     if (
@@ -771,6 +844,12 @@ export class TracewayFrontendClient {
 
   /** Sends everything queued for sending. Buffered telemetry stays on the device. */
   async flush(): Promise<void> {
+    this.metrics.flush();
+    await this.flushQueued();
+  }
+
+  /** Without the metrics: when the page is hidden the recorder uploads them itself, after the web vitals arrive. */
+  private async flushQueued(): Promise<void> {
     this.persistBuffer();
     await this.persistence.flush();
     await this.sessionPersistence?.flush();
@@ -795,6 +874,7 @@ export class TracewayFrontendClient {
     this.deregisterInstrumentations = null;
     this.routeTiming = null;
     await this.flush().catch(() => undefined);
+    this.metrics.stop();
     this.persistence.stop();
     this.sessionPersistence?.stop();
     this.replay.stop();
@@ -826,6 +906,7 @@ export class TracewayFrontendClient {
       maxAgeMs: settings.buffer.maxAgeSeconds * 1000,
     });
     this.triggers.setTriggers(settings.triggers);
+    this.metrics.configure();
     this.applyReplay();
   }
 
@@ -843,6 +924,49 @@ export class TracewayFrontendClient {
         eventName ?? "",
       ) || this.control.settings().sessions.enabled
     );
+  }
+
+  /** One attempt; the recorder decides what a failure means. Resolves with the status, 0 without an answer. */
+  private sendMetrics(body: string, keepalive: boolean): Promise<number> {
+    // Nothing a retry could fix: this transport has no metrics endpoint.
+    if (this.legacy.enabled || typeof fetch === "undefined")
+      return Promise.resolve(400);
+    return fetch(this.endpoints.metrics, {
+      method: "POST",
+      headers: {
+        ...this.telemetryHeaders(),
+        "Content-Type": "application/json",
+      },
+      body,
+      keepalive,
+    }).then(
+      (response) => response.status,
+      () => 0,
+    );
+  }
+
+  setMetricDimension(key: string, value: string | null): void {
+    this.metrics.setDimension(key, value);
+  }
+
+  setRoute(template: string | null): void {
+    this.metrics.setRoute(template);
+  }
+
+  metric(
+    name: string,
+    value: number,
+    dims?: Record<string, string | number | boolean>,
+  ): void {
+    this.metrics.metric(name, value, dims);
+  }
+
+  count(
+    name: string,
+    n?: number,
+    dims?: Record<string, string | number | boolean>,
+  ): void {
+    this.metrics.count(name, n, dims);
   }
 
   private telemetryHeaders(): Record<string, string> {
@@ -1232,6 +1356,7 @@ export class TracewayFrontendClient {
   }
 
   private observe(observed: ObservedRecord): void {
+    if (observed.item.kind === "log") this.metrics.onLog(observed.item.record);
     this.legacy.observe(observed);
     if (
       this.legacy.enabled &&
@@ -1560,6 +1685,7 @@ export class TracewayFrontendClient {
     );
     this.applyReplay();
     this.describeChanged();
+    this.metrics.sessionStarted(session.id);
   }
 
   private onSessionEnd(
@@ -1568,16 +1694,18 @@ export class TracewayFrontendClient {
     unloading: boolean,
   ): void {
     this.unloading = unloading;
+    // Before the session id changes: a batch carries one session's sample rate.
+    this.metrics.flush(unloading);
     if (unloading) this.persistBuffer();
     this.replay.onSessionEnd(unloading);
     this.emitSessionEvent(EVENT_SESSION_END, session, endedAtMs);
-    if (unloading) void this.flush().catch(() => undefined);
+    if (unloading) void this.flushQueued().catch(() => undefined);
   }
 
   private onHidden(): void {
     this.persistBuffer();
     this.replay.onHidden();
-    void this.flush().catch(() => undefined);
+    void this.flushQueued().catch(() => undefined);
   }
 
   private onVisible(): void {

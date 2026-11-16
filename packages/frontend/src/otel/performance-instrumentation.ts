@@ -3,6 +3,7 @@ import type {
   Instrumentation,
   InstrumentationConfig,
 } from "@opentelemetry/instrumentation";
+import type { PerformanceSink } from "./metrics-recorder.js";
 
 /**
  * Base of the SDK's own performance instrumentations. They only emit log records, so this is the small part of
@@ -13,6 +14,8 @@ export abstract class LogInstrumentation implements Instrumentation {
   readonly instrumentationVersion = "1";
   protected logger: Logger | null = null;
   protected enabled = false;
+  /** Where the measurement goes as an aggregate, besides the log event. Set before the instrumentation is enabled. */
+  sink: PerformanceSink | null = null;
 
   constructor(readonly instrumentationName: string) {}
 
