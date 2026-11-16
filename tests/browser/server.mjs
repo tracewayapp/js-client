@@ -23,7 +23,7 @@ for (const framework of ["vanilla", "react", "vue", "svelte"]) {
           build.onLoad({ filter: /\.svelte$/ }, async ({ path }) => ({
             contents: compile(await readFile(path, "utf8"), {
               filename: path,
-              generate: "dom",
+              generate: "client",
             }).js.code,
             loader: "js",
           }));

@@ -646,7 +646,12 @@ export class TracewayFrontendClient {
       instrumentations.push(new NavigationInstrumentation());
     if (this.options.captureUserActions !== false)
       instrumentations.push(new UserActionInstrumentation());
-    if (this.options.captureWebVitals !== false)
+    // web-vitals 6 calls Array.prototype.at, which browsers before Chrome 92 and Safari 15.4 lack: there every
+    // reported metric would throw a TypeError and arrive as an issue.
+    if (
+      this.options.captureWebVitals !== false &&
+      typeof Array.prototype.at === "function"
+    )
       instrumentations.push(
         new WebVitalsInstrumentation({
           includeRawAttribution: true,

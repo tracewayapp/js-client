@@ -236,11 +236,23 @@ export class LegacyTransport {
   }
 
   wrapLogs(inner: LogRecordExporter): LogRecordExporter {
+    const pending = new Set<Promise<void>>();
+    const drain = async () => {
+      while (pending.size) await Promise.all([...pending]);
+    };
     return {
       export: (records, done) => {
-        void this.ready
+        const task = this.ready
           .then(async () => {
-            if (!this.enabled) return inner.export(records, done);
+            if (!this.enabled) {
+              await new Promise<void>((resolve) => {
+                inner.export(records, (result) => {
+                  done(result);
+                  resolve();
+                });
+              });
+              return;
+            }
             const response = await this.sendLogs(logsToJson(records));
             done({
               code: response.ok
@@ -249,9 +261,17 @@ export class LegacyTransport {
             });
           })
           .catch((error) => done({ code: ExportResultCode.FAILED, error }));
+        pending.add(task);
+        void task.finally(() => pending.delete(task));
       },
-      shutdown: () => inner.shutdown(),
-      forceFlush: () => inner.forceFlush?.() ?? Promise.resolve(),
+      shutdown: async () => {
+        await drain();
+        await inner.shutdown();
+      },
+      forceFlush: async () => {
+        await drain();
+        await inner.forceFlush?.();
+      },
     };
   }
 
