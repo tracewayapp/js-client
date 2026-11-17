@@ -36,3 +36,11 @@ Live validation was rerun against current Traceway `main` at `4e730e78` (without
 and the exact head of [PR #426](https://github.com/tracewayapp/traceway/pull/426),
 `851b3435` (with OpAMP). All eight live cases passed: vanilla, React, Svelte and Vue against both servers.
 The earlier `main` baseline at `4d53d9c9` also passed.
+
+After merging js-client `main` (`e114705`) into PR #6, live validation passed again
+against Traceway `main` at `e681f66d` and the pre-OpAMP baseline at `4e730e78`.
+All eight cases passed across vanilla, React, Svelte and Vue, covering persisted
+issues/messages, session linkage, masked replay and (on current main) remote-config
+custom-event streaming. Validation used disposable SQLite servers with fresh data.
+The workspace build, 465 unit tests, 34 HTTP-fixture browser tests, 13 browser
+regression checks, seven release tests and bundle-size checks also passed.
