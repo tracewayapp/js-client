@@ -1,5 +1,6 @@
 name: Release npm packages
-run-name: '${{ inputs.dry_run && "Dry run" || "Release" }} ${{ inputs.version }} (${{ inputs.channel }})'
+run-name: >-
+  ${{ inputs.dry_run && 'Dry run' || 'Release' }} ${{ inputs.version }} (${{ inputs.channel }})
 on:
   workflow_dispatch:
     inputs:
