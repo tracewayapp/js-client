@@ -1,0 +1,80 @@
+name: Release npm packages
+run-name: '${{ inputs.dry_run && "Dry run" || "Release" }} ${{ inputs.version }} (${{ inputs.channel }})'
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact version: 2.1.0 or 2.1.0-beta.1 (no v prefix)'
+        required: true
+        type: string
+      channel:
+        description: 'stable publishes to latest; beta publishes to beta'
+        required: true
+        type: choice
+        options: [beta, stable]
+      dry_run:
+        description: 'Validate and pack without publishing to npm'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@11.20.0
+      - name: Test release tooling
+        run: node --test tests/release/*.test.*
+      - name: Prepare lockstep versions
+        run: node scripts/release.mjs prepare "$RELEASE_VERSION" "$RELEASE_CHANNEL"
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run size
+      - run: npx --no-install playwright install --with-deps chromium
+      - name: Browser compatibility and regressions
+        run: |
+          npx --no-install playwright test compatibility.spec.ts
+          node scripts/browser-regressions.mjs
+      - name: Pack and check all registry versions
+        run: |
+          node scripts/release.mjs pack "$RELEASE_VERSION" "$RELEASE_CHANNEL"
+          node scripts/release.mjs check "$RELEASE_VERSION" "$RELEASE_CHANNEL"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: npm-release-${{ inputs.version }}
+          path: .cache/release/
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Publish using npm trusted publishing
+        if: ${{ !inputs.dry_run }}
+        run: node scripts/release.mjs publish "$RELEASE_VERSION" "$RELEASE_CHANNEL"
+      - name: Release summary
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          printf 'Version: %s\n\nChannel: %s\n\nDry run: %s\n\nSource: %s\n' "$RELEASE_VERSION" "$RELEASE_CHANNEL" "$DRY_RUN" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

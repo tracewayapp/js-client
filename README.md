@@ -208,39 +208,18 @@ The Expo example for React Native has a slightly different invocation — see [`
 
 ## Publishing
 
-`publish.sh` is the interactive stable-release path. It bumps every active `@tracewayapp/*` package to the same version, syncs cross-package dependency references (so `@tracewayapp/react`'s `dependencies."@tracewayapp/frontend"` always matches the new version), runs the build, and publishes each package to npm in topological order:
+Use [Actions → Release npm packages](https://github.com/tracewayapp/js-client/actions/workflows/release.yml)
+for stable and beta releases. See [release setup and operations](docs/releases.md) for the npm Trusted
+Publisher configuration and how to run or resume a release. No npm token is required.
 
-```bash
-./publish.sh
-# Prompts for the new semver, confirms, then runs:
-#   - bumps every packages/<name>/package.json
-#   - rewrites cross-package version references
-#   - runs `npm run build`
-#   - publishes each package to npm
-```
+The workflow publishes all ten active workspace packages in dependency order, including OpAMP.
+Stable versions (`2.1.0`) use `latest`; beta versions (`2.1.0-beta.1`) use `beta` without changing `latest`.
+Version and internal dependency updates happen in the release checkout; main's manifests stay unchanged.
+The run retains the versioned tarballs and their source commit in an artifact.
 
-For the first v2 beta, merge this branch into `main`, then run:
-
-```bash
-./release-beta-2.0.0
-```
-
-No version, tag, or environment variables are needed. This executable publishes **2.0.0-beta.1** under the npm
-**beta** tag, including `@tracewayapp/opamp`, while leaving `latest` on v1. It requires a clean `main`, fetches
-and fast-forwards from `origin/main`, updates every workspace version and internal dependency, installs from the
-updated lockfile, builds, runs unit tests, bundle checks, the framework browser suite, and browser regressions.
-It installs the Playwright Chromium browser automatically; the machine must have Chromium's system libraries.
-The optional live-server tests are run separately before release, as documented in [the browser test guide](tests/browser/README.md).
-
-It packs and checks all packages before publication, commits and tags the release locally, publishes in dependency
-order, then pushes `main` and `v2.0.0-beta.1` together. npm may still require browser login or 2FA. No additional
-release prompts are added. If publication or pushing fails, fix the reported problem and rerun the same command;
-it skips already-published versions only when their tarball integrity matches. Failed preparation restores the
-original manifests and lockfile. A successful release needs no separate Git push.
-
-Install the beta with `npm install @tracewayapp/frontend@beta` (or `react@beta`, `vue@beta`, `svelte@beta`).
-This script deliberately releases only `2.0.0-beta.1`; it does not increment versions on subsequent runs.
-Test the release workflow without npm publication using `node --test tests/release/beta.test.cjs`.
+The older `publish.sh` and fixed-version `release-beta-2.0.0` scripts are retained for historical use;
+use the GitHub workflow for new releases. Run release-tool tests with
+`node --test tests/release/*.test.*`.
 
 For the deprecated `backend` and `nestjs` packages, `deprecate.sh` is a separate one-shot that publishes the final pinned `1.0.3` version with a deprecation notice and `npm deprecate`'s every prior version.
 
