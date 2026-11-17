@@ -275,7 +275,7 @@ The Expo example for React Native has a slightly different invocation — see [`
 
 ## Publishing
 
-Use [Actions → Release npm packages](https://github.com/tracewayapp/js-client/actions/workflows/release.yml)
+Use [Actions → Release npm packages](https://github.com/tracewayapp/js-client/actions/workflows/publish.yml)
 for stable and beta releases. See [release setup and operations](docs/releases.md) for the npm Trusted
 Publisher configuration and how to run or resume a release. No npm token is required.
 

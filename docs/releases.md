@@ -1,6 +1,6 @@
 # npm releases from GitHub Actions
 
-Workflow: [Release npm packages](https://github.com/tracewayapp/js-client/actions/workflows/release.yml).
+Workflow: [Release npm packages](https://github.com/tracewayapp/js-client/actions/workflows/publish.yml).
 It runs manually on `main`, using the GitHub-hosted runner and the `npm` environment.
 No `NPM_TOKEN` or browser login is needed in Actions.
 
@@ -13,7 +13,7 @@ packages below, open **Settings → Trusted publishing → Add trusted publisher
 | --- | --- |
 | Organization or user | `tracewayapp` |
 | Repository | `js-client` |
-| Workflow filename | `release.yml` (filename only) |
+| Workflow filename | `publish.yml` (filename only) |
 | Environment name | `npm` |
 | Allowed actions | Enable direct publishing with `npm publish` |
 
