@@ -1,6 +1,9 @@
 import React, { Component, createContext } from "react";
 import * as traceway from "@tracewayapp/frontend";
-import type { TracewayFrontendOptions } from "@tracewayapp/frontend";
+import type {
+  TracewayFrontendOptions,
+  StandaloneOptions,
+} from "@tracewayapp/frontend";
 
 export interface TracewayContextValue {
   captureException: typeof traceway.captureException;
@@ -19,7 +22,7 @@ const contextValue: TracewayContextValue = {
 };
 
 export interface TracewayProviderProps {
-  connectionString: string;
+  connectionString: string | StandaloneOptions;
   options?: TracewayFrontendOptions;
   children: React.ReactNode;
 }

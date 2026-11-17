@@ -2,6 +2,7 @@ import {
   listenForSequenceActions,
   hasSequenceEvent,
 } from "./sequence-listener.js";
+import { RoutingLogExporter } from "./transport/routing-logs.js";
 import { LegacyTransport } from "./transport/legacy.js";
 import { forgetJson, recordJson } from "./persistence/otlp-json.js";
 import {
@@ -42,6 +43,7 @@ import {
   TracerProvider,
 } from "@opentelemetry/sdk-trace";
 import type {
+  CollectionSettings,
   FieldLookup,
   FiredTrigger,
   Settings,
@@ -51,6 +53,7 @@ import type {
   TriggerAction,
 } from "@tracewayapp/core";
 import {
+  applyOverlay,
   ceilingsFrom,
   ControlState,
   defaultSettings,
@@ -143,7 +146,28 @@ export interface CapturedException {
   attributes: Record<string, unknown>;
 }
 
+export interface TelemetryEndpoint {
+  /** Full OTLP/HTTP signal URL, including /v1/logs, /v1/traces or /v1/metrics. */
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export interface TelemetryOptions {
+  /** Base URL; /v1/logs, /v1/traces and /v1/metrics are appended. */
+  url?: string;
+  headers?: Record<string, string>;
+  logs?: TelemetryEndpoint;
+  traces?: TelemetryEndpoint;
+  metrics?: TelemetryEndpoint;
+}
+
+export interface StandaloneOptions extends TracewayFrontendOptions {
+  telemetry: TelemetryOptions;
+}
+
 export interface TracewayFrontendOptions {
+  /** Local defaults, with the same collection schema as OpAMP. Remote policy overlays these when enabled. */
+  collection?: CollectionSettings;
   debug?: boolean;
   /** `service.name` of this app. Defaults to the page's host name. */
   serviceName?: string;
@@ -208,10 +232,10 @@ export interface TracewayFrontendOptions {
   exportDelayMs?: number;
 
   /**
-   * OTLP/HTTP base URL (appends /v1/logs and /v1/traces) and optional headers.
+   * OTLP/HTTP base URL and/or per-signal endpoints for logs, traces and metrics.
    * OpAMP and replay stay on Traceway. Traceway credentials are never forwarded.
    */
-  telemetry?: { url: string; headers?: Record<string, string> };
+  telemetry?: TelemetryOptions;
 
   /** Advanced: export somewhere else than Traceway's OTLP endpoints, e.g. an in-memory exporter in tests. */
   logExporter?: LogRecordExporter;
@@ -328,8 +352,8 @@ export class TracewayFrontendClient {
   private readonly sessions: SessionManager;
   private readonly replay: ReplayController;
   private readonly recordings: RecordingsTransport;
-  private sessionSink: BatchLogRecordProcessor | null = null;
-  private sessionPersistence: TelemetryPersistence | null = null;
+  private tracewaySink: BatchLogRecordProcessor | null = null;
+  private tracewayPersistence: TelemetryPersistence | null = null;
   private readonly errorLimiter: ErrorLimiter;
   private readonly collectionBudget: CollectionBudget;
   private healthTimer: ReturnType<typeof setTimeout> | null = null;
@@ -359,8 +383,42 @@ export class TracewayFrontendClient {
   private overrideTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly persistence: TelemetryPersistence;
 
-  constructor(connectionString: string, options: TracewayFrontendOptions = {}) {
-    const { token, apiUrl } = parseConnectionString(connectionString);
+  constructor(
+    connectionString: string | StandaloneOptions,
+    options: TracewayFrontendOptions = {},
+  ) {
+    const standalone = typeof connectionString !== "string";
+    if (standalone) {
+      options = {
+        ...connectionString,
+        remoteConfig: false,
+        transport: "otlp",
+        sessionRecording: false,
+        sessions: false,
+      };
+      if (
+        !options.telemetry?.url &&
+        !(
+          options.telemetry?.logs &&
+          options.telemetry?.traces &&
+          options.telemetry?.metrics
+        )
+      ) {
+        throw new Error(
+          "Standalone telemetry requires a base URL or all three signal endpoints",
+        );
+      }
+    }
+    if (options.telemetry && options.transport === "legacy") {
+      throw new Error("External telemetry requires OTLP transport");
+    }
+    const { token, apiUrl } =
+      typeof connectionString === "string"
+        ? parseConnectionString(connectionString)
+        : {
+            token: `otel:${JSON.stringify([options.telemetry?.url, options.telemetry?.logs?.url, options.telemetry?.traces?.url, options.telemetry?.metrics?.url])}`,
+            apiUrl: "",
+          };
     this.token = token;
     this.options = options;
     this.errorLimiter = new ErrorLimiter(options.errorLimits);
@@ -375,8 +433,11 @@ export class TracewayFrontendClient {
       options.version ?? "",
     );
     this.legacy.enabled = options.transport === "legacy";
-    if (options.telemetry) {
-      const url = new URL(options.telemetry.url);
+    for (const kind of ["logs", "traces", "metrics"] as const) {
+      const destination = options.telemetry?.[kind];
+      const base = options.telemetry?.url;
+      if (!destination && !base) continue;
+      const url = new URL(destination?.url ?? base!);
       if (
         !["http:", "https:"].includes(url.protocol) ||
         url.username ||
@@ -385,13 +446,12 @@ export class TracewayFrontendClient {
         url.hash
       ) {
         throw new Error(
-          "telemetry.url must be an HTTP(S) base URL without credentials, query, or fragment",
+          "telemetry.url must be an HTTP(S) URL without credentials, query, or fragment",
         );
       }
-      const base = url.toString().replace(/\/+$/, "");
-      this.endpoints.logs = base + "/v1/logs";
-      this.endpoints.traces = base + "/v1/traces";
-      this.endpoints.metrics = base + "/v1/metrics";
+      this.endpoints[kind] = destination
+        ? url.toString()
+        : url.toString().replace(/\/+$/, "") + `/v1/${kind}`;
     }
     const instanceKey = `traceway:instance:${this.token}`;
     const storedInstanceId = storageGet(instanceKey);
@@ -408,10 +468,13 @@ export class TracewayFrontendClient {
     this.globalAttributes = { ...options.attributes };
 
     this.control = new ControlState(
-      defaultSettings({
-        recordAllSessions: options.recordAllSessions,
-        baselineSampleRate: options.baselineSampleRate,
-      }),
+      applyOverlay(
+        defaultSettings({
+          recordAllSessions: options.recordAllSessions,
+          baselineSampleRate: options.baselineSampleRate,
+        }),
+        parseSettingsDocument(JSON.stringify(options.collection ?? {})),
+      ),
       ceilingsFrom({
         sessionRecording: options.sessionRecording,
         captureLogs: options.captureLogs,
@@ -460,7 +523,6 @@ export class TracewayFrontendClient {
       options.sessionRecordingSegmentDuration,
     );
 
-    const authHeaders = this.telemetryHeaders();
     const exportDelay = options.exportDelayMs ?? 1000;
     this.persistence = new TelemetryPersistence(
       options.telemetry
@@ -471,16 +533,24 @@ export class TracewayFrontendClient {
       (kind, body) => this.sendOtlpJson(kind, body),
     );
     this.logSink = new BatchLogRecordProcessor({
-      exporter: new PersistingLogExporter(
-        options.logExporter ??
-          this.legacy.wrapLogs(
-            new OTLPLogExporter({
-              url: this.endpoints.logs,
-              headers: authHeaders,
-            }),
-          ),
-        () => this.persistence.exporterOutbox(),
-        (eventName) => this.canExportLog(eventName),
+      exporter: new RoutingLogExporter(
+        new PersistingLogExporter(
+          options.logExporter ??
+            this.legacy.wrapLogs(
+              new OTLPLogExporter({
+                url: this.endpoints.logs,
+                headers: this.telemetryHeaders("logs"),
+              }),
+            ),
+          () => this.persistence.exporterOutbox(),
+          (eventName) => this.canExportLog(eventName),
+        ),
+        (record) => {
+          if (!this.tracewaySink || !this.isTracewayLog(record.eventName))
+            return false;
+          this.tracewaySink.onEmit(record as SdkLogRecord);
+          return true;
+        },
       ),
       scheduledDelayMillis: exportDelay,
       maxQueueSize: FLUSH_QUEUE_SIZE,
@@ -491,7 +561,7 @@ export class TracewayFrontendClient {
           this.legacy.wrapSpans(
             new OTLPTraceExporter({
               url: this.endpoints.traces,
-              headers: authHeaders,
+              headers: this.telemetryHeaders("traces"),
             }),
           ),
         () => this.persistence.exporterOutbox(),
@@ -500,8 +570,8 @@ export class TracewayFrontendClient {
       scheduledDelayMillis: exportDelay,
       maxQueueSize: FLUSH_QUEUE_SIZE,
     });
-    if (options.telemetry) {
-      this.sessionPersistence = new TelemetryPersistence(
+    if (!standalone && (options.telemetry?.url || options.telemetry?.logs)) {
+      this.tracewayPersistence = new TelemetryPersistence(
         JSON.stringify([
           token,
           resolveEndpoints(apiUrl).logs,
@@ -511,18 +581,23 @@ export class TracewayFrontendClient {
         new RingBuffer<BufferedItem>({ maxBytes: 0, maxAgeMs: 0 }),
         (kind, body) => this.sendOtlpJson(kind, body, false, true),
       );
-      this.sessionSink = new BatchLogRecordProcessor({
+      this.tracewaySink = new BatchLogRecordProcessor({
         exporter: new PersistingLogExporter(
           new OTLPLogExporter({
             url: resolveEndpoints(apiUrl).logs,
             headers: { Authorization: `Bearer ${token}` },
           }),
-          () => this.sessionPersistence?.exporterOutbox() ?? null,
-          (name) => this.isSessionEvent(name) && this.canExportLog(name),
+          () => this.tracewayPersistence?.exporterOutbox() ?? null,
+          (name) => this.isTracewayLog(name) && this.canExportLog(name),
         ),
         scheduledDelayMillis: exportDelay,
+        maxQueueSize: FLUSH_QUEUE_SIZE,
       });
     }
+    const metricsStorageKey =
+      options.telemetry?.url || options.telemetry?.metrics
+        ? JSON.stringify([this.token, this.endpoints.metrics])
+        : this.token;
     this.metrics = new MetricsRecorder({
       control: this.control,
       sessionId: () => this.sessions.currentId(),
@@ -530,9 +605,10 @@ export class TracewayFrontendClient {
       send: (body, keepalive) => this.sendMetrics(body, keepalive),
       scope: { name: SCOPE_NAME, version: SDK_VERSION },
       storage: {
-        get: (name) => storageGet(`traceway:metrics:${name}:${this.token}`),
+        get: (name) =>
+          storageGet(`traceway:metrics:${name}:${metricsStorageKey}`),
         set: (name, value) =>
-          storageSet(`traceway:metrics:${name}:${this.token}`, value),
+          storageSet(`traceway:metrics:${name}:${metricsStorageKey}`, value),
       },
       profileId: () => this.instanceId,
       dimensions: options.metricDimensions,
@@ -654,7 +730,7 @@ export class TracewayFrontendClient {
 
     this.sessions.start();
     this.persistence.start(this.sessions.currentId());
-    this.sessionPersistence?.start(null);
+    this.tracewayPersistence?.start(null);
 
     const telemetryUrls = [
       `${this.endpoints.base}/api/otel/v1/logs`,
@@ -908,18 +984,18 @@ export class TracewayFrontendClient {
     // task that never runs, and requests not yet started by then are never sent.
     const sent = Promise.all([
       this.logSink.forceFlush(),
-      this.sessionSink?.forceFlush(),
+      this.tracewaySink?.forceFlush(),
       this.spanSink.forceFlush(),
       this.recordings.flush(),
     ]);
     sent.catch(() => undefined);
     await this.persistence.flush();
-    await this.sessionPersistence?.flush();
+    await this.tracewayPersistence?.flush();
     // What the storage writes above queued for sending.
     await sent;
     await Promise.all([
       this.logSink.forceFlush(),
-      this.sessionSink?.forceFlush(),
+      this.tracewaySink?.forceFlush(),
       this.spanSink.forceFlush(),
       this.recordings.flush(),
     ]);
@@ -942,11 +1018,11 @@ export class TracewayFrontendClient {
     await this.flush().catch(() => undefined);
     this.metrics.stop();
     this.persistence.stop();
-    this.sessionPersistence?.stop();
+    this.tracewayPersistence?.stop();
     this.replay.stop();
     this.sessions.stop();
     await Promise.all([
-      this.sessionSink?.shutdown().catch(() => undefined),
+      this.tracewaySink?.shutdown().catch(() => undefined),
       this.loggerProvider?.shutdown().catch(() => undefined),
       this.tracerProvider?.shutdown().catch(() => undefined),
     ]);
@@ -965,7 +1041,7 @@ export class TracewayFrontendClient {
     this.metrics.configure();
     this.runCaptures(settings);
     this.persistence.configure();
-    this.sessionPersistence?.configure();
+    this.tracewayPersistence?.configure();
     this.buffer.retain((entry) =>
       this.control.canExport(entry.signal as SignalName),
     );
@@ -1081,7 +1157,7 @@ export class TracewayFrontendClient {
     return fetch(this.endpoints.metrics, {
       method: "POST",
       headers: {
-        ...this.telemetryHeaders(),
+        ...this.telemetryHeaders("metrics"),
         "Content-Type": "application/json",
       },
       body,
@@ -1116,22 +1192,46 @@ export class TracewayFrontendClient {
     this.metrics.count(name, n, dims);
   }
 
-  private telemetryHeaders(): Record<string, string> {
-    return this.options.telemetry
-      ? { ...this.options.telemetry.headers }
+  private telemetryHeaders(
+    kind: "logs" | "traces" | "metrics",
+  ): Record<string, string> {
+    const telemetry = this.options.telemetry;
+    return telemetry?.[kind] || telemetry?.url
+      ? { ...telemetry.headers, ...telemetry[kind]?.headers }
       : { Authorization: `Bearer ${this.token}` };
+  }
+
+  private isTracewayLog(name: string | undefined): boolean {
+    return ["errors", "messages", "control"].includes(classifyLog(name));
   }
 
   private async sendOtlpJson(
     kind: StoredBatch["kind"],
     body: string,
     keepalive = false,
-    sessionMetadata = false,
+    tracewayOnly = false,
   ): Promise<SendResult> {
+    if (!tracewayOnly && kind === "logs" && this.tracewayPersistence) {
+      const tracewayBody = filterRequest(
+        kind,
+        body,
+        (name) => this.isTracewayLog(name) && this.canExportLog(name),
+        () => false,
+      );
+      if (tracewayBody)
+        this.tracewayPersistence.sendStored({
+          kind,
+          body: tracewayBody,
+        });
+    }
     body = filterRequest(
       kind,
       body,
-      (name) => this.canExportLog(name),
+      (name) =>
+        this.canExportLog(name) &&
+        (tracewayOnly
+          ? this.isTracewayLog(name)
+          : !this.tracewayPersistence || !this.isTracewayLog(name)),
       () => this.control.canExport("network"),
     );
     if (!body) return "drop";
@@ -1147,7 +1247,7 @@ export class TracewayFrontendClient {
             : "drop";
       }
       const response = await fetch(
-        sessionMetadata
+        tracewayOnly
           ? `${this.endpoints.base}/api/otel/v1/logs`
           : kind === "logs"
             ? this.endpoints.logs
@@ -1157,9 +1257,9 @@ export class TracewayFrontendClient {
           keepalive:
             keepalive && new TextEncoder().encode(body).byteLength < 60 * 1024,
           headers: {
-            ...(sessionMetadata
+            ...(tracewayOnly
               ? { Authorization: `Bearer ${this.token}` }
-              : this.telemetryHeaders()),
+              : this.telemetryHeaders(kind)),
             "Content-Type": "application/json",
           },
           body,
@@ -1418,7 +1518,10 @@ export class TracewayFrontendClient {
       if (session && !this.healthReported)
         this.emitSessionEvent(EVENT_SESSION_UPDATE, session);
       this.healthReported = true;
-      this.healthDelayMs = Math.min(this.healthDelayMs * 2, MAX_HEALTH_DELAY_MS);
+      this.healthDelayMs = Math.min(
+        this.healthDelayMs * 2,
+        MAX_HEALTH_DELAY_MS,
+      );
     }, this.healthDelayMs);
   }
 
@@ -1514,14 +1617,6 @@ export class TracewayFrontendClient {
     return false;
   }
 
-  private isSessionEvent(name: string | undefined): boolean {
-    return (
-      name === EVENT_SESSION_START ||
-      name === EVENT_SESSION_END ||
-      name === EVENT_SESSION_UPDATE
-    );
-  }
-
   private observe(observed: ObservedRecord): void {
     if (observed.item.kind === "log") this.metrics.onLog(observed.item.record);
     this.legacy.observe(observed);
@@ -1534,13 +1629,6 @@ export class TracewayFrontendClient {
         { type: "flush", signals: ["*"], lookbackSeconds: 30, replay: true },
         String(observed.lookup(`attributes.${ATTR_EXCEPTION_ID}`)),
       );
-    }
-    if (
-      observed.routed === "stream" &&
-      observed.item.kind === "log" &&
-      this.isSessionEvent(observed.item.record.eventName)
-    ) {
-      this.sessionSink?.onEmit(observed.item.record as SdkLogRecord);
     }
     if (observed.signal === "control") return;
     if (this.options.captureHttpServerErrors && observed.item.kind === "span") {
@@ -1914,7 +2002,7 @@ export class TracewayFrontendClient {
     this.emitSessionEvent(EVENT_SESSION_END, session, endedAtMs);
     if (unloading) {
       void this.logSink.forceFlush().catch(() => undefined);
-      void this.sessionSink?.forceFlush().catch(() => undefined);
+      void this.tracewaySink?.forceFlush().catch(() => undefined);
     }
     this.replay.onSessionEnd(unloading);
     if (unloading) void this.flushQueued().catch(() => undefined);

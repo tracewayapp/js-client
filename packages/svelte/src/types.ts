@@ -1,8 +1,11 @@
-import type { TracewayFrontendOptions } from "@tracewayapp/frontend";
+import type {
+  TracewayFrontendOptions,
+  StandaloneOptions,
+} from "@tracewayapp/frontend";
 import * as traceway from "@tracewayapp/frontend";
 
 export interface TracewayOptions {
-  connectionString: string;
+  connectionString: string | StandaloneOptions;
   options?: TracewayFrontendOptions;
 }
 

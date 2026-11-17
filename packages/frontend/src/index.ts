@@ -1,6 +1,7 @@
 import {
   TracewayFrontendClient,
   type TracewayFrontendOptions,
+  type StandaloneOptions,
 } from "./client.js";
 
 let client: TracewayFrontendClient | null = null;
@@ -10,7 +11,7 @@ let client: TracewayFrontendClient | null = null;
  * OpenTelemetry instrumentations patch browser globals once per page.
  */
 export function init(
-  connectionString: string,
+  connectionString: string | StandaloneOptions,
   options: TracewayFrontendOptions = {},
 ): void {
   if (client) return;
@@ -153,10 +154,17 @@ export {
   DEFAULT_IGNORE_PATTERNS,
   SDK_VERSION,
 } from "./client.js";
-export type { TracewayFrontendOptions, CapturedException } from "./client.js";
+export type {
+  TracewayFrontendOptions,
+  StandaloneOptions,
+  TelemetryOptions,
+  TelemetryEndpoint,
+  CapturedException,
+} from "./client.js";
 
 export type {
   Settings,
+  CollectionSettings,
   Trigger,
   TriggerAction,
   Capture,

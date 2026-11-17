@@ -190,3 +190,16 @@ export interface Ceilings {
   sessions: boolean;
   metrics: boolean;
 }
+
+/** Local collection policy; omitted fields retain the SDK defaults. */
+export type CollectionSettings = Omit<
+  Partial<Settings>,
+  "signals" | "sessions" | "replay" | "metrics" | "buffer" | "triggers"
+> & {
+  signals?: Partial<Record<SignalName, Partial<SignalSettings>>>;
+  triggers?: Array<Partial<Trigger> & Pick<Trigger, "id">>;
+  sessions?: Partial<Settings["sessions"]>;
+  replay?: Partial<ReplaySettings>;
+  metrics?: Partial<MetricsSettings>;
+  buffer?: Partial<BufferSettings>;
+};

@@ -127,7 +127,7 @@ export class TelemetryPersistence {
     this.track(this.restored ? save() : this.ready.then(save));
   }
 
-  sendStored(batch: StoredBatch): void {
+  sendStored(batch: Pick<StoredBatch, "kind" | "body">): void {
     this.track(
       this.send(batch.kind, batch.body).then(async (result) => {
         if (result === "retry")

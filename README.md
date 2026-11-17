@@ -25,7 +25,7 @@ Every package below lives in `packages/<name>/` and is published as `@tracewayap
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| [`@tracewayapp/frontend`](packages/frontend) | <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a> | Browser SDK — built on OpenTelemetry (2.x): errors, console, navigation, clicks, web vitals, `fetch` / XHR spans with `traceparent`, rrweb session replay; what it sends is controlled remotely over OpAMP |
+| [`@tracewayapp/frontend`](packages/frontend) | <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a> | Browser SDK — built on OpenTelemetry (2.x): errors, console, navigation, clicks, web vitals, `fetch` / XHR spans with `traceparent`, rrweb session replay; local collection configuration or remote control over OpAMP |
 | [`@tracewayapp/react`](packages/react) | <a href="https://www.npmjs.com/package/@tracewayapp/react"><img src="https://img.shields.io/npm/v/@tracewayapp/react.svg" alt="npm"></a> | React wrapper — `<TracewayProvider>`, `<TracewayErrorBoundary>`, `useTraceway()` hook |
 | [`@tracewayapp/vue`](packages/vue) | <a href="https://www.npmjs.com/package/@tracewayapp/vue"><img src="https://img.shields.io/npm/v/@tracewayapp/vue.svg" alt="npm"></a> | Vue 3 plugin + `useTraceway()` composable |
 | [`@tracewayapp/svelte`](packages/svelte) | <a href="https://www.npmjs.com/package/@tracewayapp/svelte"><img src="https://img.shields.io/npm/v/@tracewayapp/svelte.svg" alt="npm"></a> | Svelte / SvelteKit context-based setup |
@@ -84,9 +84,76 @@ These packages are no longer actively developed. New backend integrations should
 └────────┘ └────────┘ └────────┘ └────────┘ └────────┘
 ```
 
-In 2.x, `frontend` exports OpenTelemetry (OTLP/HTTP JSON) and polls Traceway over OpAMP (`@tracewayapp/opamp`) for its collection settings; replay goes to a separate recordings endpoint. See `INTERNAL_DOCS.md` for the design.
+In 2.x, `frontend` exports OpenTelemetry (OTLP/HTTP JSON) with local collection settings or optional Traceway OpAMP control (`@tracewayapp/opamp`); replay goes to a separate recordings endpoint. See `INTERNAL_DOCS.md` for the design.
 
 `@tracewayapp/core` is platform-agnostic. `frontend` is the browser SDK with rrweb; the framework wrappers (`react`, `vue`, `svelte`, `jquery`) are thin layers on top. `react-native` does **not** depend on `frontend` — it builds directly on `core` so the bundle stays free of `rrweb` and other browser-only APIs that don't exist on Hermes / JSC.
+
+## Local configuration without OpAMP
+
+The browser SDK supports both static collection policies and Traceway-managed policies. To use only OpenTelemetry, pass an options object to `init` instead of a Traceway connection string:
+
+```ts
+import { init, metric, count } from '@tracewayapp/frontend';
+
+init({
+  serviceName: 'shop-web',
+  telemetry: { url: 'https://collector.example.com/otlp' },
+  exportDelayMs: 2000,
+  collection: {
+    signals: {
+      errors: { mode: 'stream' },
+      console: { mode: 'stream', minSeverity: 'warn' },
+      network: { mode: 'stream', sampleRate: 0.25 },
+      custom: { mode: 'stream' },
+      resourceTiming: { mode: 'off' },
+    },
+    metrics: { enabled: true, sampleRate: 1, flushSeconds: 30 },
+    buffer: { persist: false, maxAgeSeconds: 60 },
+    triggers: [{ id: 'default-exception', enabled: false }],
+  },
+});
+
+metric('checkout.duration', 840, { plan: 'pro' });
+count('checkout.completed');
+```
+
+No Traceway server, account, or token is required. Standalone mode disables OpAMP, legacy fallback, Traceway session metadata, and replay uploads, even if those options are enabled. A local session ID still supports sampling and telemetry correlation. Exceptions are ordinary OTLP logs sent to your collector. The SDK retains its error filters and collection defaults; set `ignoreErrors: []` to remove the built-in error filters.
+
+`collection` is a typed partial settings document (`CollectionSettings`). It controls signal modes (`off`, `buffer`, `stream`), sampling, console severity, metrics, buffer retention, replay, and local triggers. Omitted fields retain SDK defaults: most breadcrumbs are buffered, errors stream, and metrics flush every 300 seconds. Triggers merge by ID; disable `default-exception` explicitly to stop automatic lookback uploads. `exportDelayMs` controls log/span batching; `collection.metrics.flushSeconds` controls metric uploads (clamped to 30–3600 seconds). `flush()` sends queued exports and metrics, but does not release buffered events; a trigger's `flush` action releases those.
+
+With a Traceway connection string, use `remoteConfig: false` and `collection` for static configuration while retaining Traceway exceptions and replay. No cached remote policy is read and no OpAMP request is sent. With remote config enabled, precedence is built-in defaults → local `collection` → cached/live remote overlay → `capture*`, `sessions`, and `sessionRecording` ceilings. Triggers and captures also respect those ceilings.
+
+## Traceway exceptions and replay, external logs and metrics
+
+Keep Traceway's control plane and replay storage while exporting ordinary logs, spans, and metrics to another OTLP backend:
+
+```ts
+import { init } from '@tracewayapp/frontend';
+
+init('PROJECT_TOKEN@https://traceway.example.com', {
+  serviceName: 'shop-web',
+  telemetry: {
+    url: 'https://collector.example.com/otlp',
+    // Optional overrides use complete signal URLs, with no path appended.
+    metrics: { url: 'https://metrics.example.com/v1/metrics' },
+    logs: { url: 'https://logs.example.com/v1/logs' },
+  },
+  collection: {
+    signals: { console: { mode: 'stream' }, network: { mode: 'stream' } },
+    metrics: { flushSeconds: 30 },
+  },
+});
+```
+
+A shared `telemetry.url` appends `/v1/logs`, `/v1/traces`, and `/v1/metrics`. Each signal can override it with `{ url, headers }`. Without a shared base, unspecified signals keep their Traceway destination; standalone mode requires a base or all three signal URLs. URLs must use HTTP(S), without embedded credentials, a query, or a fragment. Signal headers override shared `telemetry.headers`; Traceway's token is never added to external requests.
+
+When logs are redirected, exception events, `captureMessage` issues, and SDK control/session metadata go only to Traceway. Ordinary console/custom/performance logs go to the logs receiver; network spans and metrics use their own destinations. OpAMP and rrweb recordings keep using the Traceway connection string. This lets an OTLP Collector forward telemetry to a Grafana stack while Traceway stores issues and replays. External breadcrumbs are not copied into Traceway's session timeline. Both destinations retain `session.id` for correlation. Replay is Traceway-specific, outside OTLP.
+
+Live exports, restored buffers, and retries use the configured signal destinations and credentials. Persistent telemetry queues and pending metric batches are isolated by destination. Custom `logExporter`/`spanExporter` overrides replace the corresponding live telemetry exporter; Traceway's issue/session routing still applies, and persisted records use the configured HTTP destinations.
+
+The receiver must support OTLP/HTTP JSON, allow your application's origin, POST, and configured headers through CORS. See the [OpenTelemetry browser exporter guide](https://opentelemetry.io/docs/languages/js/exporters/). Use browser-safe ingestion credentials or your own ingestion proxy; keep backend credentials on the collector. Metrics use delta counters and exponential histograms, so configure the downstream pipeline to accept or convert those types.
+
+These options apply to the 2.x browser SDK and its React, Vue, Svelte, and jQuery wrappers. Their `connectionString` argument/prop also accepts the standalone options object. React Native still uses the separate native reporting transport.
 
 ## Getting started as a user
 

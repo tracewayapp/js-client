@@ -5,12 +5,15 @@ import {
   captureMessage,
   flush,
 } from "@tracewayapp/frontend";
-import type { TracewayFrontendOptions } from "@tracewayapp/frontend";
+import type {
+  TracewayFrontendOptions,
+  StandaloneOptions,
+} from "@tracewayapp/frontend";
 
 export interface TracewayJQueryOptions extends TracewayFrontendOptions {}
 
 export function init(
-  connectionString: string,
+  connectionString: string | StandaloneOptions,
   options: TracewayJQueryOptions = {},
 ): void {
   frontendInit(connectionString, options);

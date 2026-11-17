@@ -25,5 +25,11 @@ export {
   getInstanceId,
   DEFAULT_IGNORE_PATTERNS,
 } from "@tracewayapp/frontend";
-export type { TracewayFrontendOptions } from "@tracewayapp/frontend";
+export type {
+  TracewayFrontendOptions,
+  StandaloneOptions,
+  CollectionSettings,
+  TelemetryOptions,
+  TelemetryEndpoint,
+} from "@tracewayapp/frontend";
 export type { TracewayPluginOptions, TracewayContextValue } from "./types.js";

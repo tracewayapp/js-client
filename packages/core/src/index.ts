@@ -58,6 +58,7 @@ export type {
   Trigger,
   Capture,
   Settings,
+  CollectionSettings,
   Ceilings,
 } from "./settings/types.js";
 export { MODES, SIGNALS, SEVERITIES } from "./settings/types.js";

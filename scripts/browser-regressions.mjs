@@ -339,7 +339,7 @@ try {
               r.body.includes("external-buffer-before-navigation"),
           ),
       );
-      await apply({ signals: { network: { mode: "stream" } } });
+      await apply({ signals: { network: { mode: "stream" }, custom: { mode: "stream" } } });
       await page.evaluate(async () => {
         await fetch("/another-application-request");
       });
@@ -354,7 +354,8 @@ try {
       failLogs = true;
       await page.evaluate(() => {
         Traceway.setAttribute("retry.context", "metadata-retry");
-        Traceway.captureMessage("external-retry");
+        Traceway.track("external-retry");
+        Traceway.captureMessage("traceway-issue-retry");
       });
       await flush();
       const retryStart = requests.length;
@@ -382,6 +383,9 @@ try {
             ),
         )
         .toBe(true);
+      assert(requests.slice(start).some(r => r.path === "/api/otel/v1/logs" && r.body.includes("external-trigger")));
+      assert(!requests.slice(start).some(r => r.path === "/external/v1/logs" && r.body.includes("external-trigger")));
+      assert(requests.slice(retryStart).some(r => r.path === "/api/otel/v1/logs" && r.body.includes("traceway-issue-retry")));
       const sent = requests.slice(start);
       assert(
         sent.some(
@@ -434,6 +438,12 @@ try {
                         "session.start",
                         "session.end",
                         "traceway.session.update",
+                        "exception",
+                        "traceway.message",
+                        "traceway.config.applied",
+                        "traceway.trigger.fired",
+                        "traceway.capture.started",
+                        "traceway.collection.health",
                       ].includes(log.eventName),
                     ),
                   ),
@@ -744,6 +754,52 @@ try {
       }
     },
   );
+  await check("standalone local policy exports to independent OTLP endpoints without OpAMP or replay", async () => {
+    const standaloneContext = await browser.newContext();
+    const standalonePage = await standaloneContext.newPage();
+    try {
+      await standalonePage.goto(origin);
+      const start = requests.length;
+      await standalonePage.evaluate(() => {
+        Traceway.init({
+          serviceName: "standalone-test",
+          telemetry: {
+            url: location.origin + "/standalone",
+            metrics: { url: location.origin + "/separate/v1/metrics", headers: { Authorization: "Bearer metrics-only" } },
+          },
+          remoteConfig: true,
+          sessionRecording: true,
+          captureWebVitals: false,
+          captureResourceTiming: false,
+          exportDelayMs: 60_000,
+          collection: {
+            signals: { console: { mode: "stream" }, network: { mode: "stream" } },
+            metrics: { flushSeconds: 30 },
+          },
+        });
+        Traceway.track("local-buffered-context");
+        console.warn("standalone-console");
+        Traceway.captureException(new Error("standalone-error"));
+        Traceway.count("checkout.complete");
+      });
+      await standalonePage.evaluate(async () => {
+        await fetch("/standalone-application-request");
+        await Traceway.flush();
+        await Traceway.shutdown();
+      });
+      const sent = requests.slice(start);
+      assert(sent.some(r => r.path === "/standalone/v1/logs" && r.body.includes("standalone-error")));
+      assert(sent.some(r => r.path === "/standalone/v1/logs" && r.body.includes("local-buffered-context")));
+      assert(sent.some(r => r.path === "/standalone/v1/traces"));
+      assert(sent.some(r => r.path === "/separate/v1/metrics"));
+      assert(sent.every(r => !r.path.startsWith("/api/")), "standalone must never contact Traceway APIs");
+      for (const request of sent) {
+        assert.equal(request.auth, request.path === "/separate/v1/metrics" ? "Bearer metrics-only" : undefined);
+      }
+    } finally {
+      await standaloneContext.close();
+    }
+  });
   assert.deepEqual(errors, []);
   console.log("Browser regression checks passed.");
 } finally {

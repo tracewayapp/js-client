@@ -8,9 +8,7 @@ export { useTracewayRoute } from "./use-traceway-route.js";
 export { useTracewayAttributes } from "./use-traceway-attributes.js";
 export { TracewayAttributes } from "./traceway-attributes.js";
 export type { TracewayAttributesProps } from "./traceway-attributes.js";
-export {
-  TracewayErrorBoundary,
-} from "./error-boundary.js";
+export { TracewayErrorBoundary } from "./error-boundary.js";
 export type { TracewayErrorBoundaryProps } from "./error-boundary.js";
 
 // Direct re-exports from @tracewayapp/frontend so consumers can use
@@ -37,4 +35,10 @@ export {
   getInstanceId,
   DEFAULT_IGNORE_PATTERNS,
 } from "@tracewayapp/frontend";
-export type { TracewayFrontendOptions } from "@tracewayapp/frontend";
+export type {
+  TracewayFrontendOptions,
+  StandaloneOptions,
+  CollectionSettings,
+  TelemetryOptions,
+  TelemetryEndpoint,
+} from "@tracewayapp/frontend";
