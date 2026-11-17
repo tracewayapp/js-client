@@ -117,15 +117,24 @@ events only when a rule, trigger or capture asks.
   worst interaction, one forgiven per 50; the largest 1 s gap / 5 s shift window). Recorded when the view ends.
   Entries are assigned by arrival, so the click that causes a route change counts for the view it leads to. A view
   that is hidden and shown again is measured once per visible stretch, because an uploaded value cannot be taken
-  back; a later stretch without a shift adds no second zero. Interactions under 40 ms are not observed, as in the
-  web vitals library, so a view with only such interactions has no INP.
+  back; a later stretch without a shift adds no second zero. Interactions under 16 ms (the lowest threshold a
+  browser accepts) are not reported, only counted in `performance.interactionCount`: a view whose interactions were
+  all that fast records the threshold as its INP, so fast views are not missing from the distribution. A
+  `replaceState` that keeps the normalized path (a search box rewriting the query string) stays the same view. Views
+  are split on route changes even when `captureRouteTiming` is off (`RouteTimingInstrumentation(measure = false)`).
 - Global dimensions: `metricDimensions` in `init()` and `setMetricDimension(key, value | null)`, two keys at most
   (`[a-z][a-z0-9_]{0,31}`), sent as resource attributes `custom.<key>`.
 - Settings: top-level `metrics: {enabled, sampleRate, flushSeconds}` (defaults true, 1, 300; flush at least 30 s),
   ceiling `captureMetrics`, plan limit `limits.metrics: "off"`. Sampling is per session (`unitHash(session.id)`).
+  A payload states one sample rate and the server weights all of it by 1/rate, so `MetricsRecorder.configure()`
+  uploads what was recorded under the old rate (`batchRate`) before it adopts a new one: a device without cached
+  settings counts its session and user at rate 1 before the first poll answers, and those must not be multiplied
+  by a later 1/rate. A new rate of 0 discards instead. A payload over 60 KB (UTF-8 bytes) is split in halves
+  (`sendBatch`), each with its own batch id. `browser.session` is counted when the session starts, not when a later
+  page of it resumes (`sessionStarted(id, resumed)`).
 - Public API: `metric(name, value, dims?)`, `count(name, n?, dims?)`, `setRoute(template)`,
   `setMetricDimension(key, value)`. Custom names are
-  lowercase dotted and cannot start with `browser.`, `app.` or `traceway.`; two dimensions at most.
+  lowercase dotted and cannot start with `browser.`, `app.`, `traceway.` or `custom.`; two dimensions at most.
 
 React Native has none of this: it does not speak OpAMP and sends no performance measurements.
 
@@ -138,7 +147,16 @@ clamped to the ceilings from `init()` options lowered to the document's plan `li
 from triggers and captures.
 
 Triggers (`core/src/triggers`) are sequences of matcher steps with `withinSeconds` gaps, per-session state, sample
-rate, cooldown and per-session cap. Before routing errors, the frontend ErrorLimiter suppresses identical type/message/stack within 1 s and accepts at most 60 errors per rolling minute per running client. The next accepted error carries the aggregate suppressed count. Healthy lifecycle metadata and web vitals remain on. Optional sessions.baselineSampleRate (default 0) uses a session-ID hash to stream buffered breadcrumbs and request spans consistently across reloads; it never streams replay or overrides an off signal. A step can need `count` matching records within a sliding `periodSeconds` ("5 error
+rate, cooldown and per-session cap. The engine follows every way a sequence could be under way, not one cursor: per
+step it keeps when the steps before it last completed (for a `count` step up to 8 such moments and one hit list),
+tries later steps first so one event advances a candidate by one step only, and clears everything when the last
+step completes. The first step happening again therefore starts a second candidate and does not discard the first
+(`A B A C` fires). Progress, the hits of a counting first step included, is saved to sessionStorage only when
+`progressVersion` changed (format `v: 2`, older saves are ignored) and restored on the next page; a step without
+`withinSeconds` is restored for as long as the session. The click and hover events the page feeds in directly carry
+`sequence`, and only a step naming that event type can match them, so a negated condition does not match every
+click. The page's own load is one navigation whichever arrives first, the navigation instrumentation's record at
+`DOMContentLoaded` or the one `applySettings` makes up. Before routing errors, the frontend ErrorLimiter suppresses identical type/message/stack within 1 s and accepts at most 60 errors per rolling minute per running client. The next accepted error carries the aggregate suppressed count. Healthy lifecycle metadata and web vitals remain on. Optional sessions.baselineSampleRate (default 0) uses a session-ID hash to stream buffered breadcrumbs and request spans consistently across reloads; it never streams replay or overrides an off signal. A step can need `count` matching records within a sliding `periodSeconds` ("5 error
 lines in a minute"). Actions: `flush` (lookback upload, optionally replay), `stream` (send the listed signals for N
 seconds, this page only), `startReplay`, `emit`, and `capture` (lookback upload, then stream for `durationSeconds`;
 kept in localStorage under `traceway:local-captures:<token>` so later pages keep streaming; while it runs the same
@@ -146,7 +164,7 @@ trigger only extends it). Every fire emits `traceway.trigger.fired`; a capture a
 with `traceway.capture.source: trigger`.
 
 Log lines are matched with `body` and the operators `icontains`, `starts_with` and `glob` (`*`/`?`, case-insensitive,
-linear-time, at most 4 KB of the value looked at). There is no regex operator on purpose: a pattern from the server
+one backtrack point, at most 4 KB of the value looked at). There is no regex operator on purpose: a pattern from the server
 would run with backtracking on the page's main thread. Matching sees every record, including those of a signal that
 is off.
 
@@ -159,6 +177,11 @@ action keeps the narrower rule: `"*"` there covers only signals that are not off
 
 Captures arrive in the settings document from the dashboard. The lookback flush runs once per capture id (remembered
 in sessionStorage per tab), streaming lasts until `until` on every page; `traceway.capture.started` marks the start.
+A capture known only from the cached settings keeps streaming but flushes nothing until the first poll has answered
+or failed (`capturesConfirmed`): it may have been cancelled while the device was away. What a lookback uploads was
+recorded before the capture existed, so `TelemetryRouter.flushBuffered` adds the running capture ids to
+`traceway.capture.ids` then; the server marks a capture as delivered by that attribute. A local capture another tab
+started makes this tab upload its own lookback once (`traceway:local-captures-flushed:<token>` in sessionStorage).
 
 ### External telemetry destination
 
@@ -188,6 +211,15 @@ localStorage and applied synchronously at the next `init()`.
 as live SDK records, so byte and age limits apply to the combined history. Whole serialized records are counted,
 including log bodies. `BufferStore` updates IndexedDB snapshots atomically; a sessionStorage checkpoint covers
 navigation because the browser may abandon asynchronous IndexedDB writes on pagehide. Replay is not persisted.
+
+The buffer is written when the page is hidden or unloads, once, never on a timer: a save serializes the whole
+buffer, which is a long task on a phone. A record's OTLP JSON is kept after it is first made (`recordJson` in
+`otlp-json.ts`; `forgetJson` after anything changes the record), so sizing, saving and sending do not each
+serialize it. Records restored from an earlier page are one request body each; a flush joins them into requests of
+at most 512 KB (`mergeRequests`), not one POST per record. On unload `flushQueued` starts the exporters' flush
+before it awaits the storage writes, which finish in a task an unloading page never runs, and the session's closing
+event leaves before the replay, whose keepalive budget leaves it room. The IndexedDB connection is dropped and
+reopened when the browser closes it (`onclose`, `onversionchange`, one retry).
 
 `Outbox` retries with backoff while the page is open and drains on `online`, visibility recovery, and startup. Web
 Locks serialize drains between tabs. Pruning on drain retains at most 200 batches, at most 24 hours old, below 8

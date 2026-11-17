@@ -51,7 +51,8 @@ export class RouteTimingInstrumentation extends LogInstrumentation {
     if (document.visibilityState === "hidden") this.discard();
   };
 
-  constructor() {
+  /** `measure` false: route changes are only passed on to the sink, which splits its numbers by view. */
+  constructor(private readonly measure = true) {
     super("@tracewayapp/frontend/route-timing");
   }
 
@@ -115,8 +116,8 @@ export class RouteTimingInstrumentation extends LogInstrumentation {
     const from = this.lastUrl;
     this.lastUrl = to;
     if (this.current) this.finish("interrupted");
-    this.sink?.routeChanged();
-    if (document.visibilityState === "hidden") return;
+    this.sink?.routeChanged(type);
+    if (!this.measure || document.visibilityState === "hidden") return;
 
     const now = performance.now();
     this.current = {

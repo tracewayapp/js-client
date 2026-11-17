@@ -15,7 +15,7 @@ vi.mock("@rrweb/record", () => ({
   ),
 }));
 
-import { BufferStore } from "./buffer-store.js";
+import { BufferStore, serializeBuffer } from "./buffer-store.js";
 import {
   BUFFER_STORE,
   listByToken,
@@ -24,6 +24,13 @@ import {
 } from "./idb.js";
 import { mergeRequests } from "./otlp-json.js";
 import { Outbox } from "./outbox.js";
+import {
+  ControlState,
+  RingBuffer,
+  ceilingsFrom,
+  defaultSettings,
+} from "@tracewayapp/core";
+import { TelemetryRouter } from "../otel/router.js";
 import type { BufferedItem } from "../otel/router.js";
 import { TracewayFrontendClient } from "../client.js";
 
@@ -89,8 +96,14 @@ describe("BufferStore", () => {
   it("hands a session's entries to the next page of that session only", async () => {
     const store = new BufferStore("tok");
     const now = Date.now();
-    await store.save([record("a", now - 1_000), record("b", now)], "session-1");
-    await store.save([record("c", now)], "session-2");
+    await store.save(
+      serializeBuffer([record("a", now - 1_000), record("b", now)], "tok", "session-1"),
+      "session-1",
+    );
+    await store.save(
+      serializeBuffer([record("c", now)], "tok", "session-2"),
+      "session-2",
+    );
 
     expect(await store.take("session-3", 600_000)).toHaveLength(0);
     const taken = await store.take("session-1", 600_000);
@@ -107,7 +120,10 @@ describe("BufferStore", () => {
 
   it("drops entries older than the buffer's age limit", async () => {
     const store = new BufferStore("tok");
-    await store.save([record("old", Date.now() - 3_600_000)], "s");
+    await store.save(
+      serializeBuffer([record("old", Date.now() - 3_600_000)], "tok", "s"),
+      "s",
+    );
     expect(await store.take("s", 600_000)).toHaveLength(0);
     expect(await listByToken(BUFFER_STORE, "tok")).toHaveLength(0);
   });
@@ -124,6 +140,62 @@ describe("BufferStore", () => {
     ).toEqual({
       resourceLogs: [1, 2, 3],
     });
+  });
+
+  it("sends the records restored from an earlier page as one request, marked with the running capture", () => {
+    const control = new ControlState(defaultSettings(), ceilingsFrom());
+    control.applyRemote({
+      captures: [
+        { id: "cap-1", until: new Date(Date.now() + 60_000).toISOString() },
+      ],
+    });
+    const buffer = new RingBuffer<BufferedItem>({
+      maxBytes: 1 << 20,
+      maxAgeMs: 600_000,
+    });
+    const body = (name: string) =>
+      JSON.stringify({
+        resourceLogs: [{ scopeLogs: [{ logRecords: [{ eventName: name }] }] }],
+      });
+    buffer.restore(
+      ["a", "b", "c"].map((name) => ({
+        timeMs: Date.now(),
+        signal: "custom",
+        bytes: 10,
+        item: {
+          kind: "stored" as const,
+          batch: {
+            token: "tok",
+            kind: "logs" as const,
+            body: body(name),
+            createdAtMs: 0,
+            attempts: 0,
+          },
+        },
+      })),
+    );
+    const sent: string[] = [];
+    const router = new TelemetryRouter(
+      control,
+      buffer,
+      { logs: {} as never, spans: {} as never },
+      {
+        sessionId: () => "s",
+        globalAttribute: () => undefined,
+        enrichLog: () => true,
+        observe: () => {},
+        sendStored: (batch) => sent.push(batch.body),
+      },
+    );
+    expect(router.flushBuffered(0, "*")).toBe(3);
+    expect(sent).toHaveLength(1);
+    const records = JSON.parse(sent[0]!).resourceLogs.map(
+      (r: any) => r.scopeLogs[0].logRecords[0],
+    );
+    expect(records.map((r: any) => r.eventName)).toEqual(["a", "b", "c"]);
+    expect(records[0].attributes).toEqual([
+      { key: "traceway.capture.ids", value: { stringValue: '["cap-1"]' } },
+    ]);
   });
 });
 

@@ -2,7 +2,7 @@ import type { BufferEntry } from "@tracewayapp/core";
 import type { BufferedItem } from "../otel/router.js";
 import type { StoredBatch } from "./idb.js";
 import { BUFFER_STORE, updateToken, writeSessionSnapshot } from "./idb.js";
-import { logsToJson, spansToJson } from "./otlp-json.js";
+import { recordJson } from "./otlp-json.js";
 
 /**
  * Keeps the on-device buffer across page loads. When a page is hidden its
@@ -12,12 +12,8 @@ import { logsToJson, spansToJson } from "./otlp-json.js";
 export class BufferStore {
   constructor(private readonly token: string) {}
 
-  async save(
-    entries: BufferEntry<BufferedItem>[],
-    sessionId: string,
-  ): Promise<void> {
+  async save(batches: StoredBatch[], sessionId: string): Promise<void> {
     try {
-      const batches = serializeBuffer(entries, this.token, sessionId);
       await writeSessionSnapshot(this.token, sessionId, batches);
     } catch {
       // Losing the persisted buffer only loses context from earlier pages.
@@ -61,9 +57,7 @@ export function serializeBuffer(
       body:
         entry.item.kind === "stored"
           ? entry.item.batch.body
-          : entry.item.kind === "log"
-            ? logsToJson([entry.item.record])
-            : spansToJson([entry.item.span]),
+          : recordJson(entry.item),
       createdAtMs: now,
       attempts: 0,
       timeMs: entry.timeMs,

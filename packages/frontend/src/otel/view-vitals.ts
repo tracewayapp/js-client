@@ -3,7 +3,8 @@ import { supportsEntryType } from "./performance-instrumentation.js";
 const SLOWEST_KEPT = 10;
 /** The web vitals rule: one outlier is forgiven per 50 interactions. */
 const INTERACTIONS_PER_OUTLIER = 50;
-const EVENT_DURATION_THRESHOLD_MS = 40;
+/** The lowest the browser accepts. Interactions faster than this are not reported, only counted. */
+const EVENT_DURATION_THRESHOLD_MS = 16;
 const SHIFT_GAP_MS = 1000;
 const SHIFT_WINDOW_MS = 5000;
 const MAX_TARGET_LENGTH = 100;
@@ -46,9 +47,19 @@ export function selectorOf(node: unknown): string | undefined {
   return parts.join(">").slice(0, MAX_TARGET_LENGTH);
 }
 
+function interactionCount(): number {
+  const count =
+    typeof performance === "undefined"
+      ? undefined
+      : (performance as Performance & { interactionCount?: number })
+          .interactionCount;
+  return typeof count === "number" ? count : 0;
+}
+
 /** Interaction latency and layout shift of one view, the way INP and CLS are defined for a page. */
 export class ViewVitals {
   private interactions = 0;
+  private countAtStart = interactionCount();
   private slowest: Interaction[] = [];
   private windowValue = 0;
   private windowStart = 0;
@@ -110,14 +121,21 @@ export class ViewVitals {
   }
 
   inp(): { value: number; target?: string } | null {
-    if (!this.interactions) return null;
+    // The browser counts every interaction but reports only the slow ones. A view whose interactions were all
+    // fast still has an INP; leaving it out would make the distribution look slower than it is.
+    const total = Math.max(
+      this.interactions,
+      interactionCount() - this.countAtStart,
+    );
+    if (!total) return null;
     const chosen =
       this.slowest[
         Math.min(
           this.slowest.length - 1,
-          Math.floor(this.interactions / INTERACTIONS_PER_OUTLIER),
+          Math.floor(total / INTERACTIONS_PER_OUTLIER),
         )
-      ]!;
+      ];
+    if (!chosen) return { value: EVENT_DURATION_THRESHOLD_MS };
     return { value: chosen.duration, target: chosen.target };
   }
 
@@ -129,6 +147,7 @@ export class ViewVitals {
     const first = !this.recorded;
     this.recorded = true;
     this.interactions = 0;
+    this.countAtStart = interactionCount();
     this.slowest = [];
     this.windowValue = this.cls = this.largestShift = 0;
     this.clsTarget = undefined;

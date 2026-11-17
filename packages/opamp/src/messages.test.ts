@@ -28,6 +28,25 @@ describe("OpAMP codec", () => {
     expect(hex(bytes)).toBe(GO_AGENT_TO_SERVER);
   });
 
+  it("writes false, zero and empty attribute values instead of leaving them out", () => {
+    const encoded = hex(
+      encodeAgentToServer({
+        instanceUid: uid,
+        sequenceNum: 1,
+        agentDescription: {
+          identifying: {},
+          nonIdentifying: { "browser.mobile": false, seats: 0, plan: "" },
+        },
+        capabilities: 0,
+      }),
+    );
+    const key = (name: string) => hex(new TextEncoder().encode(name));
+    // KeyValue{key, value: AnyValue{bool_value: false}} as protobuf-go marshals a set oneof member.
+    expect(encoded).toContain(`0a0e${key("browser.mobile")}12021000`);
+    expect(encoded).toContain(`0a05${key("seats")}12021800`);
+    expect(encoded).toContain(`0a04${key("plan")}12020a00`);
+  });
+
   it("decodes a ServerToAgent written by opamp-go", () => {
     const msg = decodeServerToAgent(fromHex(GO_SERVER_TO_AGENT));
     expect(hex(msg.instanceUid!)).toBe(hex(uid));

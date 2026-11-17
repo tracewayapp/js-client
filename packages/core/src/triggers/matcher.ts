@@ -47,7 +47,7 @@ export function satisfiesVersion(version: string, constraint: string): boolean {
   const comparators = constraint.split(/[\s,]+/).filter(Boolean);
   if (comparators.length === 0) return false;
   for (const comparator of comparators) {
-    const match = comparator.match(/^(>=|<=|>|<|=|==|!=)?(.+)$/);
+    const match = comparator.match(/^(>=|<=|==|!=|>|<|=)?(.+)$/);
     if (!match) return false;
     const cmp = compareVersions(version, match[2]!);
     if (cmp === null) return false;
@@ -173,6 +173,15 @@ function evaluateCondition(condition: Condition, lookup: FieldLookup): boolean {
   return false;
 }
 
+/** The browser reports a path percent-encoded; a pattern is typed as it reads. */
+function decoded(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 export function matches(matcher: Matcher, lookup: FieldLookup): boolean {
   if ("event" in matcher) {
     const { type, value, mode } = matcher.event;
@@ -185,9 +194,13 @@ export function matches(matcher: Matcher, lookup: FieldLookup): boolean {
       );
     }
     if (type === "log") {
+      const name = lookup("event.name");
+      const signal = lookup("signal");
       if (
-        lookup("event.name") !== "browser.console" &&
-        lookup("event.name") !== "traceway.message"
+        name !== "browser.console" &&
+        name !== "traceway.message" &&
+        signal !== "console" &&
+        signal !== "messages"
       )
         return false;
       const body = String(lookup("body") ?? "").slice(0, MAX_MATCH_TEXT);
@@ -206,7 +219,7 @@ export function matches(matcher: Matcher, lookup: FieldLookup): boolean {
         expected.every((part, i) =>
           /^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(part)
             ? !!actual[i]
-            : part === actual[i],
+            : part === actual[i] || part === decoded(actual[i]!),
         )
       );
     } catch {

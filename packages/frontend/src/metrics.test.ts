@@ -311,6 +311,69 @@ describe("device metrics", () => {
     expect(payloads()[0]!.resource["traceway.sample_rate"]).toBe(1);
   });
 
+  it("uploads what was counted before a lower sample rate arrived at the rate it was counted under", async () => {
+    start();
+    client.control.applyRemote({ metrics: { sampleRate: 0.5 } });
+    await settle();
+    const first = payloads();
+    expect(first).toHaveLength(1);
+    expect(first[0]!.resource["traceway.sample_rate"]).toBe(1);
+    expect(first[0]!.metrics["browser.session"]).toBeDefined();
+  });
+
+  it("counts a session once, not once per page of it", async () => {
+    start();
+    await client.flush();
+    expect(payloads()[0]!.metrics["browser.session"]).toBeDefined();
+    await client.shutdown();
+    fetchMock.mockClear();
+
+    start();
+    longFrame(100);
+    await client.flush();
+    const [next] = payloads();
+    expect(next!.metrics["browser.long_task.duration"]).toBeDefined();
+    expect(next!.metrics["browser.session"]).toBeUndefined();
+  });
+
+  it("splits a payload that is over the body limit instead of dropping it", async () => {
+    start();
+    const recorder = (client as any).metrics;
+    for (let i = 0; i < 240; i++)
+      recorder.aggregator.count(`cells.n${i}`, 1, {
+        "url.path": `/${"x".repeat(200)}/${i}`,
+        extra: "y".repeat(200),
+      });
+    await client.flush();
+    const sent = payloads();
+    expect(sent.length).toBeGreaterThan(1);
+    const names = new Set(sent.flatMap((p) => Object.keys(p.metrics)));
+    for (let i = 0; i < 240; i += 37) expect(names.has(`cells.n${i}`)).toBe(true);
+    for (const [, init] of fetchMock.mock.calls.filter(
+      ([url]) => url === METRICS_URL,
+    ))
+      expect(new TextEncoder().encode(init.body).byteLength).toBeLessThanOrEqual(
+        60 * 1024,
+      );
+  });
+
+  it("keeps one view while the query string is rewritten in place", async () => {
+    start();
+    history.replaceState(null, "", "/search?q=a");
+    history.replaceState(null, "", "/search?q=ab");
+    history.replaceState(null, "", "/search?q=abc");
+    // The view that is open now is counted when it ends.
+    history.pushState(null, "", "/results");
+    await client.flush();
+    const views = payloads()[0]!.metrics["browser.page_view"].sum.dataPoints;
+    expect(
+      views.map((p: any) => [dims(p)["url.path"], Number(p.asDouble ?? p.asInt)]),
+    ).toEqual([
+      ["/", 1],
+      ["/search", 1],
+    ]);
+  });
+
   it("retries a failed upload once, on the next page load, as the same batch", async () => {
     status = 503;
     start();

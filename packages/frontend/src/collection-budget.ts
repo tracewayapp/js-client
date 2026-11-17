@@ -9,6 +9,8 @@ export class CollectionBudget {
   private events = 0;
   private dropped = 0;
   private readonly limits: CollectionLimits;
+  private dirty = false;
+  private writeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly token: string,
@@ -28,6 +30,7 @@ export class CollectionBudget {
 
   admit(sessionId: string | null, bytes: number, events = 1): boolean {
     if (this.sessionId !== sessionId) {
+      this.persist();
       this.sessionId = sessionId;
       this.bytes = this.events = this.dropped = 0;
       try {
@@ -51,18 +54,29 @@ export class CollectionBudget {
     }
     this.bytes += bytes;
     this.events += events;
+    this.dirty = true;
+    if (this.writeTimer === null)
+      this.writeTimer = setTimeout(() => this.persist(), 1_000);
+    return true;
+  }
+
+  /** Writes the counts for the next page of the session. Called on a timer and when the page is hidden. */
+  persist(): void {
+    if (this.writeTimer !== null) clearTimeout(this.writeTimer);
+    this.writeTimer = null;
+    if (!this.dirty) return;
+    this.dirty = false;
     try {
       sessionStorage.setItem(
         `traceway:budget:${this.token}`,
         JSON.stringify({
-          sessionId,
+          sessionId: this.sessionId,
           bytes: this.bytes,
           events: this.events,
           dropped: this.dropped,
         }),
       );
     } catch {}
-    return true;
   }
 
   snapshot(): Record<string, number> {

@@ -7,7 +7,7 @@ const budgets = [
   { file: "packages/frontend/dist/traceway.iife.global.js", maxKb: 145 },
   // Includes the pre-OpAMP /api/report compatibility adapter, the long task and route timing instrumentations,
   // the metrics recorder, and sequence listeners with per-tab navigation recovery.
-  { file: "packages/frontend/dist/index.mjs", maxKb: 38 },
+  { file: "packages/frontend/dist/index.mjs", maxKb: 41 },
   { file: "packages/opamp/dist/index.mjs", maxKb: 6 },
 ];
 

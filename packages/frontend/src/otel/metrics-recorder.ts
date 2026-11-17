@@ -4,6 +4,7 @@ import {
   normalizePath,
   unitHash,
   type ControlState,
+  type MetricBatch,
   type MetricDims,
   type MetricResource,
 } from "@tracewayapp/core";
@@ -75,7 +76,7 @@ const DAY_MS = 86_400_000;
 /** Rejections a second attempt would get too. */
 const PERMANENT_STATUSES = [400, 401, 403, 413, 422];
 const CUSTOM_NAME = /^[a-z][a-z0-9_.]{0,62}$/;
-const RESERVED_PREFIX = /^(browser|app|traceway)\./;
+const RESERVED_PREFIX = /^(browser|app|traceway|custom)\./;
 const RAGE_CLICKS = 3;
 const RAGE_WINDOW_MS = 1000;
 const LONG_TASK_BUDGET_MS = 50;
@@ -88,7 +89,7 @@ export interface PerformanceSink {
     type: string,
     scripts?: ReadonlyArray<{ sourceURL?: string; duration: number }>,
   ): void;
-  routeChanged(): void;
+  routeChanged(type?: "push" | "replace" | "traverse"): void;
   routeTiming(durationMs: number, outcome: string, type: string): void;
 }
 
@@ -208,6 +209,8 @@ export class MetricsRecorder implements PerformanceSink {
   private clicks: { target: string; timeMs: number }[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private countedSession: string | null = null;
+  /** The sample rate the cells collected so far were recorded under; a payload states one rate. */
+  private batchRate: number;
   private lastSession: string | null = null;
   private readonly pending: PendingMetrics | null;
   private readonly inFlight = new Set<string>();
@@ -223,6 +226,7 @@ export class MetricsRecorder implements PerformanceSink {
 
   constructor(private readonly deps: MetricsRecorderDeps) {
     this.view = this.initialView = this.newView(false);
+    this.batchRate = deps.control.metrics()?.sampleRate ?? 0;
     this.pending = deps.storage ? new PendingMetrics(deps.storage) : null;
     for (const key of Object.keys(deps.dimensions ?? {}))
       this.setDimension(key, deps.dimensions![key]!);
@@ -252,8 +256,19 @@ export class MetricsRecorder implements PerformanceSink {
     this.timer = null;
   }
 
-  /** Remote settings changed: the flush interval may have. */
+  /**
+   * Remote settings changed: the flush interval may have, and the sample rate. What was recorded under the old
+   * rate is uploaded with it first, since the server weights a whole payload by the rate it states: counts
+   * taken at rate 1 before the first settings arrived must not be multiplied by a later 1/rate.
+   */
   configure(): void {
+    const rate = this.deps.control.metrics()?.sampleRate ?? 0;
+    if (rate !== this.batchRate) {
+      // Switched off means nothing more is sent, including what was already measured.
+      if (rate > 0) this.upload(false);
+      else this.aggregator.drain();
+      this.batchRate = rate;
+    }
     if (this.timer !== null) this.schedule();
   }
 
@@ -363,14 +378,22 @@ export class MetricsRecorder implements PerformanceSink {
       : null;
   }
 
-  sessionStarted(sessionId: string): void {
+  /** `resumed`: the session began on an earlier page of this tab, which counted it. */
+  sessionStarted(sessionId: string, resumed = false): void {
     this.user();
-    if (this.countedSession === sessionId || !this.active()) return;
+    if (this.countedSession === sessionId) return;
+    if (resumed) {
+      this.countedSession = sessionId;
+      return;
+    }
+    if (!this.active()) return;
     this.countedSession = sessionId;
     this.aggregator.count(METRIC_SESSION, 1, this.dims(this.view));
   }
 
-  routeChanged(): void {
+  routeChanged(type?: "push" | "replace" | "traverse"): void {
+    // Rewriting the query string in place (a search box, a filter) is the same view.
+    if (type === "replace" && currentPath() === this.view.path) return;
     this.closeView();
     this.view = this.newView(true);
   }
@@ -639,18 +662,27 @@ export class MetricsRecorder implements PerformanceSink {
 
   /** `final` when the page is going away: the open view ends here and the upload must outlive the page. */
   flush(final = false): void {
-    const settings = this.deps.control.metrics();
     if (this.active()) {
       this.commitVitals();
       if (final) this.closeView();
     }
+    this.upload(final);
+  }
+
+  private upload(final: boolean): void {
     const batch = this.aggregator.drain();
-    if (!batch || !settings || !(settings.sampleRate > 0)) return;
+    if (!batch || !this.deps.control.metrics() || !(this.batchRate > 0))
+      return;
+    this.sendBatch(batch, final);
+  }
+
+  /** A payload over the server's body limit is sent as two; only a single cell that is too large is dropped. */
+  private sendBatch(batch: MetricBatch, final: boolean): void {
     const all = this.deps.resource();
     const id = batchId();
     const resource: MetricResource = {
       "traceway.metrics": "aggregated",
-      "traceway.sample_rate": settings.sampleRate,
+      "traceway.sample_rate": this.batchRate,
       "traceway.sent_at": Date.now(),
       "traceway.batch_id": id,
     };
@@ -667,7 +699,29 @@ export class MetricsRecorder implements PerformanceSink {
       resource[`custom.${key}`] = value;
     const payload = encodeMetrics(batch, resource, this.deps.scope);
     const body = JSON.stringify(payload);
-    if (body.length > MAX_BODY_BYTES) return;
+    if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) {
+      const cells = batch.histograms.length + batch.sums.length;
+      if (cells < 2) return;
+      const half = Math.ceil(cells / 2);
+      const cut = Math.min(half, batch.histograms.length);
+      this.sendBatch(
+        {
+          ...batch,
+          histograms: batch.histograms.slice(0, cut),
+          sums: batch.sums.slice(0, half - cut),
+        },
+        final,
+      );
+      this.sendBatch(
+        {
+          ...batch,
+          histograms: batch.histograms.slice(cut),
+          sums: batch.sums.slice(half - cut),
+        },
+        final,
+      );
+      return;
+    }
     // A page that is going away may never see the answer, so its payload is stored first and removed on success.
     if (final) this.pending?.add(id, payload);
     this.inFlight.add(id);

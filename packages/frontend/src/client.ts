@@ -3,7 +3,7 @@ import {
   hasSequenceEvent,
 } from "./sequence-listener.js";
 import { LegacyTransport } from "./transport/legacy.js";
-import { logsToJson, spansToJson } from "./persistence/otlp-json.js";
+import { forgetJson, recordJson } from "./persistence/otlp-json.js";
 import {
   trace,
   SpanStatusCode,
@@ -42,6 +42,7 @@ import {
   TracerProvider,
 } from "@opentelemetry/sdk-trace";
 import type {
+  FieldLookup,
   FiredTrigger,
   Settings,
   SignalName,
@@ -117,6 +118,10 @@ import {
 
 export const SDK_VERSION = "2.1.0";
 const SCOPE_NAME = "@tracewayapp/frontend";
+const HEALTH_DELAY_MS = 1_000;
+const MAX_HEALTH_DELAY_MS = 300_000;
+/** A flush hands the whole buffer to the batch processor at once; its default queue of 2048 drops the rest. */
+const FLUSH_QUEUE_SIZE = 16_384;
 
 export const DEFAULT_IGNORE_PATTERNS: Array<string | RegExp> = [
   "Failed to fetch",
@@ -296,7 +301,11 @@ export class TracewayFrontendClient {
   private sequencePageObserved = false;
   private savedTriggerProgress = "";
 
+  private savedProgressVersion = -1;
+
   private saveTriggerProgress(): void {
+    if (this.triggers.progressVersion === this.savedProgressVersion) return;
+    this.savedProgressVersion = this.triggers.progressVersion;
     const progress = JSON.stringify({
       sessionId: this.sessions.currentId(),
       progress: this.triggers.snapshotProgress(),
@@ -324,6 +333,10 @@ export class TracewayFrontendClient {
   private readonly errorLimiter: ErrorLimiter;
   private readonly collectionBudget: CollectionBudget;
   private healthTimer: ReturnType<typeof setTimeout> | null = null;
+  private healthDelayMs = HEALTH_DELAY_MS;
+  private healthReported = false;
+  /** Whether the server has answered (or failed to) since this page started; see runCaptures. */
+  private capturesConfirmed = false;
   private readonly logSink: BatchLogRecordProcessor;
   private readonly spanSink: BatchSpanProcessor;
   private globalAttributes: Record<string, string>;
@@ -470,6 +483,7 @@ export class TracewayFrontendClient {
         (eventName) => this.canExportLog(eventName),
       ),
       scheduledDelayMillis: exportDelay,
+      maxQueueSize: FLUSH_QUEUE_SIZE,
     });
     this.spanSink = new BatchSpanProcessor({
       exporter: new PersistingSpanExporter(
@@ -484,6 +498,7 @@ export class TracewayFrontendClient {
         () => this.control.canExport("network"),
       ),
       scheduledDelayMillis: exportDelay,
+      maxQueueSize: FLUSH_QUEUE_SIZE,
     });
     if (options.telemetry) {
       this.sessionPersistence = new TelemetryPersistence(
@@ -548,11 +563,7 @@ export class TracewayFrontendClient {
           )
             return true;
           const body =
-            item.kind === "log"
-              ? logsToJson([item.record])
-              : item.kind === "span"
-                ? spansToJson([item.span])
-                : item.batch.body;
+            item.kind === "stored" ? item.batch.body : recordJson(item);
           let events = 1;
           if (item.kind === "stored") {
             const request = JSON.parse(body);
@@ -697,10 +708,14 @@ export class TracewayFrontendClient {
       longTasks.sink = this.metrics;
       instrumentations.push(longTasks);
     }
-    if (this.options.captureRouteTiming !== false) {
-      this.routeTiming = new RouteTimingInstrumentation();
-      this.routeTiming.sink = this.metrics;
-      instrumentations.push(this.routeTiming);
+    // Route changes also split the page's metrics into views, so they are followed even when the route
+    // timing event itself is switched off.
+    const measureRoutes = this.options.captureRouteTiming !== false;
+    if (measureRoutes || this.options.captureMetrics !== false) {
+      const routes = new RouteTimingInstrumentation(measureRoutes);
+      routes.sink = this.metrics;
+      if (measureRoutes) this.routeTiming = routes;
+      instrumentations.push(routes);
     }
     this.deregisterInstrumentations = registerInstrumentations({
       instrumentations,
@@ -717,6 +732,10 @@ export class TracewayFrontendClient {
       this.options.transport !== "legacy"
     )
       this.startOpamp();
+    if (!this.opamp) {
+      this.legacy.possible = this.legacy.enabled;
+      this.confirmCaptures();
+    }
     for (const capture of this.readLocalCaptures()) {
       this.streamFor(
         capture.signals,
@@ -884,8 +903,20 @@ export class TracewayFrontendClient {
   /** Without the metrics: when the page is hidden the recorder uploads them itself, after the web vitals arrive. */
   private async flushQueued(): Promise<void> {
     this.persistBuffer();
+    this.collectionBudget.persist();
+    // Started before anything is awaited: while a page unloads, the storage writes below finish in a later
+    // task that never runs, and requests not yet started by then are never sent.
+    const sent = Promise.all([
+      this.logSink.forceFlush(),
+      this.sessionSink?.forceFlush(),
+      this.spanSink.forceFlush(),
+      this.recordings.flush(),
+    ]);
+    sent.catch(() => undefined);
     await this.persistence.flush();
     await this.sessionPersistence?.flush();
+    // What the storage writes above queued for sending.
+    await sent;
     await Promise.all([
       this.logSink.forceFlush(),
       this.sessionSink?.forceFlush(),
@@ -930,6 +961,8 @@ export class TracewayFrontendClient {
 
   private applySettings(): void {
     const settings = this.control.settings();
+    // First: what was measured under the previous sample rate is closed off before anything else is recorded.
+    this.metrics.configure();
     this.runCaptures(settings);
     this.persistence.configure();
     this.sessionPersistence?.configure();
@@ -958,17 +991,16 @@ export class TracewayFrontendClient {
     ) {
       this.stopSequenceActions = listenForSequenceActions((type, match) => {
         if (!this.control.enabled() || !this.sessions.currentId()) return;
-        const fired = this.triggers.observe({
-          timeMs: Date.now(),
-          lookup: (key) =>
-            key === "browser.action"
-              ? type
-              : key === "browser.target.matches"
-                ? match
-                : undefined,
-        });
-        this.saveTriggerProgress();
-        for (const trigger of fired) this.runTrigger(trigger);
+        this.runFired(
+          this.triggers.observe({
+            timeMs: Date.now(),
+            lookup: this.pageEventLookup({
+              "browser.action": type,
+              "browser.target.matches": match,
+            }),
+            sequence: type,
+          }),
+        );
       });
     }
     if (
@@ -979,20 +1011,50 @@ export class TracewayFrontendClient {
       typeof location !== "undefined"
     ) {
       this.sequencePageObserved = true;
-      const fired = this.triggers.observe({
-        timeMs: Date.now(),
-        lookup: (key) =>
-          key === "event.name"
-            ? "browser.navigation"
-            : key === "attributes.url.full"
-              ? location.href
-              : undefined,
-      });
-      this.saveTriggerProgress();
-      for (const trigger of fired) this.runTrigger(trigger);
+      this.runFired(
+        this.triggers.observe({
+          timeMs: Date.now(),
+          lookup: this.pageEventLookup({
+            "event.name": "browser.navigation",
+            signal: "navigation",
+            "attributes.url.full": location.href,
+          }),
+        }),
+      );
     }
-    this.metrics.configure();
     this.applyReplay();
+  }
+
+  /** The fields of an event the page reports itself, next to what every record can be matched on. */
+  private pageEventLookup(fields: Record<string, unknown>): FieldLookup {
+    return (key) => {
+      if (Object.prototype.hasOwnProperty.call(fields, key)) return fields[key];
+      if (key.startsWith("global."))
+        return this.globalAttributes[key.slice("global.".length)];
+      if (key.startsWith("resource."))
+        return this.resourceAttributes[key.slice("resource.".length)];
+      if (key === ATTR_SESSION_ID)
+        return this.sessions.currentId() ?? undefined;
+      return undefined;
+    };
+  }
+
+  private runFired(fired: FiredTrigger[]): void {
+    this.saveTriggerProgress();
+    if (fired.length === 0) return;
+    for (const trigger of fired) this.runTrigger(trigger);
+    this.saveTriggerLimits();
+  }
+
+  private saveTriggerLimits(): void {
+    storageSet(
+      `traceway:trigger-limits:${this.token}`,
+      JSON.stringify({
+        sessionId: this.sessions.currentId(),
+        limits: this.triggers.sessionLimits,
+      }),
+      true,
+    );
   }
 
   private persistBuffer(): void {
@@ -1162,6 +1224,7 @@ export class TracewayFrontendClient {
       onConnected: () => {
         connected = true;
         this.legacy.enabled = false;
+        this.legacy.possible = false;
       },
       onUnsupported: () => {
         if (canUseLegacy) {
@@ -1176,8 +1239,18 @@ export class TracewayFrontendClient {
           );
       },
     });
+    this.legacy.possible = canUseLegacy;
     this.opamp.start();
-    this.legacy.ready = this.opamp.poll();
+    this.legacy.ready = this.opamp.poll().then(
+      () => this.confirmCaptures(),
+      () => this.confirmCaptures(),
+    );
+  }
+
+  private confirmCaptures(): void {
+    if (this.capturesConfirmed) return;
+    this.capturesConfirmed = true;
+    this.runCaptures(this.control.settings());
   }
 
   /**
@@ -1248,7 +1321,8 @@ export class TracewayFrontendClient {
     if (!this.opamp || this.describeTimer !== null) return;
     this.describeTimer = setTimeout(() => {
       this.describeTimer = null;
-      void this.opamp?.poll();
+      // Not poll(): that joins a poll already under way, which described the client before the change.
+      void this.opamp?.refresh();
     }, 2_000);
   }
 
@@ -1258,7 +1332,9 @@ export class TracewayFrontendClient {
 
   /**
    * Starts the dashboard's captures aimed at this client. The lookback flush runs once per capture, remembered
-   * across pages; streaming lasts until the capture's end on every page that sees it.
+   * across pages; streaming lasts until the capture's end on every page that sees it. A capture known only from
+   * the cached settings keeps streaming, but starts nothing new until the server has answered: it may have been
+   * cancelled while the device was away.
    */
   private runCaptures(settings: Settings): void {
     if (!this.started) return;
@@ -1272,6 +1348,7 @@ export class TracewayFrontendClient {
       })),
     );
     this.scheduleOverrideExpiry();
+    if (!this.capturesConfirmed) return;
     const now = Date.now();
     let done: Array<{ id: string; untilMs: number }> = [];
     try {
@@ -1336,9 +1413,13 @@ export class TracewayFrontendClient {
           "traceway.replay.failed_segments": this.recordings.failedSegments,
         },
       });
+      // The session row needs to learn once that data was dropped; its closing event carries the totals.
       const session = this.sessions.current();
-      if (session) this.emitSessionEvent(EVENT_SESSION_UPDATE, session);
-    }, 1000);
+      if (session && !this.healthReported)
+        this.emitSessionEvent(EVENT_SESSION_UPDATE, session);
+      this.healthReported = true;
+      this.healthDelayMs = Math.min(this.healthDelayMs * 2, MAX_HEALTH_DELAY_MS);
+    }, this.healthDelayMs);
   }
 
   private enrichLog(record: SdkLogRecord, signal: RecordSignal): boolean {
@@ -1461,7 +1542,6 @@ export class TracewayFrontendClient {
     ) {
       this.sessionSink?.onEmit(observed.item.record as SdkLogRecord);
     }
-    this.persistence.checkpoint(this.sessions.currentId());
     if (observed.signal === "control") return;
     if (this.options.captureHttpServerErrors && observed.item.kind === "span") {
       const status = observed.item.span.attributes["http.response.status_code"];
@@ -1478,10 +1558,23 @@ export class TracewayFrontendClient {
       }
     }
     if (!this.control.enabled()) return;
-    const fired = this.triggers.observe({
-      timeMs: observed.timeMs,
-      lookup: observed.lookup,
-    });
+    // The page's own load is one navigation for triggers, whichever is seen first: the record the navigation
+    // instrumentation emits at DOMContentLoaded, or the one applySettings makes up when triggers arrive later.
+    let pageLoadSeen = false;
+    if (
+      observed.signal === "navigation" &&
+      observed.lookup("attributes.browser.navigation.same_document") === false
+    ) {
+      pageLoadSeen = this.sequencePageObserved;
+      if (hasSequenceEvent(this.control.settings().triggers, ["navigation"]))
+        this.sequencePageObserved = true;
+    }
+    const fired = pageLoadSeen
+      ? []
+      : this.triggers.observe({
+          timeMs: observed.timeMs,
+          lookup: observed.lookup,
+        });
     if (observed.signal === "errors" && observed.item.kind === "log") {
       const record = observed.item.record as SdkLogRecord;
       const defaultTrigger = this.control
@@ -1523,17 +1616,10 @@ export class TracewayFrontendClient {
         this.collectionBudget.snapshot(),
       ))
         record.setAttribute(key, value);
+      forgetJson(record);
     }
-    if (fired.length > 0)
-      storageSet(
-        `traceway:trigger-limits:${this.token}`,
-        JSON.stringify({
-          sessionId: this.sessions.currentId(),
-          limits: this.triggers.sessionLimits,
-        }),
-        true,
-      );
     for (const trigger of fired) this.runTrigger(trigger);
+    if (fired.length > 0) this.saveTriggerLimits();
     if (observed.signal === "errors" && observed.item.kind === "log") {
       const record = observed.item.record as SdkLogRecord;
       if (
@@ -1546,6 +1632,7 @@ export class TracewayFrontendClient {
             ? "collection_limit"
             : "buffer_unavailable",
         );
+      forgetJson(record);
     }
     this.saveTriggerProgress();
     if (fired.length > 0) this.router?.sendIfStreaming(observed);
@@ -1572,14 +1659,6 @@ export class TracewayFrontendClient {
         fired.trigger.steps,
       );
     }
-    storageSet(
-      `traceway:trigger-limits:${this.token}`,
-      JSON.stringify({
-        sessionId: this.sessions.currentId(),
-        limits: this.triggers.sessionLimits,
-      }),
-      true,
-    );
     if (fired.trigger.name)
       attributes["traceway.trigger.name"] = fired.trigger.name;
     this.logger?.emit({
@@ -1673,7 +1752,19 @@ export class TracewayFrontendClient {
     const running = captures.find((c) => c.triggerId === triggerId);
     if (running) {
       running.untilMs = Math.max(running.untilMs, untilMs);
+      // Another tab started it. This tab has its own session and buffer, so its lookback goes up once too.
+      if (this.markLocalCaptureFlushed(running.id))
+        this.runAction(
+          {
+            type: "flush",
+            lookbackSeconds: action.lookbackSeconds ?? 60,
+            signals,
+            replay,
+          },
+          exceptionId,
+        );
     } else {
+      this.markLocalCaptureFlushed(`${triggerId}:${now}`);
       captures.push({
         id: `${triggerId}:${now}`,
         triggerId,
@@ -1709,6 +1800,21 @@ export class TracewayFrontendClient {
       `local:${triggerId}`,
     );
     storageSet(this.localCapturesKey(), JSON.stringify(captures));
+  }
+
+  /** Remembers, per tab, that a local capture's lookback was uploaded; false when it already was. */
+  private markLocalCaptureFlushed(id: string): boolean {
+    const key = `traceway:local-captures-flushed:${this.token}`;
+    let flushed: unknown = [];
+    try {
+      flushed = JSON.parse(storageGet(key, true) ?? "[]");
+    } catch {
+      flushed = [];
+    }
+    const ids = Array.isArray(flushed) ? flushed.map(String) : [];
+    if (ids.includes(id)) return false;
+    storageSet(key, JSON.stringify([...ids.slice(-19), id]), true);
+    return true;
   }
 
   /** `capture` brings back signals rules switched off, see `StreamOverride.includeOff`. */
@@ -1773,6 +1879,8 @@ export class TracewayFrontendClient {
 
   private onSessionStart(session: SessionInfo, resumed: boolean): void {
     this.collectionBudget.admit(session.id, 0, 0);
+    this.healthDelayMs = HEALTH_DELAY_MS;
+    this.healthReported = false;
     this.unloading = false;
     this.triggers.resetSession();
     try {
@@ -1790,7 +1898,7 @@ export class TracewayFrontendClient {
     );
     this.applyReplay();
     this.describeChanged();
-    this.metrics.sessionStarted(session.id);
+    this.metrics.sessionStarted(session.id, resumed);
   }
 
   private onSessionEnd(
@@ -1801,14 +1909,18 @@ export class TracewayFrontendClient {
     this.unloading = unloading;
     // Before the session id changes: a batch carries one session's sample rate.
     this.metrics.flush(unloading);
-    if (unloading) this.persistBuffer();
-    this.replay.onSessionEnd(unloading);
+    // The closing event leaves before the replay: an unloading page may send 64 KiB in all, and the request
+    // that goes over is the one that is lost.
     this.emitSessionEvent(EVENT_SESSION_END, session, endedAtMs);
+    if (unloading) {
+      void this.logSink.forceFlush().catch(() => undefined);
+      void this.sessionSink?.forceFlush().catch(() => undefined);
+    }
+    this.replay.onSessionEnd(unloading);
     if (unloading) void this.flushQueued().catch(() => undefined);
   }
 
   private onHidden(): void {
-    this.persistBuffer();
     this.replay.onHidden();
     void this.flushQueued().catch(() => undefined);
   }

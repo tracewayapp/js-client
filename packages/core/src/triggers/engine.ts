@@ -1,10 +1,16 @@
-import type { Trigger, TriggerAction } from "../settings/types.js";
+import type { Matcher, Trigger, TriggerAction, TriggerStep } from "../settings/types.js";
 import type { FieldLookup } from "./matcher.js";
 import { matches } from "./matcher.js";
 
 export interface ObservedEvent {
   timeMs: number;
   lookup: FieldLookup;
+  /**
+   * Set for the click and hover events the page feeds in directly. They answer
+   * almost no field, so only a step that names this event type may match them:
+   * a negated condition would otherwise match every click.
+   */
+  sequence?: "click" | "hover";
 }
 
 export interface FiredTrigger {
@@ -14,21 +20,42 @@ export interface FiredTrigger {
   cause: ObservedEvent;
 }
 
+/** A completed prefix waiting for its next step: when it completed, and the hit it started counting from. */
+interface Anchor {
+  at: number;
+  from: number;
+}
+
+interface StepState {
+  /** Unused on the first step, which is always open. Oldest first. */
+  anchors: Anchor[];
+  /** Times of the records counted towards this step, when it needs more than one. */
+  hits: number[];
+  /** Hits dropped from the front of `hits`, so an anchor's `from` stays valid. */
+  base: number;
+}
+
 interface TriggerState {
   signature: string;
-  step: number;
-  lastStepMs: number;
-  /** Times of the records counted towards the current step, when it needs more than one. */
-  hits: number[];
+  steps: StepState[];
+  /** Per step, the page event types its matcher names. */
+  kinds: Array<Set<string>>;
   fires: number;
   lastFireMs: number;
 }
 
+const MAX_ANCHORS = 8;
+const MAX_HITS = 1000;
+const MAX_RESTORE_AGE_MS = 86_400_000;
+
 /**
  * Runs the server-defined triggers against every event on the device. A
- * trigger is a sequence of steps; each matching event advances it, a step
- * that arrives later than its `withinSeconds` starts it over, and the last
- * step fires the trigger's actions. Progress and fire counts are per session.
+ * trigger is a sequence of steps. Every way the sequence could be under way is
+ * followed at once: each step remembers when the steps before it last
+ * completed, so an event that could also start the sequence over does not
+ * discard the progress already made. A step that arrives later than its
+ * `withinSeconds` is dropped, and the last step fires the trigger's actions.
+ * Progress and fire counts are per session.
  */
 export class TriggerEngine {
   private triggers: Trigger[] = [];
@@ -36,6 +63,8 @@ export class TriggerEngine {
   sessionLimits: Record<string, { fires: number; lastFireMs: number }> =
     Object.create(null);
   private states = new Map<string, TriggerState>();
+  /** Changes whenever progress does, so the caller can skip saving it. */
+  progressVersion = 0;
 
   constructor(private readonly random: () => number = Math.random) {}
 
@@ -45,7 +74,7 @@ export class TriggerEngine {
     );
     const next = new Map<string, TriggerState>();
     for (const trigger of this.triggers) {
-      const signature = JSON.stringify([trigger.steps, trigger.actions]);
+      const signature = hash(JSON.stringify([trigger.steps, trigger.actions]));
       const prev = this.states.get(trigger.id);
       next.set(
         trigger.id,
@@ -53,9 +82,8 @@ export class TriggerEngine {
           ? prev
           : {
               signature,
-              step: 0,
-              lastStepMs: 0,
-              hits: [],
+              steps: trigger.steps.map(emptyStep),
+              kinds: trigger.steps.map((step) => eventKinds(step.match)),
               fires: prev?.fires ?? this.sessionLimits[trigger.id]?.fires ?? 0,
               lastFireMs:
                 prev?.lastFireMs ??
@@ -65,67 +93,105 @@ export class TriggerEngine {
       );
     }
     this.states = next;
+    this.progressVersion++;
   }
 
   snapshotProgress(): unknown {
     return [...this.states.entries()]
-      .filter(([, s]) => s.step > 0)
+      .filter(([, s]) =>
+        s.steps.some((step) => step.anchors.length > 0 || step.hits.length > 0),
+      )
       .map(([id, s]) => ({
         id,
+        v: 2,
         signature: s.signature,
-        step: s.step,
-        lastStepMs: s.lastStepMs,
-        hits: s.hits.slice(-1000),
+        steps: s.steps.map((step) => ({
+          anchors: step.anchors.map((a) => [
+            a.at,
+            Math.max(0, a.from - step.base),
+          ]),
+          hits: step.hits,
+        })),
       }));
   }
 
   restoreProgress(saved: unknown, now = Date.now()): void {
     if (!Array.isArray(saved)) return;
     for (const item of saved.slice(0, 20)) {
-      if (!item || typeof item !== "object") continue;
+      if (!item || typeof item !== "object" || item.v !== 2) continue;
       const state = this.states.get(item.id);
       const trigger = this.triggers.find((t) => t.id === item.id);
       if (
         !state ||
         !trigger ||
         state.signature !== item.signature ||
-        !Number.isInteger(item.step) ||
-        item.step < 1 ||
-        item.step >= trigger.steps.length
+        !Array.isArray(item.steps) ||
+        item.steps.length !== trigger.steps.length
       )
         continue;
-      const age = now - item.lastStepMs;
-      if (
-        !Number.isFinite(age) ||
-        age < 0 ||
-        age > (trigger.steps[item.step]!.withinSeconds ?? 300) * 1000
-      )
-        continue;
-      state.step = item.step;
-      state.lastStepMs = item.lastStepMs;
-      state.hits = Array.isArray(item.hits)
-        ? item.hits
-            .filter(
-              (v: unknown) =>
-                typeof v === "number" &&
-                Number.isFinite(v) &&
-                v <= now &&
-                v >= now - 86400000,
-            )
-            .slice(-1000)
-        : [];
+      state.steps = trigger.steps.map((step, k) => {
+        const from = item.steps[k];
+        const restored = emptyStep();
+        if (!from || typeof from !== "object") return restored;
+        if ((step.count ?? 1) > 1) {
+          const oldest = step.periodSeconds
+            ? now - step.periodSeconds * 1000
+            : now - MAX_RESTORE_AGE_MS;
+          restored.hits = Array.isArray(from.hits)
+            ? from.hits
+                .filter(
+                  (v: unknown) =>
+                    typeof v === "number" &&
+                    Number.isFinite(v) &&
+                    v <= now &&
+                    v >= oldest,
+                )
+                .slice(-MAX_HITS)
+            : [];
+        }
+        if (k === 0 || !Array.isArray(from.anchors)) {
+          if (k > 0) restored.hits = [];
+          return restored;
+        }
+        const maxAge = step.withinSeconds
+          ? step.withinSeconds * 1000
+          : MAX_RESTORE_AGE_MS;
+        const dropped =
+          Array.isArray(from.hits) && (step.count ?? 1) > 1
+            ? from.hits.length - restored.hits.length
+            : 0;
+        for (const anchor of from.anchors.slice(0, MAX_ANCHORS)) {
+          if (!Array.isArray(anchor)) continue;
+          const [at, start] = anchor;
+          if (
+            typeof at !== "number" ||
+            !Number.isFinite(at) ||
+            at > now ||
+            now - at > maxAge ||
+            !Number.isInteger(start) ||
+            start < 0
+          )
+            continue;
+          restored.anchors.push({
+            at,
+            from: Math.min(restored.hits.length, Math.max(0, start - dropped)),
+          });
+        }
+        if (restored.anchors.length === 0) restored.hits = [];
+        return restored;
+      });
+      this.progressVersion++;
     }
   }
 
   resetSession(): void {
     this.sessionLimits = Object.create(null);
     for (const state of this.states.values()) {
-      state.step = 0;
-      state.lastStepMs = 0;
-      state.hits = [];
+      state.steps = state.steps.map(emptyStep);
       state.fires = 0;
       state.lastFireMs = 0;
     }
+    this.progressVersion++;
   }
 
   restoreSessionLimits(saved: unknown): void {
@@ -156,11 +222,6 @@ export class TriggerEngine {
     for (const trigger of this.triggers) {
       const state = this.states.get(trigger.id);
       if (!state) continue;
-      if (state.step > 0) {
-        const within = trigger.steps[state.step]!.withinSeconds;
-        if (within && event.timeMs - state.lastStepMs > within * 1000)
-          restart(state);
-      }
       if (!this.advance(trigger, state, event)) continue;
       if (!this.mayFire(trigger, state, event.timeMs)) continue;
       state.fires++;
@@ -174,32 +235,69 @@ export class TriggerEngine {
     return fired;
   }
 
-  /** Feeds one record to a trigger; true when it completed the last step. */
+  /**
+   * Feeds one record to a trigger; true when it completed the last step. Later
+   * steps are tried first, so the progress a record makes on one step is not
+   * also counted towards the next one.
+   */
   private advance(
     trigger: Trigger,
     state: TriggerState,
     event: ObservedEvent,
   ): boolean {
-    if (!matches(trigger.steps[state.step]!.match, event.lookup)) {
-      if (state.step === 0 || !matches(trigger.steps[0]!.match, event.lookup))
-        return false;
-      restart(state);
-    }
-    const step = trigger.steps[state.step]!;
-    const needed = step.count ?? 1;
-    if (needed > 1) {
-      state.hits.push(event.timeMs);
-      if (step.periodSeconds) {
-        const cutoff = event.timeMs - step.periodSeconds * 1000;
-        state.hits = state.hits.filter((t) => t >= cutoff);
+    const last = trigger.steps.length - 1;
+    const now = event.timeMs;
+    let completed = false;
+    for (let k = last; k >= 1 && !completed; k--) {
+      const step = trigger.steps[k]!;
+      const at = state.steps[k]!;
+      if (at.anchors.length === 0) continue;
+      if (step.withinSeconds) {
+        const oldest = now - step.withinSeconds * 1000;
+        if (at.anchors[0]!.at < oldest) {
+          at.anchors = at.anchors.filter((a) => a.at >= oldest);
+          if (at.anchors.length === 0) at.hits = [];
+          this.progressVersion++;
+          if (at.anchors.length === 0) continue;
+        }
       }
-      if (state.hits.length < needed) return false;
+      if (!stepMatches(step, state.kinds[k]!, event)) continue;
+      this.progressVersion++;
+      if ((step.count ?? 1) > 1) {
+        countHit(at, step, now);
+        const counted =
+          at.base + at.hits.length - Math.max(at.anchors[0]!.from, at.base);
+        if (counted < step.count!) continue;
+        at.anchors.shift();
+        if (at.anchors.length === 0) at.hits = [];
+      } else {
+        at.anchors = [];
+      }
+      if (k === last) completed = true;
+      else open(state.steps[k + 1]!, trigger.steps[k + 1]!, now);
     }
-    state.hits = [];
-    state.step++;
-    state.lastStepMs = event.timeMs;
-    if (state.step < trigger.steps.length) return false;
-    state.step = 0;
+    if (!completed) {
+      const step = trigger.steps[0]!;
+      if (!stepMatches(step, state.kinds[0]!, event)) return false;
+      const first = state.steps[0]!;
+      if ((step.count ?? 1) > 1) {
+        this.progressVersion++;
+        countHit(first, step, now);
+        if (first.hits.length < step.count!) return false;
+        first.hits = [];
+        first.base = 0;
+      }
+      if (last === 0) completed = true;
+      else {
+        this.progressVersion++;
+        open(state.steps[1]!, trigger.steps[1]!, now);
+      }
+    }
+    if (!completed) return false;
+    if (last > 0) {
+      state.steps = state.steps.map(emptyStep);
+      this.progressVersion++;
+    }
     return true;
   }
 
@@ -230,7 +328,56 @@ export class TriggerEngine {
   }
 }
 
-function restart(state: TriggerState): void {
-  state.step = 0;
-  state.hits = [];
+function emptyStep(): StepState {
+  return { anchors: [], hits: [], base: 0 };
+}
+
+function countHit(at: StepState, step: TriggerStep, now: number): void {
+  at.hits.push(now);
+  let drop = Math.max(0, at.hits.length - MAX_HITS);
+  if (step.periodSeconds) {
+    const cutoff = now - step.periodSeconds * 1000;
+    while (drop < at.hits.length && at.hits[drop]! < cutoff) drop++;
+  }
+  if (drop > 0) {
+    at.hits.splice(0, drop);
+    at.base += drop;
+  }
+}
+
+/** Records that the steps before this one just completed. */
+function open(at: StepState, step: TriggerStep, now: number): void {
+  if ((step.count ?? 1) <= 1) {
+    at.anchors = [{ at: now, from: 0 }];
+    return;
+  }
+  const anchor = { at: now, from: at.base + at.hits.length };
+  if (at.anchors.length >= MAX_ANCHORS) at.anchors[MAX_ANCHORS - 1] = anchor;
+  else at.anchors.push(anchor);
+}
+
+function stepMatches(
+  step: TriggerStep,
+  kinds: Set<string>,
+  event: ObservedEvent,
+): boolean {
+  if (event.sequence && !kinds.has(event.sequence)) return false;
+  return matches(step.match, event.lookup);
+}
+
+function eventKinds(matcher: Matcher, into = new Set<string>()): Set<string> {
+  if ("event" in matcher) into.add(matcher.event.type);
+  else if ("all" in matcher) for (const m of matcher.all) eventKinds(m, into);
+  else if ("any" in matcher) for (const m of matcher.any) eventKinds(m, into);
+  else if ("not" in matcher) eventKinds(matcher.not, into);
+  return into;
+}
+
+function hash(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `${text.length.toString(36)}.${(h >>> 0).toString(36)}`;
 }

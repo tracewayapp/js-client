@@ -16,8 +16,11 @@ interface Batch {
 }
 
 const MAX_SEGMENTS_PER_REQUEST = 100;
-/** Browsers cap all in-flight keepalive bodies of a page at 64 KiB. */
-const KEEPALIVE_BUDGET_BYTES = 60 * 1024;
+/**
+ * Browsers cap all in-flight keepalive bodies of a page at 64 KiB. Replay takes what is left after the room
+ * kept for the session's closing event, which must not be the request that is refused.
+ */
+const KEEPALIVE_BUDGET_BYTES = 44 * 1024;
 const RETRY_DELAYS_MS = [5_000, 30_000, 120_000];
 const PERMANENT_FAILURES = new Set([400, 401, 403, 404, 413, 422]);
 
