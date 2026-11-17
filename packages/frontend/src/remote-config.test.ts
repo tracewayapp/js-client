@@ -136,7 +136,10 @@ describe("remote config over OpAMP", () => {
     await vi.waitFor(() =>
       expect(client.control.settings().captures).toHaveLength(1),
     );
-    expect(await exported("before_capture")).toHaveLength(1);
+    const lookback = await exported("before_capture");
+    expect(lookback).toHaveLength(1);
+    // Recorded before the capture existed; the server marks a capture as delivered by this attribute.
+    expect(lookback[0]!.attributes["traceway.capture.ids"]).toBe('["cap-1"]');
     expect(
       (await exported("traceway.capture.started"))[0]!.attributes[
         "traceway.capture.id"
@@ -149,6 +152,51 @@ describe("remote config over OpAMP", () => {
     await client.refreshConfig();
     expect(await exported("traceway.capture.started")).toHaveLength(1);
   });
+  it("counts the page's own load as one navigation for triggers", async () => {
+    const navigation = {
+      match: { event: { type: "navigation", value: location.pathname } },
+    };
+    serverDocument = {
+      schemaVersion: 1,
+      triggers: [
+        {
+          id: "twice",
+          steps: [navigation, navigation],
+          actions: [{ type: "emit", eventName: "twice.fired" }],
+        },
+        {
+          id: "once",
+          steps: [navigation],
+          actions: [{ type: "emit", eventName: "once.fired" }],
+        },
+      ],
+    };
+    localStorage.setItem(
+      "traceway:config:tok",
+      JSON.stringify({
+        hash: Array.from(hashOf(serverDocument), (b) =>
+          b.toString(16).padStart(2, "0"),
+        ).join(""),
+        body: JSON.stringify(serverDocument),
+      }),
+    );
+    // A module script runs before DOMContentLoaded, which is when the navigation instrumentation reports the load.
+    Object.defineProperty(document, "readyState", {
+      configurable: true,
+      get: () => "loading",
+    });
+    try {
+      start();
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+    } finally {
+      delete (document as unknown as Record<string, unknown>).readyState;
+    }
+    const fired = (await exported("traceway.trigger.fired")).map(
+      (record) => record.attributes["traceway.trigger.id"],
+    );
+    expect(fired).toEqual(["once"]);
+  });
+
   it("revokes cancelled captures without cancelling local overrides", async () => {
     start();
     await client.refreshConfig();

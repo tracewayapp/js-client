@@ -15,7 +15,6 @@ export class TelemetryPersistence {
   private pending = new Set<Promise<void>>();
   private started = false;
   private restored = false;
-  private checkpointTimer: ReturnType<typeof setTimeout> | null = null;
   private enabled: boolean | null = null;
   private stopped = false;
 
@@ -33,10 +32,18 @@ export class TelemetryPersistence {
   }
 
   start(sessionId: string | null): void {
+    // A client started again after shutdown still holds its buffer in memory: loading the stored copy as
+    // well would double it, so the copy is only cleared.
+    const again = this.started && this.restored;
     this.started = true;
+    this.stopped = false;
     this.configure();
     if (!this.enabled || !sessionId) {
       this.restored = true;
+      return;
+    }
+    if (again) {
+      void this.store.take(sessionId, 0);
       return;
     }
     const checkpoint = this.readCheckpoint(sessionId);
@@ -98,14 +105,15 @@ export class TelemetryPersistence {
     if (!this.enabled || this.stopped) return;
     const save = () => {
       if (!this.enabled) return Promise.resolve();
-      const entries = this.buffer.snapshot();
+      const entries = serializeBuffer(
+        this.buffer.snapshot(),
+        this.token,
+        sessionId,
+      );
       try {
         sessionStorage.setItem(
           this.checkpointKey(),
-          JSON.stringify({
-            sessionId,
-            entries: serializeBuffer(entries, this.token, sessionId),
-          }),
+          JSON.stringify({ sessionId, entries }),
         );
       } catch {
         try {
@@ -117,20 +125,6 @@ export class TelemetryPersistence {
       return this.store.save(entries, sessionId);
     };
     this.track(this.restored ? save() : this.ready.then(save));
-  }
-
-  checkpoint(sessionId: string | null): void {
-    if (
-      !sessionId ||
-      !this.enabled ||
-      this.stopped ||
-      this.checkpointTimer !== null
-    )
-      return;
-    this.checkpointTimer = setTimeout(() => {
-      this.checkpointTimer = null;
-      this.save(sessionId);
-    }, 1_000);
   }
 
   sendStored(batch: StoredBatch): void {
@@ -150,8 +144,7 @@ export class TelemetryPersistence {
 
   stop(): void {
     this.stopped = true;
-    if (this.checkpointTimer !== null) clearTimeout(this.checkpointTimer);
-    this.checkpointTimer = null;
+    this.enabled = null;
     this.outbox.stop();
   }
 

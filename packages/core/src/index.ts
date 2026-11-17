@@ -47,6 +47,7 @@ export type {
   Severity,
   SignalSettings,
   ReplaySettings,
+  MetricsSettings,
   BufferSettings,
   Condition,
   ConditionOp,
@@ -86,3 +87,18 @@ export { TriggerEngine } from "./triggers/engine.js";
 export type { ObservedEvent, FiredTrigger } from "./triggers/engine.js";
 export { RingBuffer } from "./buffer/ring-buffer.js";
 export type { BufferEntry, RingBufferOptions } from "./buffer/ring-buffer.js";
+
+export { Histogram, HISTOGRAM_SCALE, bucketIndex } from "./metrics/histogram.js";
+export { MetricAggregator } from "./metrics/aggregator.js";
+export type {
+  MetricDims,
+  MetricBatch,
+  HistogramPoint,
+  SumPoint,
+  MetricExemplar,
+  ExemplarSource,
+  MetricAggregatorOptions,
+} from "./metrics/aggregator.js";
+export { encodeMetrics } from "./metrics/otlp.js";
+export type { MetricResource } from "./metrics/otlp.js";
+export { normalizePath } from "./metrics/route.js";

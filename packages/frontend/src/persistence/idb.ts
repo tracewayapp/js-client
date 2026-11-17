@@ -39,16 +39,50 @@ export function openDatabase(): Promise<IDBDatabase | null> {
         }
       };
       request.onsuccess = () => {
-        opened = request.result;
-        resolve(request.result);
+        const db = request.result;
+        // A connection the browser closed (Safari does under storage pressure) throws on every use.
+        db.onclose = () => forget(db);
+        db.onversionchange = () => {
+          db.close();
+          forget(db);
+        };
+        opened = db;
+        resolve(db);
       };
-      request.onerror = () => resolve(null);
-      request.onblocked = () => resolve(null);
+      const failed = () => {
+        opening = null;
+        resolve(null);
+      };
+      request.onerror = failed;
+      request.onblocked = failed;
     } catch {
+      opening = null;
       resolve(null);
     }
   });
   return opening;
+}
+
+function forget(db: IDBDatabase): void {
+  if (opened !== db) return;
+  opened = null;
+  opening = null;
+}
+
+/** Starts a transaction, opening the database again once when the connection turned out to be closed. */
+async function begin(
+  store: string,
+  mode: IDBTransactionMode,
+): Promise<IDBTransaction | null> {
+  const db = await openDatabase();
+  if (!db) return null;
+  try {
+    return db.transaction(store, mode);
+  } catch {
+    forget(db);
+    const again = await openDatabase();
+    return again ? again.transaction(store, mode) : null;
+  }
 }
 
 /** For tests: forget the open connection so a fresh fake database is used. */
@@ -69,9 +103,9 @@ export async function putAll(
   store: string,
   batches: StoredBatch[],
 ): Promise<void> {
-  const db = await openDatabase();
-  if (!db || batches.length === 0) return;
-  const tx = db.transaction(store, "readwrite");
+  if (batches.length === 0) return;
+  const tx = await begin(store, "readwrite");
+  if (!tx) return;
   for (const batch of batches) tx.objectStore(store).put(batch);
   await done(tx);
 }
@@ -80,9 +114,8 @@ export async function listByToken(
   store: string,
   token: string,
 ): Promise<StoredBatch[]> {
-  const db = await openDatabase();
-  if (!db) return [];
-  const tx = db.transaction(store, "readonly");
+  const tx = await begin(store, "readonly");
+  if (!tx) return [];
   const request = tx.objectStore(store).index("token").getAll(token);
   await done(tx);
   return (request.result as StoredBatch[]).sort(
@@ -94,9 +127,9 @@ export async function deleteIds(
   store: string,
   ids: Array<number | string>,
 ): Promise<void> {
-  const db = await openDatabase();
-  if (!db || ids.length === 0) return;
-  const tx = db.transaction(store, "readwrite");
+  if (ids.length === 0) return;
+  const tx = await begin(store, "readwrite");
+  if (!tx) return;
   for (const id of ids) tx.objectStore(store).delete(id);
   await done(tx);
 }
@@ -121,9 +154,8 @@ export async function updateToken(
     put: StoredBatch[];
   },
 ): Promise<void> {
-  const db = await openDatabase();
-  if (!db) return;
-  const tx = db.transaction(store, "readwrite");
+  const tx = await begin(store, "readwrite");
+  if (!tx) return;
   const objectStore = tx.objectStore(store);
   const request = objectStore.index("token").getAll(token);
   request.onsuccess = () => {
@@ -143,7 +175,13 @@ export function writeSessionSnapshot(
   const write = (db: IDBDatabase | null): Promise<void> => {
     if (!db) return Promise.resolve();
     const prefix = `${token}:${sessionId}:`;
-    const tx = db.transaction(BUFFER_STORE, "readwrite");
+    let tx: IDBTransaction;
+    try {
+      tx = db.transaction(BUFFER_STORE, "readwrite");
+    } catch (err) {
+      forget(db);
+      return Promise.reject(err);
+    }
     const store = tx.objectStore(BUFFER_STORE);
     store.delete(IDBKeyRange.bound(prefix, prefix + "\uffff"));
     batches.forEach((batch, index) =>

@@ -26,6 +26,7 @@ This is the framework-agnostic browser SDK. Use it directly in vanilla JS / TS, 
 - **rrweb session replay** — an error clip by default; stream whole sessions with `recordAllSessions` or a remote rule
 - **Breadcrumbs** — console, `fetch` / XHR, navigation, clicks and custom events, kept on the device and uploaded with an error
 - **Web vitals** and resource timing
+- **Long tasks** and **route change timing**, off until remote config, a trigger or a capture turns them on
 - **Auto-collected attributes** — `url`, `path`, `referrer`, `userAgent`, `language`, `platform`, `viewport`, `screen`, `timezone` stamped on every session and exception
 - **Global attribute scope** — `setAttribute("user.id", "42")` and friends to attach app-level identifiers (tenant, user id, feature flag) to every subsequent session and exception
 - Distributed tracing — `fetch` / XHR spans with the W3C `traceparent` header
@@ -123,7 +124,9 @@ await flush();
 | `errorLimits` | `{ maxPerMinute: 60, duplicateWindowMs: 1000 }` | Per-client rolling error limit and duplicate suppression |
 | `recordAllSessions` | `false` | Stream every replay segment and every breadcrumb by default instead of keeping them for error clips |
 | `sessions` | `true` | Record session start and end |
-| `captureLogs`, `captureNetwork`, `captureNavigation`, `captureUserActions`, `captureWebVitals`, `captureResourceTiming` | `true` | Allow a signal at all |
+| `captureLogs`, `captureNetwork`, `captureNavigation`, `captureUserActions`, `captureWebVitals`, `captureResourceTiming`, `captureLongTasks`, `captureRouteTiming` | `true` | Allow a signal at all |
+| `captureMetrics` | `true` | Performance metrics: histograms and counters aggregated on the device, one small upload per flush |
+| `metricDimensions` | none | Up to two dimensions of your own on every performance metric, e.g. `{ plan: "pro" }` |
 | `captureHttpServerErrors` | `false` | Report fetch / XHR responses with status >= 500 as message issues |
 | `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that get the W3C `traceparent` header (same-origin requests always do) |
 | `exportDelayMs` | `1000` | Delay between OTLP exports |
@@ -283,7 +286,7 @@ Exception events use OTLP logs with `eventName: "exception"` and structured `exc
 
 ## Production collection policy
 
-Production defaults keep session lifecycle metadata and web vitals on, with healthy breadcrumbs and replay buffered locally. An accepted exception uploads up to 10 minutes of buffered breadcrumbs and a 30-second replay clip; no full-session replay is uploaded by default. Error clips have a 5-second cooldown and a limit of 20 per session.
+Production defaults keep session lifecycle metadata and performance metrics on, with healthy breadcrumbs, web vital events and replay buffered locally. An accepted exception uploads up to 10 minutes of buffered breadcrumbs and a 30-second replay clip; no full-session replay is uploaded by default. Error clips have a 5-second cooldown and a limit of 20 per session.
 
 Errors are not sampled by default. Duplicate exceptions (same type, message and stack) within 1 second are suppressed, and each running client accepts at most 60 errors in a rolling minute. The next accepted error carries the aggregate `traceway.error.suppressed_count`. Configure `errorLimits: { maxPerMinute: 60, duplicateWindowMs: 1000 }` to tune these limits; they reset when the SDK is recreated.
 
@@ -304,3 +307,31 @@ automatically redirected to `/api/report`.
 
 For a known older server, use `transport: "legacy"` to skip OpAMP entirely. If you disable `remoteConfig`, automatic
 server detection is disabled too; set `transport: "legacy"` when using that option with an older server.
+
+## Performance metrics
+
+Web vitals, route changes, main-thread blocking, requests, page views and errors are aggregated on the device into
+histograms and counters, and uploaded as one small payload when the page is hidden, at session end, and every five
+minutes. The detailed events behind them stay on the device until a trigger or a capture asks for them. A payload
+that fails to upload, or whose page goes away before the server answers, is kept in `localStorage` (three payloads,
+64 KB, 24 hours at most) and sent once more on the next page load; after that it is dropped.
+
+```ts
+import { metric, count, setRoute } from "@tracewayapp/frontend";
+
+setRoute("/orders/:id"); // name the page by its route template; without it the path is normalized
+metric("checkout.duration", 840, { plan: "pro" }); // a custom distribution, at most two dimensions
+count("cart.item_added");
+setMetricDimension("plan", "pro"); // on every metric from now on; at most two keys, never a user id
+```
+
+Besides the web vitals of the page load, INP and CLS are measured per view (`browser.view.inp`,
+`browser.view.cls`), so a route reached by a single-page-app navigation has its own numbers. A slow LCP, INP or CLS
+also reports the element behind it as a short CSS selector, and long animation frames report the time each script
+took. "Users affected" comes from counters the device deduplicates itself: a browser profile is counted once per UTC
+day, and once per day for each kind of trouble (an error, a poor vital, a rage click, a failed request). No user or
+device id is sent; a browser without `localStorage` is left out of those counts. `metricDimensions` in `init()`
+sets the dimensions of your own from the start.
+
+`@tracewayapp/react` has `useTracewayRoute(template)`, `@tracewayapp/vue` has `trackRouter(router)` and
+`@tracewayapp/svelte` has `trackRoute(routeId)`. Set `captureMetrics: false` to send none of it.

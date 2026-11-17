@@ -11,7 +11,7 @@ keeps exporting).
 
 | What | Endpoint | Format |
 |------|----------|--------|
-| Exceptions, messages, console, navigation, user actions, web vitals, resource timing, custom events, session lifecycle | `POST /api/otel/v1/logs` | OTLP/HTTP JSON log records, told apart by `eventName` |
+| Exceptions, messages, console, navigation, user actions, web vitals, resource timing, long tasks, route timing, custom events, session lifecycle | `POST /api/otel/v1/logs` | OTLP/HTTP JSON log records, told apart by `eventName` |
 | fetch / XHR | `POST /api/otel/v1/traces` | OTLP/HTTP JSON CLIENT spans; W3C `traceparent` to same-origin URLs and `propagateTraceHeaderCorsUrls` |
 | Session replay | `POST /api/recordings` | `{segments, debugIds?}`, gzipped JSON, not OTLP |
 | Remote config | `POST /api/otel/v1/opamp` | OpAMP over plain HTTP (protobuf) |
@@ -37,6 +37,107 @@ debug ids, default and global attributes, `ignoreErrors` on the `Type: message` 
 signal, then route by the effective mode: **stream** to the OTLP batch exporter, **buffer** into the in-memory
 `RingBuffer`, **off** dropped. After routing, the trigger engine sees the record, so a flush it causes includes it.
 
+### Performance signals
+
+Web vitals (`browser.web_vital`: LCP, INP, CLS, FCP, TTFB; buffered by default since 2.1, because their numbers travel as
+metrics, see below) and resource and navigation timing
+(`resourceTiming`, off by default) come from the Browser SIG instrumentations. Two more are the SDK's own, built on
+`LogInstrumentation` (`frontend/src/otel/performance-instrumentation.ts`), each its own signal and off by default:
+
+- `longTasks` (`otel/long-tasks.ts`, event `browser.long_task`): main-thread blocks of 50 ms or more. It observes
+  both `long-animation-frame` and `longtask` and reports each block once. Frames are preferred because they name the
+  blocking script, but Chromium drops a frame's entry when a history change runs in the same task (every route
+  change that renders synchronously), so a long task no frame covers within a second is reported on its own. At
+  most 30 per minute. Chromium only.
+- `routeTiming` (`otel/route-timing.ts`, event `browser.route_timing`): from a History API change of path or query
+  until the page is quiet, meaning no DOM mutation, finished resource or traced request in flight for 500 ms; the
+  duration ends at the last activity. `ControlSpanProcessor` reports CLIENT spans to it (`RequestActivity`), so only
+  requests the SDK traces and that started after the route change are waited for. Outcome `settled`, `timeout`
+  (30 s) or `interrupted` (the next route change); a tab going hidden discards the measurement. A load still in
+  flight that has not touched the DOM (a lazy chunk, an image) is not visible to it.
+
+Both instrumentations run whenever the `init()` ceiling allows (`captureLongTasks`, `captureRouteTiming`), also
+while their signal is off: that is what lets a trigger match `signal eq longTasks` with
+`attributes.browser.long_task.duration gte 1000` on a device that uploads none of it. Turning one on is a rule
+(`signals.longTasks.mode`, for everyone or for the clients its conditions match), or a `stream`/`capture` action or
+a dashboard capture that names the signal; `"*"` does not include them, as with resource timing. Adding a signal
+means `SIGNALS` and `defaultSettings`/`ceilingsFrom` in `core`, `classifyLog` in `otel/events.ts`, and the server's
+`sdkconfig` package and dashboard list.
+
+### Performance metrics (2.1)
+
+Every measurement has two outputs. The event above goes through the router, where its signal's mode decides. The
+number also goes into a device aggregate that is uploaded whatever the signal's mode is: aggregates always travel,
+events only when a rule, trigger or capture asks.
+
+- `core/src/metrics/`: `Histogram` (base-2 exponential buckets at scale 3, about 4.5% relative error),
+  `MetricAggregator` (one cell per metric and dimension set; at most 200 cells, past which `url.path` folds to
+  `other`; up to 3 exemplars per cell, each a session id and, when known, the culprit as `traceway.target`),
+  `encodeMetrics` (a hand-written OTLP JSON encoder: delta
+  `exponentialHistogram` and delta `sum`; `@opentelemetry/sdk-metrics` would not fit the bundle budget) and
+  `normalizePath`. No dependencies, so another SDK can reuse it.
+- `frontend/src/otel/metrics-recorder.ts` (`MetricsRecorder`): long tasks and route timing call it directly through
+  `LogInstrumentation.sink`, before the 30-a-minute cap of the event. Web vitals, navigation timing, errors and
+  clicks come from third-party instrumentations, so they are read from the log records in `client.observe`.
+  Requests come from CLIENT spans (`ControlSpanProcessor`).
+- A web vital can be reported more than once per page (CLS and INP grow) and an uploaded histogram cannot be taken
+  back: the latest value waits in the recorder until the next flush, and each vital instance is counted once.
+- A page view is counted when its view ends, so a route template that arrives after the history change still
+  names it. `setRoute(template)` names the view (`useTracewayRoute`, `trackRouter`, `trackRoute` in the framework
+  packages); without it the path is normalized (`/orders/8841` becomes `/orders/:id`). The server applies the same
+  rules (`backend/app/clientmetrics/route.go`), so the two tables of test cases must stay equal.
+- Upload: one `fetch` to `/api/otel/v1/metrics` per flush, `keepalive` when the page is hidden or unloading, never
+  through the outbox. One bounded retry (`otel/metrics-pending.ts`, localStorage key
+  `traceway:metrics:pending:<token>`, 3 payloads, 64 KB, 24 h, oldest dropped first): a hidden-page payload is stored
+  before it is sent and removed when the answer is a 2xx or a permanent 4xx (400, 401, 403, 413, 422), since a page
+  that dies never sees the answer; any other payload is stored only after a known failure (no answer, 429, 5xx).
+  Stored payloads are resent once, at `start()` and after an interval flush that worked, with `traceway.retry: true`
+  and a new `traceway.sent_at` (data point times unchanged), and are removed before the resend whatever its result.
+  Every payload carries a random `traceway.batch_id` (32 hex), by which the server drops a resend it already has;
+  two tabs resending the same payload is covered by the same rule. The recorder registers its own `visibilitychange` and `pagehide` listeners
+  after the instrumentations, because the web vitals library reports its final values from its own listeners on the
+  same events. The session ends on `pagehide` before those arrive, so the recorder keeps the last session id.
+- The resource carries only the dimension attributes (no session, user or instance id), `traceway.sample_rate`
+  (the server weights counts by 1/rate), `traceway.sent_at` (the server corrects the device clock with it) and
+  `traceway.metrics: aggregated`. The same marker is on the log resource, so a server does not count an uploaded
+  performance event a second time.
+- Users (`browser.user`, `browser.user.affected{issue}`): the device counts its browser profile once per UTC day,
+  and once per day per issue (`js_error`, `poor_lcp`, `poor_inp`, `poor_cls`, `rage_click`, `failed_request`), from
+  a record in localStorage (`traceway:metrics:user:<token>`, `{d, i}`), so "users affected" is a ratio of two
+  counters and no id is sent. Without working storage these are not counted at all. They are sampled by the profile
+  (`unitHash(instanceId)`, the id itself never leaves in a metrics payload) and not by the session, and carry no
+  point dimensions.
+- Attribution: the web vitals instrumentation is created with `includeRawAttribution`, and `webVitalTarget`
+  (`client.ts`) keeps only the element selector of the library's attribution as the event attribute
+  `browser.web_vital.target` and drops the body. A non-good LCP, INP or CLS with a target counts
+  `browser.web_vital.attribution{vital, rating, target}`, and a poor one puts the target on its exemplar.
+  `browser.long_task.script_time{script}` is the time per script (origin + path) of a long animation frame.
+- Per-view vitals (`otel/view-vitals.ts`): `browser.view.inp` and `browser.view.cls` with `view_type: load | soft`,
+  measured with the recorder's own `event` (40 ms threshold) and `layout-shift` observers and the page rules (the
+  worst interaction, one forgiven per 50; the largest 1 s gap / 5 s shift window). Recorded when the view ends.
+  Entries are assigned by arrival, so the click that causes a route change counts for the view it leads to. A view
+  that is hidden and shown again is measured once per visible stretch, because an uploaded value cannot be taken
+  back; a later stretch without a shift adds no second zero. Interactions under 16 ms (the lowest threshold a
+  browser accepts) are not reported, only counted in `performance.interactionCount`: a view whose interactions were
+  all that fast records the threshold as its INP, so fast views are not missing from the distribution. A
+  `replaceState` that keeps the normalized path (a search box rewriting the query string) stays the same view. Views
+  are split on route changes even when `captureRouteTiming` is off (`RouteTimingInstrumentation(measure = false)`).
+- Global dimensions: `metricDimensions` in `init()` and `setMetricDimension(key, value | null)`, two keys at most
+  (`[a-z][a-z0-9_]{0,31}`), sent as resource attributes `custom.<key>`.
+- Settings: top-level `metrics: {enabled, sampleRate, flushSeconds}` (defaults true, 1, 300; flush at least 30 s),
+  ceiling `captureMetrics`, plan limit `limits.metrics: "off"`. Sampling is per session (`unitHash(session.id)`).
+  A payload states one sample rate and the server weights all of it by 1/rate, so `MetricsRecorder.configure()`
+  uploads what was recorded under the old rate (`batchRate`) before it adopts a new one: a device without cached
+  settings counts its session and user at rate 1 before the first poll answers, and those must not be multiplied
+  by a later 1/rate. A new rate of 0 discards instead. A payload over 60 KB (UTF-8 bytes) is split in halves
+  (`sendBatch`), each with its own batch id. `browser.session` is counted when the session starts, not when a later
+  page of it resumes (`sessionStarted(id, resumed)`).
+- Public API: `metric(name, value, dims?)`, `count(name, n?, dims?)`, `setRoute(template)`,
+  `setMetricDimension(key, value)`. Custom names are
+  lowercase dotted and cannot start with `browser.`, `app.`, `traceway.` or `custom.`; two dimensions at most.
+
+React Native has none of this: it does not speak OpAMP and sends no performance measurements.
+
 ### Settings, triggers and captures
 
 `ControlState` (`core/src/control`) computes the effective settings: SDK defaults (`defaultSettings`, which reproduce
@@ -46,7 +147,16 @@ clamped to the ceilings from `init()` options lowered to the document's plan `li
 from triggers and captures.
 
 Triggers (`core/src/triggers`) are sequences of matcher steps with `withinSeconds` gaps, per-session state, sample
-rate, cooldown and per-session cap. Before routing errors, the frontend ErrorLimiter suppresses identical type/message/stack within 1 s and accepts at most 60 errors per rolling minute per running client. The next accepted error carries the aggregate suppressed count. Healthy lifecycle metadata and web vitals remain on. Optional sessions.baselineSampleRate (default 0) uses a session-ID hash to stream buffered breadcrumbs and request spans consistently across reloads; it never streams replay or overrides an off signal. A step can need `count` matching records within a sliding `periodSeconds` ("5 error
+rate, cooldown and per-session cap. The engine follows every way a sequence could be under way, not one cursor: per
+step it keeps when the steps before it last completed (for a `count` step up to 8 such moments and one hit list),
+tries later steps first so one event advances a candidate by one step only, and clears everything when the last
+step completes. The first step happening again therefore starts a second candidate and does not discard the first
+(`A B A C` fires). Progress, the hits of a counting first step included, is saved to sessionStorage only when
+`progressVersion` changed (format `v: 2`, older saves are ignored) and restored on the next page; a step without
+`withinSeconds` is restored for as long as the session. The click and hover events the page feeds in directly carry
+`sequence`, and only a step naming that event type can match them, so a negated condition does not match every
+click. The page's own load is one navigation whichever arrives first, the navigation instrumentation's record at
+`DOMContentLoaded` or the one `applySettings` makes up. Before routing errors, the frontend ErrorLimiter suppresses identical type/message/stack within 1 s and accepts at most 60 errors per rolling minute per running client. The next accepted error carries the aggregate suppressed count. Healthy lifecycle metadata and web vitals remain on. Optional sessions.baselineSampleRate (default 0) uses a session-ID hash to stream buffered breadcrumbs and request spans consistently across reloads; it never streams replay or overrides an off signal. A step can need `count` matching records within a sliding `periodSeconds` ("5 error
 lines in a minute"). Actions: `flush` (lookback upload, optionally replay), `stream` (send the listed signals for N
 seconds, this page only), `startReplay`, `emit`, and `capture` (lookback upload, then stream for `durationSeconds`;
 kept in localStorage under `traceway:local-captures:<token>` so later pages keep streaming; while it runs the same
@@ -54,12 +164,12 @@ trigger only extends it). Every fire emits `traceway.trigger.fired`; a capture a
 with `traceway.capture.source: trigger`.
 
 Log lines are matched with `body` and the operators `icontains`, `starts_with` and `glob` (`*`/`?`, case-insensitive,
-linear-time, at most 4 KB of the value looked at). There is no regex operator on purpose: a pattern from the server
+one backtrack point, at most 4 KB of the value looked at). There is no regex operator on purpose: a pattern from the server
 would run with backtracking on the page's main thread. Matching sees every record, including those of a signal that
 is off.
 
 A capture, whether from the dashboard or the `capture` action, also brings back what rules switched off: its `"*"` is
-every signal the defaults collect (resource timing, off by default, has to be named), so `includeOff` on the override.
+every signal the defaults collect (resource timing, long tasks and route timing, off by default, have to be named), so `includeOff` on the override.
 The record that fired a capture trigger is sent too when its signal was off (`TelemetryRouter.sendIfStreaming`), so the
 log line that started a capture is in it. Nothing passes the `init()` ceilings, the `enabled` kill switch, or the plan
 `limits` the server adds to the document (`applyLimits`: what the organization's plan drops at ingest). The `stream`
@@ -67,6 +177,11 @@ action keeps the narrower rule: `"*"` there covers only signals that are not off
 
 Captures arrive in the settings document from the dashboard. The lookback flush runs once per capture id (remembered
 in sessionStorage per tab), streaming lasts until `until` on every page; `traceway.capture.started` marks the start.
+A capture known only from the cached settings keeps streaming but flushes nothing until the first poll has answered
+or failed (`capturesConfirmed`): it may have been cancelled while the device was away. What a lookback uploads was
+recorded before the capture existed, so `TelemetryRouter.flushBuffered` adds the running capture ids to
+`traceway.capture.ids` then; the server marks a capture as delivered by that attribute. A local capture another tab
+started makes this tab upload its own lookback once (`traceway:local-captures-flushed:<token>` in sessionStorage).
 
 ### External telemetry destination
 
@@ -96,6 +211,15 @@ localStorage and applied synchronously at the next `init()`.
 as live SDK records, so byte and age limits apply to the combined history. Whole serialized records are counted,
 including log bodies. `BufferStore` updates IndexedDB snapshots atomically; a sessionStorage checkpoint covers
 navigation because the browser may abandon asynchronous IndexedDB writes on pagehide. Replay is not persisted.
+
+The buffer is written when the page is hidden or unloads, once, never on a timer: a save serializes the whole
+buffer, which is a long task on a phone. A record's OTLP JSON is kept after it is first made (`recordJson` in
+`otlp-json.ts`; `forgetJson` after anything changes the record), so sizing, saving and sending do not each
+serialize it. Records restored from an earlier page are one request body each; a flush joins them into requests of
+at most 512 KB (`mergeRequests`), not one POST per record. On unload `flushQueued` starts the exporters' flush
+before it awaits the storage writes, which finish in a task an unloading page never runs, and the session's closing
+event leaves before the replay, whose keepalive budget leaves it room. The IndexedDB connection is dropped and
+reopened when the browser closes it (`onclose`, `onversionchange`, one retry).
 
 `Outbox` retries with backoff while the page is open and drains on `online`, visibility recovery, and startup. Web
 Locks serialize drains between tabs. Pruning on drain retains at most 200 batches, at most 24 hours old, below 8

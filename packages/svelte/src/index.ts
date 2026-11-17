@@ -1,5 +1,6 @@
 export { setupTraceway, captureSvelteError, TRACEWAY_KEY } from "./context.js";
 export { getTraceway, useTraceway } from "./use-traceway.js";
+export { trackRoute } from "./track-route.js";
 export { useTracewayAttributes } from "./use-traceway-attributes.js";
 export {
   captureException,
@@ -12,6 +13,10 @@ export {
   removeAttribute,
   clearAttributes,
   track,
+  metric,
+  count,
+  setMetricDimension,
+  setRoute,
   startInteraction,
   refreshConfig,
   shutdown,

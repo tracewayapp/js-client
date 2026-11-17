@@ -47,17 +47,22 @@ export function satisfiesVersion(version: string, constraint: string): boolean {
   const comparators = constraint.split(/[\s,]+/).filter(Boolean);
   if (comparators.length === 0) return false;
   for (const comparator of comparators) {
-    const match = comparator.match(/^(>=|<=|>|<|=|==|!=)?(.+)$/);
+    const match = comparator.match(/^(>=|<=|==|!=|>|<|=)?(.+)$/);
     if (!match) return false;
     const cmp = compareVersions(version, match[2]!);
     if (cmp === null) return false;
     const ok =
-      match[1] === ">=" ? cmp >= 0
-      : match[1] === "<=" ? cmp <= 0
-      : match[1] === ">" ? cmp > 0
-      : match[1] === "<" ? cmp < 0
-      : match[1] === "!=" ? cmp !== 0
-      : cmp === 0;
+      match[1] === ">="
+        ? cmp >= 0
+        : match[1] === "<="
+          ? cmp <= 0
+          : match[1] === ">"
+            ? cmp > 0
+            : match[1] === "<"
+              ? cmp < 0
+              : match[1] === "!="
+                ? cmp !== 0
+                : cmp === 0;
     if (!ok) return false;
   }
   return true;
@@ -118,13 +123,31 @@ function evaluateCondition(condition: Condition, lookup: FieldLookup): boolean {
     case "not_in":
       return !(condition.values ?? []).some((v) => same(actual, v));
     case "contains":
-      return present && condition.value !== undefined && text(actual).includes(String(condition.value));
+      return (
+        present &&
+        condition.value !== undefined &&
+        text(actual).includes(String(condition.value))
+      );
     case "icontains":
-      return present && condition.value !== undefined && text(actual).toLowerCase().includes(String(condition.value).toLowerCase());
+      return (
+        present &&
+        condition.value !== undefined &&
+        text(actual)
+          .toLowerCase()
+          .includes(String(condition.value).toLowerCase())
+      );
     case "starts_with":
-      return present && condition.value !== undefined && text(actual).startsWith(String(condition.value));
+      return (
+        present &&
+        condition.value !== undefined &&
+        text(actual).startsWith(String(condition.value))
+      );
     case "glob":
-      return present && condition.value !== undefined && globMatch(text(actual), String(condition.value));
+      return (
+        present &&
+        condition.value !== undefined &&
+        globMatch(text(actual), String(condition.value))
+      );
     case "gt":
     case "gte":
     case "lt":
@@ -132,15 +155,77 @@ function evaluateCondition(condition: Condition, lookup: FieldLookup): boolean {
       const a = asNumber(actual);
       const e = asNumber(condition.value);
       if (a === undefined || e === undefined) return false;
-      return condition.op === "gt" ? a > e : condition.op === "gte" ? a >= e : condition.op === "lt" ? a < e : a <= e;
+      return condition.op === "gt"
+        ? a > e
+        : condition.op === "gte"
+          ? a >= e
+          : condition.op === "lt"
+            ? a < e
+            : a <= e;
     }
     case "version":
-      return present && condition.value !== undefined && satisfiesVersion(String(actual), String(condition.value));
+      return (
+        present &&
+        condition.value !== undefined &&
+        satisfiesVersion(String(actual), String(condition.value))
+      );
   }
   return false;
 }
 
+/** The browser reports a path percent-encoded; a pattern is typed as it reads. */
+function decoded(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 export function matches(matcher: Matcher, lookup: FieldLookup): boolean {
+  if ("event" in matcher) {
+    const { type, value, mode } = matcher.event;
+    if (type === "click" || type === "hover") {
+      const match = lookup("browser.target.matches");
+      return (
+        lookup("browser.action") === type &&
+        typeof match === "function" &&
+        match(value) === true
+      );
+    }
+    if (type === "log") {
+      const name = lookup("event.name");
+      const signal = lookup("signal");
+      if (
+        name !== "browser.console" &&
+        name !== "traceway.message" &&
+        signal !== "console" &&
+        signal !== "messages"
+      )
+        return false;
+      const body = String(lookup("body") ?? "").slice(0, MAX_MATCH_TEXT);
+      return mode === "contains" ? body.includes(value) : body === value;
+    }
+    if (lookup("event.name") !== "browser.navigation") return false;
+    try {
+      const path = new URL(
+        String(lookup("attributes.url.full")),
+        "https://traceway.invalid",
+      ).pathname;
+      const expected = value.split("/");
+      const actual = path.split("/");
+      return (
+        expected.length === actual.length &&
+        expected.every((part, i) =>
+          /^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(part)
+            ? !!actual[i]
+            : part === actual[i] || part === decoded(actual[i]!),
+        )
+      );
+    } catch {
+      return false;
+    }
+  }
   if (isCondition(matcher)) return evaluateCondition(matcher, lookup);
   if ("all" in matcher) return matcher.all.every((m) => matches(m, lookup));
   if ("any" in matcher) return matcher.any.some((m) => matches(m, lookup));

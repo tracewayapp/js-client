@@ -10,8 +10,7 @@ const execArgv = process.allowedNodeEnvironmentFlags.has(disableNodeWebStorage)
 
 export default defineConfig({
   test: {
-    poolOptions: {
-      forks: { execArgv },
-    },
+    projects: ["packages/*/vitest.config.ts"],
+    execArgv,
   },
 });

@@ -34,23 +34,28 @@ export class Writer {
     return this.tag(field, WIRE_VARINT).varint(value);
   }
 
-  bool(field: number, value: boolean): this {
-    return value ? this.tag(field, WIRE_VARINT).varint(1) : this;
+  /**
+   * `always` writes the field even at its zero value. A oneof member needs it: left out, the receiver sees no
+   * value at all, not false, 0 or "".
+   */
+  bool(field: number, value: boolean, always = false): this {
+    if (!value && !always) return this;
+    return this.tag(field, WIRE_VARINT).varint(value ? 1 : 0);
   }
 
-  bytes(field: number, value: Uint8Array): this {
-    if (value.length === 0) return this;
+  bytes(field: number, value: Uint8Array, always = false): this {
+    if (value.length === 0 && !always) return this;
     this.tag(field, WIRE_LENGTH).varint(value.length);
     for (const b of value) this.chunks.push(b);
     return this;
   }
 
-  string(field: number, value: string): this {
-    return this.bytes(field, encoder.encode(value));
+  string(field: number, value: string, always = false): this {
+    return this.bytes(field, encoder.encode(value), always);
   }
 
-  double(field: number, value: number): this {
-    if (value === 0) return this;
+  double(field: number, value: number, always = false): this {
+    if (value === 0 && !always) return this;
     const buf = new DataView(new ArrayBuffer(8));
     buf.setFloat64(0, value, true);
     this.tag(field, WIRE_FIXED64);

@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -37,13 +37,22 @@ try {
     const source = resolve(sources[index]);
     const cwd = join(directory, index ? "new" : "old");
     await mkdir(cwd);
+    const modulePath = async (directory) => {
+      const goMod = await readFile(join(source, directory, "go.mod"), "utf8");
+      const name = goMod.match(/^module\s+(\S+)/m)?.[1];
+      if (!name) throw new Error(`Missing module directive in ${directory}/go.mod`);
+      return name;
+    };
+    const backendModule = await modulePath("backend");
+    const cliModule = await modulePath("cli");
+    const major = backendModule.match(/\/v(\d+)$/)?.[1] ?? "0";
     await writeFile(
       join(cwd, "go.mod"),
-      `module browsercompat\n\ngo 1.26.2\n\nrequire github.com/tracewayapp/traceway/backend v0.0.0\nreplace github.com/tracewayapp/traceway/backend => ${JSON.stringify(join(source, "backend"))}\nreplace github.com/tracewayapp/traceway/cli => ${JSON.stringify(join(source, "cli"))}\n`,
+      `module browsercompat\n\ngo 1.26.2\n\nrequire ${backendModule} v${major}.0.0\nreplace ${backendModule} => ${JSON.stringify(join(source, "backend"))}\nreplace ${cliModule} => ${JSON.stringify(join(source, "cli"))}\n`,
     );
     await writeFile(
       join(cwd, "main.go"),
-      `package main\nimport backend "github.com/tracewayapp/traceway/backend"\nfunc main() { backend.Run(backend.WithPort(${4330 + index}), backend.WithSQLitePath("data.db"), backend.WithDefaultProject("Browser compatibility", "react", "browser-test-token"), backend.WithDefaultUser("browser@example.test", "browser-test-password")) }\n`,
+      `package main\nimport backend "${backendModule}"\nfunc main() { backend.Run(backend.WithPort(${4330 + index}), backend.WithSQLitePath("data.db"), backend.WithDefaultProject("Browser compatibility", "react", "browser-test-token"), backend.WithDefaultUser("browser@example.test", "browser-test-password")) }\n`,
     );
     const env = { ...process.env, GOWORK: "off", GOTMPDIR: cwd };
     await run("go", ["mod", "tidy"], { cwd, env });

@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/sourcemap-upload",
-  "version": "2.0.0-beta.1",
+  "version": "2.1.0",
   "description": "CLI tool for uploading source maps to Traceway",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,6 +18,6 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "glob": "^11.0.0"
+    "glob": "^14.0.6"
   }
 }

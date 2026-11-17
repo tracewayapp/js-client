@@ -11,6 +11,8 @@ const bundle = await readFile(
 );
 let document = { schemaVersion: 1 };
 let failLogs = false;
+let metricsStatus = 200;
+const metricPayloads = [];
 const logs = [];
 const recordings = [];
 const requests = [];
@@ -58,6 +60,11 @@ const server = createServer(async (req, res) => {
       for (const resource of data.resourceLogs ?? [])
         for (const scope of resource.scopeLogs ?? [])
           logs.push(...(scope.logRecords ?? []));
+    }
+    if (req.url.endsWith("/metrics")) {
+      metricPayloads.push(JSON.parse(body));
+      res.statusCode = metricsStatus;
+      return res.end("{}");
     }
     if (req.url.endsWith("/recordings"))
       recordings.push(...JSON.parse(body).segments);
@@ -534,6 +541,206 @@ try {
         );
       } finally {
         await interactionPage.close();
+      }
+    },
+  );
+  await check(
+    "long tasks and route timing stay off until remote config streams them",
+    async () => {
+      const perfPage = await browser.newPage();
+      const attribute = (log, key) => {
+        const value = log.attributes?.find((attr) => attr.key === key)?.value;
+        return (
+          value?.stringValue ?? Number(value?.intValue ?? value?.doubleValue)
+        );
+      };
+      const exercise = (path) =>
+        perfPage.evaluate(async (path) => {
+          // The browser does not time a script DevTools evaluates, so the block runs in a task of the page.
+          await new Promise((resolve) =>
+            setTimeout(() => {
+              const until = performance.now() + 200;
+              while (performance.now() < until);
+              resolve();
+            }, 0),
+          );
+          history.pushState(null, "", path);
+          await fetch("/data");
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          document.body.appendChild(document.createElement("section"));
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          await Traceway.flush();
+        }, path);
+      try {
+        document = { schemaVersion: 1 };
+        await perfPage.goto(origin);
+        await perfPage.evaluate(async () => {
+          Traceway.init(`perf@${location.origin}`, {
+            captureWebVitals: false,
+            captureResourceTiming: false,
+            sessionRecording: false,
+            exportDelayMs: 60000,
+          });
+          await Traceway.refreshConfig();
+        });
+        await exercise("/off");
+        assert(!names().includes("browser.long_task"));
+        assert(!names().includes("browser.route_timing"));
+
+        document = {
+          schemaVersion: 1,
+          signals: {
+            longTasks: { mode: "stream" },
+            routeTiming: { mode: "stream" },
+          },
+        };
+        await perfPage.evaluate(() => Traceway.refreshConfig());
+        await exercise("/orders");
+        const blocks = logs.filter(
+          (log) => log.eventName === "browser.long_task",
+        );
+        assert(
+          blocks.some(
+            (log) => attribute(log, "browser.long_task.duration") >= 150,
+          ),
+          "the 200 ms block is reported",
+        );
+        const routes = logs.filter(
+          (log) => log.eventName === "browser.route_timing",
+        );
+        assert.equal(routes.length, 1);
+        assert.equal(attribute(routes[0], "url.full"), `${origin}/orders`);
+        assert.equal(
+          attribute(routes[0], "browser.route_timing.outcome"),
+          "settled",
+        );
+        assert.equal(attribute(routes[0], "browser.route_timing.requests"), 1);
+        const duration = attribute(routes[0], "browser.route_timing.duration");
+        assert(duration >= 300 && duration < 1000, `route took ${duration} ms`);
+      } finally {
+        await perfPage.close();
+      }
+    },
+  );
+  await check(
+    "metrics travel as one aggregated payload per flush and a failed one is retried once",
+    async () => {
+      const metricsPage = await browser.newPage();
+      const metricsOf = (payload) =>
+        Object.fromEntries(
+          payload.resourceMetrics[0].scopeMetrics[0].metrics.map((m) => [
+            m.name,
+            m,
+          ]),
+        );
+      const resourceOf = (payload) =>
+        Object.fromEntries(
+          payload.resourceMetrics[0].resource.attributes.map((a) => [
+            a.key,
+            Object.values(a.value)[0],
+          ]),
+        );
+      const retriesOf = (id) =>
+        metricPayloads
+          .map(resourceOf)
+          .filter((r) => r["traceway.retry"] && r["traceway.batch_id"] === id);
+      const load = async () => {
+        await metricsPage.goto(`${origin}/orders/8841`);
+        await metricsPage.evaluate(() => {
+          Traceway.init(`metrics@${location.origin}`, {
+            sessionRecording: false,
+            version: "4.2.0",
+          });
+        });
+        await new Promise((resolve) => setTimeout(resolve, 700));
+      };
+      const block = () =>
+        metricsPage.evaluate(
+          () =>
+            new Promise((resolve) =>
+              setTimeout(() => {
+                const until = performance.now() + 200;
+                while (performance.now() < until);
+                setTimeout(resolve, 1300);
+              }, 0),
+            ),
+        );
+      try {
+        document = { schemaVersion: 1 };
+        metricPayloads.length = 0;
+        const logsBefore = logs.length;
+        await metricsPage.goto(`${origin}/orders/8841`);
+        await metricsPage.evaluate(async () => {
+          Traceway.init(`metrics@${location.origin}`, {
+            sessionRecording: false,
+            version: "4.2.0",
+          });
+          await Traceway.refreshConfig();
+        });
+        await block();
+
+        metricsStatus = 503;
+        await metricsPage.evaluate(() => Traceway.flush());
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        assert.equal(
+          metricPayloads.length,
+          1,
+          "a rejected upload is not retried while the page lives",
+        );
+        const failedId = resourceOf(metricPayloads[0])["traceway.batch_id"];
+        assert.match(failedId, /^[0-9a-f]{32}$/);
+        const first = metricsOf(metricPayloads[0]);
+        const blocks =
+          first["browser.long_task.duration"].exponentialHistogram.dataPoints;
+        assert.equal(blocks[0].scale, 3);
+        assert(
+          blocks[0].attributes.some(
+            (a) => a.key === "url.path" && a.value.stringValue === "/orders/:id",
+          ),
+          "the path is normalized on the device",
+        );
+
+        metricsStatus = 200;
+        await block();
+        await metricsPage.goto("about:blank");
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        // The browser fires `pagehide` and then `visibilitychange`; the web vitals library reports from both.
+        assert(
+          metricPayloads.length >= 2 && metricPayloads.length <= 3,
+          `${metricPayloads.length} payloads when the page goes away`,
+        );
+        const last = Object.assign(
+          {},
+          ...metricPayloads.slice(1).map(metricsOf),
+        );
+        assert.equal(last["browser.page_view"].sum.dataPoints[0].asDouble, 1);
+        assert(last["browser.long_task.blocking_time"], "blocking time per page view");
+        assert(
+          last["browser.web_vital.lcp"] || last["browser.web_vital.cls"],
+          "the final web vitals are uploaded while the page goes away",
+        );
+        const resource = resourceOf(metricPayloads.at(-1));
+        assert.equal(resource["traceway.metrics"], "aggregated");
+        assert.equal(resource["service.version"], "4.2.0");
+        assert.equal(retriesOf(failedId).length, 0);
+
+        await load();
+        assert.equal(
+          retriesOf(failedId).length,
+          1,
+          "the failed payload is sent again on the next page load, as the same batch",
+        );
+        await load();
+        assert.equal(retriesOf(failedId).length, 1, "and only once");
+        assert(
+          !logs
+            .slice(logsBefore)
+            .some((log) => log.eventName === "browser.web_vital"),
+          "the web vital events stay on the device",
+        );
+      } finally {
+        metricsStatus = 200;
+        await metricsPage.close();
       }
     },
   );

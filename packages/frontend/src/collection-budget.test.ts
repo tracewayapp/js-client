@@ -7,6 +7,7 @@ it("persists shared byte and event limits across reloads and resets for a new se
     maxEvents: 3,
   });
   expect(first.admit("session-a", 60, 2)).toBe(true);
+  first.persist();
   const nextPage = new CollectionBudget("project", {
     maxBytes: 100,
     maxEvents: 3,

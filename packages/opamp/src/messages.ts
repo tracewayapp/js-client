@@ -60,19 +60,23 @@ export interface ServerToAgent {
 
 function writeAnyValue(w: Writer, value: AttributeValue): void {
   if (typeof value === "string") {
-    w.string(1, value);
+    w.string(1, value, true);
   } else if (typeof value === "boolean") {
-    w.bool(2, value);
+    w.bool(2, value, true);
   } else if (typeof value === "number") {
     if (Number.isInteger(value) && value >= 0) {
-      if (value !== 0) w.tag(3, WIRE_VARINT).varint(value);
+      w.tag(3, WIRE_VARINT).varint(value);
     } else {
-      w.double(4, value);
+      w.double(4, value, true);
     }
   } else {
-    w.message(5, (array) => {
-      for (const item of value) array.message(1, (v) => v.string(1, item), true);
-    });
+    w.message(
+      5,
+      (array) => {
+        for (const item of value) array.message(1, (v) => v.string(1, item, true), true);
+      },
+      true,
+    );
   }
 }
 

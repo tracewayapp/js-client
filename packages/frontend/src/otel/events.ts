@@ -9,6 +9,8 @@ export const EVENT_SESSION_UPDATE = "traceway.session.update";
 export const EVENT_TRIGGER_FIRED = "traceway.trigger.fired";
 export const EVENT_CAPTURE_STARTED = "traceway.capture.started";
 export const EVENT_CONFIG_APPLIED = "traceway.config.applied";
+export const EVENT_LONG_TASK = "browser.long_task";
+export const EVENT_ROUTE_TIMING = "browser.route_timing";
 
 export const ATTR_SESSION_ID = "session.id";
 export const ATTR_SESSION_STARTED_AT = "traceway.session.started_at";
@@ -47,6 +49,10 @@ export function classifyLog(eventName: string | undefined): RecordSignal {
     case "browser.resource_timing":
     case "browser.navigation_timing":
       return "resourceTiming";
+    case EVENT_LONG_TASK:
+      return "longTasks";
+    case EVENT_ROUTE_TIMING:
+      return "routeTiming";
   }
   return CONTROL_EVENTS.has(eventName) ? "control" : "custom";
 }

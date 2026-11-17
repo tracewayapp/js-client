@@ -13,9 +13,12 @@ import { logsToJson } from "../persistence/otlp-json.js";
 /** Bridges v2 collection to the report protocol understood by pre-OpAMP servers. */
 export class LegacyTransport {
   enabled = false;
+  /** False once it is known this transport will never be used, so records are no longer mirrored for it. */
+  possible = true;
   ready: Promise<void> = Promise.resolve();
   private clips = new Map<string, SessionRecordingPayload[]>();
   private timeline: TracewayEvent[] = [];
+  private timelineMs: number[] = [];
 
   constructor(
     private readonly base: string,
@@ -24,6 +27,7 @@ export class LegacyTransport {
   ) {}
 
   observe(record: ObservedRecord): void {
+    if (!this.enabled && !this.possible) return;
     if (record.routed === "off" || record.routed === "filtered") return;
     const timestamp = new Date(record.timeMs).toISOString();
     const get = (key: string) => record.lookup(key);
@@ -90,10 +94,18 @@ export class LegacyTransport {
         }
       }
     }
-    if (event) this.timeline.push(event);
-    this.timeline = this.timeline
-      .filter((e) => Date.parse(e.timestamp) >= Date.now() - 30_000)
-      .slice(-200);
+    if (event) {
+      this.timeline.push(event);
+      this.timelineMs.push(record.timeMs);
+    }
+    const cutoff = Date.now() - 30_000;
+    let drop = Math.max(0, this.timeline.length - 200);
+    while (drop < this.timelineMs.length && this.timelineMs[drop]! < cutoff)
+      drop++;
+    if (drop > 0) {
+      this.timeline.splice(0, drop);
+      this.timelineMs.splice(0, drop);
+    }
   }
 
   private decorate(segment: SessionRecordingPayload): SessionRecordingPayload {
@@ -236,11 +248,23 @@ export class LegacyTransport {
   }
 
   wrapLogs(inner: LogRecordExporter): LogRecordExporter {
+    const pending = new Set<Promise<void>>();
+    const drain = async () => {
+      while (pending.size) await Promise.all([...pending]);
+    };
     return {
       export: (records, done) => {
-        void this.ready
+        const task = this.ready
           .then(async () => {
-            if (!this.enabled) return inner.export(records, done);
+            if (!this.enabled) {
+              await new Promise<void>((resolve) => {
+                inner.export(records, (result) => {
+                  done(result);
+                  resolve();
+                });
+              });
+              return;
+            }
             const response = await this.sendLogs(logsToJson(records));
             done({
               code: response.ok
@@ -249,9 +273,17 @@ export class LegacyTransport {
             });
           })
           .catch((error) => done({ code: ExportResultCode.FAILED, error }));
+        pending.add(task);
+        void task.finally(() => pending.delete(task));
       },
-      shutdown: () => inner.shutdown(),
-      forceFlush: () => inner.forceFlush?.() ?? Promise.resolve(),
+      shutdown: async () => {
+        await drain();
+        await inner.shutdown();
+      },
+      forceFlush: async () => {
+        await drain();
+        await inner.forceFlush?.();
+      },
     };
   }
 

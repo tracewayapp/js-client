@@ -42,8 +42,10 @@ export function defaultSettings(
       console: { mode: breadcrumbs, sampleRate: 1, minSeverity: "info" },
       navigation: { mode: breadcrumbs, sampleRate: 1 },
       userActions: { mode: breadcrumbs, sampleRate: 1 },
-      webVitals: { mode: "stream", sampleRate: 1 },
+      webVitals: { mode: "buffer", sampleRate: 1 },
       resourceTiming: { mode: "off", sampleRate: 1 },
+      longTasks: { mode: "off", sampleRate: 1 },
+      routeTiming: { mode: "off", sampleRate: 1 },
       custom: { mode: breadcrumbs, sampleRate: 1 },
     },
     sessions: {
@@ -57,6 +59,7 @@ export function defaultSettings(
       sessionSampleRate: 1,
       maskAllInputs: true,
     },
+    metrics: { enabled: true, sampleRate: 1, flushSeconds: 300 },
     buffer: {
       maxBytes: 2 * 1024 * 1024,
       maxAgeSeconds: 600,
@@ -77,6 +80,9 @@ export interface CeilingOptions {
   captureUserActions?: boolean;
   captureWebVitals?: boolean;
   captureResourceTiming?: boolean;
+  captureLongTasks?: boolean;
+  captureRouteTiming?: boolean;
+  captureMetrics?: boolean;
   sessions?: boolean;
 }
 
@@ -91,10 +97,13 @@ export function ceilingsFrom(options: CeilingOptions = {}): Ceilings {
   signals.userActions = allow(options.captureUserActions);
   signals.webVitals = allow(options.captureWebVitals);
   signals.resourceTiming = allow(options.captureResourceTiming);
+  signals.longTasks = allow(options.captureLongTasks);
+  signals.routeTiming = allow(options.captureRouteTiming);
   return {
     enabled: options.enabled !== false,
     signals,
     replay: allow(options.sessionRecording),
     sessions: options.sessions !== false,
+    metrics: options.captureMetrics !== false,
   };
 }

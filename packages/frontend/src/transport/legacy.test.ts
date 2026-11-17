@@ -113,3 +113,29 @@ describe("legacy report compatibility", () => {
     expect(send.mock.calls[0][0]).toBe("https://old.test/api/report");
   });
 });
+
+it("forceFlush and shutdown await a legacy export already scheduled", async () => {
+  const legacy = new LegacyTransport("https://old.test", "token", "2.1.0");
+  legacy.enabled = true;
+  let finish!: () => void;
+  const sent = new Promise<void>((resolve) => { finish = resolve; });
+  vi.spyOn(legacy, "sendLogs").mockImplementation(async () => {
+    await sent;
+    return new Response(null, { status: 200 });
+  });
+  const inner = { export: vi.fn(), shutdown: vi.fn(async () => {}), forceFlush: vi.fn(async () => {}) };
+  const exporter = legacy.wrapLogs(inner);
+  const done = vi.fn();
+  exporter.export([], done);
+  let flushed = false;
+  const flushing = exporter.forceFlush!().then(() => { flushed = true; });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(flushed).toBe(false);
+  expect(done).not.toHaveBeenCalled();
+  finish();
+  await flushing;
+  expect(done).toHaveBeenCalledOnce();
+  await exporter.shutdown();
+  expect(inner.shutdown).toHaveBeenCalledOnce();
+});

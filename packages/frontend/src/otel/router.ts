@@ -1,6 +1,12 @@
 import type { StoredBatch } from "../persistence/idb.js";
-import { logsToJson, spansToJson } from "../persistence/otlp-json.js";
-import { SpanStatusCode, type Context } from "@opentelemetry/api";
+import {
+  ATTR_CAPTURE_IDS,
+  forgetJson,
+  mergeRequests,
+  recordJson,
+  withCaptureIds,
+} from "../persistence/otlp-json.js";
+import { SpanKind, SpanStatusCode, type Context } from "@opentelemetry/api";
 import type {
   LogRecordProcessor,
   ReadableLogRecord,
@@ -51,6 +57,7 @@ export interface RouterSinks {
   spans: SpanProcessor;
 }
 
+const MAX_STORED_REQUEST_CHARS = 512 * 1024;
 const SPAN_STATUS = ["unset", "ok", "error"];
 const SPAN_KINDS = ["internal", "server", "client", "producer", "consumer"];
 
@@ -146,12 +153,9 @@ export class TelemetryRouter {
       record.setAttribute(ATTR_SESSION_ID, sessionId);
     }
     if (signal !== "control") {
-      const captureIds = this.control
-        .settings()
-        .captures.filter((capture) => Date.parse(capture.until) > Date.now())
-        .map((capture) => capture.id);
+      const captureIds = this.activeCaptureIds();
       if (captureIds.length)
-        record.setAttribute("traceway.capture.ids", JSON.stringify(captureIds));
+        record.setAttribute(ATTR_CAPTURE_IDS, JSON.stringify(captureIds));
     }
     if (!this.hooks.enrichLog(record, signal)) return;
 
@@ -180,12 +184,9 @@ export class TelemetryRouter {
   stampSpan(span: Span): void {
     const sessionId = this.hooks.sessionId();
     if (sessionId) span.setAttribute(ATTR_SESSION_ID, sessionId);
-    const captureIds = this.control
-      .settings()
-      .captures.filter((capture) => Date.parse(capture.until) > Date.now())
-      .map((capture) => capture.id);
+    const captureIds = this.activeCaptureIds();
     if (captureIds.length)
-      span.setAttribute("traceway.capture.ids", JSON.stringify(captureIds));
+      span.setAttribute(ATTR_CAPTURE_IDS, JSON.stringify(captureIds));
     const baselineRate = this.control.settings().sessions.baselineSampleRate;
     span.setAttribute(
       "traceway.collection.source",
@@ -232,11 +233,66 @@ export class TelemetryRouter {
     untilMs = Infinity,
   ): number {
     const entries = this.buffer.take(sinceMs, signals, untilMs);
+    // What a capture's lookback uploads was recorded before the capture existed, so it is marked here: the
+    // server counts a capture as delivered by the ids on the data it receives.
+    const captureIds = this.activeCaptureIds();
+    const stored: Record<StoredBatch["kind"], StoredBatch[]> = {
+      logs: [],
+      traces: [],
+    };
     for (const entry of entries) {
-      if (this.control.canExport(entry.signal as SignalName))
-        this.send(entry.item);
+      if (!this.control.canExport(entry.signal as SignalName)) continue;
+      const item = entry.item;
+      if (item.kind === "stored") {
+        if (!this.hooks.admit || this.hooks.admit(item))
+          stored[item.batch.kind].push(item.batch);
+        continue;
+      }
+      if (captureIds.length) {
+        const target = item.kind === "log" ? item.record : item.span;
+        // Set on the object, not through setAttribute, which ignores an ended span.
+        (target.attributes as Record<string, unknown>)[ATTR_CAPTURE_IDS] =
+          withCaptureIds(target.attributes[ATTR_CAPTURE_IDS], captureIds);
+        forgetJson(target);
+      }
+      this.send(item);
+    }
+    // Records restored from an earlier page are one request body each; they leave as a few requests.
+    for (const kind of ["logs", "traces"] as const) {
+      let chunk: StoredBatch[] = [];
+      let size = 0;
+      const sendChunk = () => {
+        if (chunk.length === 0) return;
+        this.hooks.sendStored({
+          ...chunk[0]!,
+          body:
+            chunk.length === 1 && captureIds.length === 0
+              ? chunk[0]!.body
+              : mergeRequests(
+                  kind,
+                  chunk.map((batch) => batch.body),
+                  captureIds,
+                ),
+        });
+        chunk = [];
+        size = 0;
+      };
+      for (const batch of stored[kind]) {
+        if (size + batch.body.length > MAX_STORED_REQUEST_CHARS) sendChunk();
+        chunk.push(batch);
+        size += batch.body.length;
+      }
+      sendChunk();
     }
     return entries.length;
+  }
+
+  private activeCaptureIds(): string[] {
+    const now = Date.now();
+    return this.control
+      .settings()
+      .captures.filter((capture) => Date.parse(capture.until) > now)
+      .map((capture) => capture.id);
   }
 
   private route(
@@ -270,12 +326,7 @@ export class TelemetryRouter {
     this.buffer.push({
       timeMs,
       signal,
-      bytes:
-        2 *
-        (item.kind === "log"
-          ? logsToJson([item.record])
-          : spansToJson([item.span])
-        ).length,
+      bytes: 2 * recordJson(item).length,
       item,
     });
     return "buffer";
@@ -316,15 +367,24 @@ export class ControlLogProcessor implements LogRecordProcessor {
   }
 }
 
+/** Told about the requests the SDK traces while they are in flight. */
+export interface RequestActivity {
+  requestStarted(request: unknown): void;
+  requestEnded(request: unknown): void;
+}
+
 export class ControlSpanProcessor implements SpanProcessor {
   constructor(
     private readonly router: () => TelemetryRouter | null,
     private readonly sink: SpanProcessor,
+    private readonly activity: () => RequestActivity | null = () => null,
+    private readonly requestEnded: (span: ReadableSpan) => void = () => {},
   ) {}
 
   onStart(span: Span, _parentContext: Context): void {
     try {
       this.router()?.stampSpan(span);
+      if (span.kind === SpanKind.CLIENT) this.activity()?.requestStarted(span);
     } catch {
       // ignore
     }
@@ -332,6 +392,10 @@ export class ControlSpanProcessor implements SpanProcessor {
 
   onEnd(span: ReadableSpan): void {
     try {
+      if (span.kind === SpanKind.CLIENT) {
+        this.activity()?.requestEnded(span);
+        this.requestEnded(span);
+      }
       this.router()?.routeSpan(span);
     } catch {
       // ignore
