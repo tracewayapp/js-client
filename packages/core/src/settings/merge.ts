@@ -94,6 +94,27 @@ function scalar(value: unknown): value is string | number | boolean {
 
 export function parseMatcher(value: unknown, depth = 0): Matcher | null {
   if (!isObject(value) || depth > MAX_MATCHER_DEPTH) return null;
+  if (isObject(value.event)) {
+    const e = value.event;
+    if (
+      !["click", "hover", "navigation", "log"].includes(String(e.type)) ||
+      typeof e.value !== "string" ||
+      !e.value.trim() ||
+      e.value.length > 256
+    )
+      return null;
+    if (e.mode !== undefined && e.mode !== "exact" && e.mode !== "contains")
+      return null;
+    if ((e.type === "click" || e.type === "hover") && /[:,\\]/.test(e.value))
+      return null;
+    return {
+      event: {
+        type: e.type as "click" | "hover" | "navigation" | "log",
+        value: e.value,
+        ...(e.mode ? { mode: e.mode as "exact" | "contains" } : {}),
+      },
+    };
+  }
   if (Array.isArray(value.all) || Array.isArray(value.any)) {
     const key = Array.isArray(value.all) ? "all" : "any";
     const items: Matcher[] = [];

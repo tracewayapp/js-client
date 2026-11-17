@@ -45,7 +45,7 @@ export class TriggerEngine {
     );
     const next = new Map<string, TriggerState>();
     for (const trigger of this.triggers) {
-      const signature = JSON.stringify(trigger.steps);
+      const signature = JSON.stringify([trigger.steps, trigger.actions]);
       const prev = this.states.get(trigger.id);
       next.set(
         trigger.id,
@@ -65,6 +65,56 @@ export class TriggerEngine {
       );
     }
     this.states = next;
+  }
+
+  snapshotProgress(): unknown {
+    return [...this.states.entries()]
+      .filter(([, s]) => s.step > 0)
+      .map(([id, s]) => ({
+        id,
+        signature: s.signature,
+        step: s.step,
+        lastStepMs: s.lastStepMs,
+        hits: s.hits.slice(-1000),
+      }));
+  }
+
+  restoreProgress(saved: unknown, now = Date.now()): void {
+    if (!Array.isArray(saved)) return;
+    for (const item of saved.slice(0, 20)) {
+      if (!item || typeof item !== "object") continue;
+      const state = this.states.get(item.id);
+      const trigger = this.triggers.find((t) => t.id === item.id);
+      if (
+        !state ||
+        !trigger ||
+        state.signature !== item.signature ||
+        !Number.isInteger(item.step) ||
+        item.step < 1 ||
+        item.step >= trigger.steps.length
+      )
+        continue;
+      const age = now - item.lastStepMs;
+      if (
+        !Number.isFinite(age) ||
+        age < 0 ||
+        age > (trigger.steps[item.step]!.withinSeconds ?? 300) * 1000
+      )
+        continue;
+      state.step = item.step;
+      state.lastStepMs = item.lastStepMs;
+      state.hits = Array.isArray(item.hits)
+        ? item.hits
+            .filter(
+              (v: unknown) =>
+                typeof v === "number" &&
+                Number.isFinite(v) &&
+                v <= now &&
+                v >= now - 86400000,
+            )
+            .slice(-1000)
+        : [];
+    }
   }
 
   resetSession(): void {

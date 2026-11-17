@@ -83,6 +83,13 @@ export interface Condition {
 }
 
 export type Matcher =
+  | {
+      event: {
+        type: "click" | "hover" | "navigation" | "log";
+        value: string;
+        mode?: "exact" | "contains";
+      };
+    }
   | Condition
   | { all: Matcher[] }
   | { any: Matcher[] }

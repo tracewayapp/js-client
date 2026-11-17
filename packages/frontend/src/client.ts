@@ -1,3 +1,7 @@
+import {
+  listenForSequenceActions,
+  hasSequenceEvent,
+} from "./sequence-listener.js";
 import { LegacyTransport } from "./transport/legacy.js";
 import { logsToJson, spansToJson } from "./persistence/otlp-json.js";
 import {
@@ -288,6 +292,30 @@ export class TracewayFrontendClient {
   private readonly ignoreErrors: Array<string | RegExp>;
   private readonly buffer: RingBuffer<BufferedItem>;
   private readonly triggers = new TriggerEngine();
+  private stopSequenceActions: (() => void) | null = null;
+  private sequencePageObserved = false;
+  private savedTriggerProgress = "";
+
+  private saveTriggerProgress(): void {
+    const progress = JSON.stringify({
+      sessionId: this.sessions.currentId(),
+      progress: this.triggers.snapshotProgress(),
+    });
+    if (progress === this.savedTriggerProgress) return;
+    this.savedTriggerProgress = progress;
+    storageSet(`traceway:trigger-progress:${this.token}`, progress, true);
+  }
+
+  private restoreTriggerProgress(): void {
+    try {
+      const saved = JSON.parse(
+        storageGet(`traceway:trigger-progress:${this.token}`, true) ?? "{}",
+      );
+      if (saved.sessionId === this.sessions.currentId())
+        this.triggers.restoreProgress(saved.progress);
+    } catch {}
+  }
+
   private readonly sessions: SessionManager;
   private readonly replay: ReplayController;
   private readonly recordings: RecordingsTransport;
@@ -871,6 +899,8 @@ export class TracewayFrontendClient {
     this.healthTimer = null;
     if (this.overrideTimer !== null) clearTimeout(this.overrideTimer);
     this.overrideTimer = null;
+    this.stopSequenceActions?.();
+    this.stopSequenceActions = null;
     this.opamp?.stop();
     this.opamp = null;
     if (this.describeTimer !== null) clearTimeout(this.describeTimer);
@@ -911,6 +941,56 @@ export class TracewayFrontendClient {
       maxAgeMs: settings.buffer.maxAgeSeconds * 1000,
     });
     this.triggers.setTriggers(settings.triggers);
+    this.restoreTriggerProgress();
+    const needsActions = hasSequenceEvent(settings.triggers, [
+      "click",
+      "hover",
+    ]);
+    if (!needsActions) {
+      this.stopSequenceActions?.();
+      this.stopSequenceActions = null;
+    }
+    if (
+      needsActions &&
+      !this.stopSequenceActions &&
+      this.options.captureUserActions !== false &&
+      typeof document !== "undefined"
+    ) {
+      this.stopSequenceActions = listenForSequenceActions((type, match) => {
+        if (!this.control.enabled() || !this.sessions.currentId()) return;
+        const fired = this.triggers.observe({
+          timeMs: Date.now(),
+          lookup: (key) =>
+            key === "browser.action"
+              ? type
+              : key === "browser.target.matches"
+                ? match
+                : undefined,
+        });
+        this.saveTriggerProgress();
+        for (const trigger of fired) this.runTrigger(trigger);
+      });
+    }
+    if (
+      hasSequenceEvent(settings.triggers, ["navigation"]) &&
+      !this.sequencePageObserved &&
+      this.sessions.currentId() &&
+      this.options.captureNavigation !== false &&
+      typeof location !== "undefined"
+    ) {
+      this.sequencePageObserved = true;
+      const fired = this.triggers.observe({
+        timeMs: Date.now(),
+        lookup: (key) =>
+          key === "event.name"
+            ? "browser.navigation"
+            : key === "attributes.url.full"
+              ? location.href
+              : undefined,
+      });
+      this.saveTriggerProgress();
+      for (const trigger of fired) this.runTrigger(trigger);
+    }
     this.metrics.configure();
     this.applyReplay();
   }
@@ -1071,6 +1151,7 @@ export class TracewayFrontendClient {
       customCapabilities: [
         "io.traceway.sdk.buffer/v1",
         "io.traceway.sdk.capture/v1",
+        "io.traceway.sdk.sequence-triggers/v1",
       ],
       appliedConfigHash: this.appliedConfigHash,
       describe: () => this.describe(),
@@ -1466,6 +1547,7 @@ export class TracewayFrontendClient {
             : "buffer_unavailable",
         );
     }
+    this.saveTriggerProgress();
     if (fired.length > 0) this.router?.sendIfStreaming(observed);
   }
 
@@ -1481,6 +1563,23 @@ export class TracewayFrontendClient {
     const attributes: Record<string, string> = {
       "traceway.trigger.id": fired.trigger.id,
     };
+    const wantsReplay = fired.actions.some(
+      (a) => a.type === "startReplay" || ("replay" in a && a.replay),
+    );
+    if (wantsReplay && this.control.replayMode() !== "off") {
+      attributes["traceway.trigger.replay"] = "true";
+      attributes["traceway.trigger.steps"] = JSON.stringify(
+        fired.trigger.steps,
+      );
+    }
+    storageSet(
+      `traceway:trigger-limits:${this.token}`,
+      JSON.stringify({
+        sessionId: this.sessions.currentId(),
+        limits: this.triggers.sessionLimits,
+      }),
+      true,
+    );
     if (fired.trigger.name)
       attributes["traceway.trigger.name"] = fired.trigger.name;
     this.logger?.emit({
@@ -1683,6 +1782,7 @@ export class TracewayFrontendClient {
       if (saved.sessionId === session.id)
         this.triggers.restoreSessionLimits(saved.limits);
     } catch {}
+    this.restoreTriggerProgress();
     this.replay.onSessionStart();
     this.emitSessionEvent(
       resumed ? EVENT_SESSION_UPDATE : EVENT_SESSION_START,
