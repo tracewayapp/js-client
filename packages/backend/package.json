@@ -3,6 +3,7 @@
   "version": "1.0.3",
   "deprecated": "This package is deprecated. Use OpenTelemetry for Node.js backend instrumentation. See https://traceway.dev/client/node-sdk",
   "description": "DEPRECATED — Use OpenTelemetry instead. See https://traceway.dev/client/node-sdk",
+  "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",

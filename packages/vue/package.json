@@ -2,6 +2,7 @@
   "name": "@tracewayapp/vue",
   "version": "2.0.0",
   "description": "Traceway Vue.js integration with plugin and composable",
+  "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",

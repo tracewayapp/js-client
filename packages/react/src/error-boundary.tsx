@@ -14,7 +14,7 @@ interface TracewayErrorBoundaryState {
 /**
  * @deprecated Since v1.1.0 — `TracewayProvider` now catches render errors and
  * reports them automatically. Use `TracewayErrorBoundary` only if you need a
- * custom `fallback` UI for a subtree. It will be removed in v2.
+ * custom `fallback` UI for a subtree.
  */
 export class TracewayErrorBoundary extends Component<
   TracewayErrorBoundaryProps,

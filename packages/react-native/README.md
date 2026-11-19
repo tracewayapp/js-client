@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@tracewayapp/react-native"><img src="https://img.shields.io/npm/v/@tracewayapp/react-native.svg" alt="npm"></a>
-  <a href="https://github.com/tracewayapp/traceway-js/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://opensource.org/license/mit"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
 
 # Traceway React Native SDK
@@ -17,26 +17,31 @@ Error tracking for React Native and Expo apps. Capture exceptions with full stac
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
-This is the React Native counterpart to [`@tracewayapp/react`](https://www.npmjs.com/package/@tracewayapp/react) (web) and [`com.tracewayapp:traceway`](https://github.com/tracewayapp/traceway-android) (native Android). The wire format is identical, so the same Traceway backend ingests reports from all three.
+This is the React Native counterpart to [`@tracewayapp/react`](https://www.npmjs.com/package/@tracewayapp/react) (web) and [`com.tracewayapp:traceway`](https://github.com/tracewayapp/traceway-android) (native Android). It sends its reports over Traceway's native report protocol, the same wire format the Android and Flutter SDKs use.
+
+> **Version 2.0.0.** `@tracewayapp/react-native` is versioned in lockstep with the browser packages, but it is not the OpenTelemetry browser SDK: its API, options and transport are the same as in 1.x (the source is unchanged), so upgrading from 1.x needs no code changes. Remote collection settings, OTLP export, performance metrics, `track()` / `metric()` / `count()` and session replay belong to the [browser SDK](https://docs.tracewayapp.com/client/js-sdk) and are not part of this package.
 
 > **No screen recording.** Unlike the browser SDK (`@tracewayapp/frontend`), this package does not record the screen. The `rrweb` recorder is intentionally absent — nothing in the bundle reaches into a DOM that doesn't exist.
 
 ## Features
 
 - Automatic capture of every uncaught throw via React Native's `ErrorUtils` global handler
-- Automatic capture of unhandled promise rejections
 - Full Hermes / JavaScriptCore stack traces, normalized to Traceway's wire format
 - **Logs** — every `console.{debug,log,info,warn,error}` line from the last ~10 seconds
 - **Actions** — every `fetch` and `XMLHttpRequest` call, plus navigation transitions you wire in, plus custom breadcrumbs
 - React surface: `<TracewayProvider>` (also acts as an error boundary), `useTraceway()` hook
-- Debounced, retrying batch transport over plain `fetch` (no native modules, works in Expo Go)
+- Debounced, retrying, gzip-compressed batch transport over plain `fetch` (no native modules, works in Expo Go)
 - Simple one-line setup
+
+Unhandled promise rejections are **not** captured automatically; see [What Gets Captured Automatically](#what-gets-captured-automatically).
 
 ## Installation
 
 ```bash
 npm install @tracewayapp/react-native
 ```
+
+This installs 2.x; `@tracewayapp/react-native@2` pins the major, `@1` stays on 1.x (same API).
 
 The package is plain JavaScript — no native modules, no `pod install`, no Gradle changes. It works in Expo Go, in bare React Native CLI projects, and in EAS builds.
 
@@ -56,7 +61,9 @@ export default function App() {
 }
 ```
 
-That's it. Every uncaught throw, unhandled promise rejection, render-time exception, and `fetch` call is captured automatically. `TracewayErrorBoundary` is still exported (deprecated) if you need a custom `fallback` UI for a specific subtree; it will be removed in v2.
+Copy the connection string from your project's **Connection** page in the dashboard as it is, including the `/api/report` path after the host: this package posts its reports to that exact URL.
+
+That's it. Every uncaught throw, render-time exception, and `fetch` call is captured automatically. If you want to replace a crashed subtree with a custom `fallback` UI, `TracewayErrorBoundary` is still exported in 2.0.0 for that purpose, but it has been deprecated since v1.1.0. Do not build new code around it.
 
 ## Manual Capture
 
@@ -83,38 +90,63 @@ captureMessage("User completed checkout");
 await flush();
 ```
 
+`useTraceway()` returns `captureException`, `captureExceptionWithAttributes`, `captureMessage`, `recordAction`, `recordNavigation` and `setDeviceAttributes`, and throws when called outside a `TracewayProvider`. The same functions, plus `init`, `flush(timeoutMs?)`, `setAttribute`, `setAttributes`, `removeAttribute` and `clearAttributes`, can be imported directly; before `init()` has run they do nothing.
+
+`captureMessage(message)` takes the message only. To attach attributes to a single report use `captureExceptionWithAttributes(error, attributes)`; `captureException(error)` takes none.
+
 ## Options
 
-All field names mirror the browser and Android SDKs so existing config can be ported as-is.
+Pass options as the `options` prop of `TracewayProvider`, or as the second argument of `init(connectionString, options)`.
+
+Field names mirror the Android and Flutter SDKs and the 1.x browser SDK, so existing config can be ported as-is. The 2.x browser SDK has a different set of options (see [Initialization](https://docs.tracewayapp.com/client/js-sdk/initialization)); a config written for it does not carry over.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `version` | `""` | App version string, attached to every report |
-| `debug` | `false` | Print debug info to the console |
+| `debug` | `false` | Log SDK diagnostics to the console: the device attributes, reports dropped by a filter, failed uploads, a `beforeCapture` that throws |
 | `debounceMs` | `1500` | Milliseconds before flushing batched events |
 | `retryDelayMs` | `10000` | Retry delay on failed uploads |
-| `ignoreErrors` | sensible defaults | Array of `string \| RegExp` patterns; matching exceptions are dropped |
+| `ignoreErrors` | `DEFAULT_IGNORE_PATTERNS` | Array of `string \| RegExp` patterns; a report whose text matches any of them is dropped. Passing a list replaces the defaults |
 | `beforeCapture` | none | `(exception) => boolean` — return `false` to drop |
-| `captureLogs` | `true` | Mirror every `console.*` call into the rolling log buffer |
+| `captureLogs` | `true` | Mirror `console.{debug,log,info,warn,error}` calls into the rolling log buffer |
 | `captureNetwork` | `true` | Record `fetch` and `XMLHttpRequest` calls as network actions |
 | `captureNavigation` | `true` | Record manual `recordNavigation()` calls |
-| `captureDeviceInfo` | `true` | Auto-collect `os.name`, `os.version`, screen, locale, runtime engine and attach to every report |
+| `captureDeviceInfo` | `true` | Auto-collect `device.locale` and `runtime.engine` and attach them to every report (see [Attributes](#1-device-info--auto-collected)) |
 | `eventsWindowMs` | `10000` | Rolling window kept in the log/action buffers (ms) |
 | `eventsMaxCount` | `200` | Hard cap applied independently to logs and actions |
+| `distributedTraceHosts` | `[]` | Hosts whose `fetch` calls get an outgoing `traceway-trace-id` header. Traceway no longer uses that id, so it links nothing; see [Distributed Tracing](#distributed-tracing). Each entry is an exact host string or a `RegExp` tested against the URL host |
+| `captureHttpServerErrors` | `false` | Report every `fetch` response with `status >= 500` as an issue (sent as a message, `isMessage: true`). Applies to `fetch` only: a 5xx from a direct `XMLHttpRequest` call is recorded as a network action but not reported |
 
-The `DEFAULT_IGNORE_PATTERNS` export contains the built-in `ignoreErrors` list (`Network request failed`, `Failed to fetch`, generic 4xx, etc.) — you can extend it rather than replace it.
+`distributedTraceHosts` and `captureHttpServerErrors` live in the `fetch` wrapper, so neither does anything with `captureNetwork: false`.
+
+The `DEFAULT_IGNORE_PATTERNS` export contains the built-in `ignoreErrors` list (`Network request failed`, `Failed to fetch`, timeouts, generic 4xx, etc.) — you can extend it rather than replace it:
+
+```tsx
+import { TracewayProvider, DEFAULT_IGNORE_PATTERNS } from "@tracewayapp/react-native";
+
+<TracewayProvider
+  connectionString={DSN}
+  options={{ ignoreErrors: [...DEFAULT_IGNORE_PATTERNS, "Session expired"] }}
+>
+```
+
+Patterns are tested against the whole report text (the `Type: message` line and the stack frames). Messages sent with `captureMessage` and the 5xx reports of `captureHttpServerErrors` go through the same filter and through `beforeCapture`.
+
+## Distributed Tracing
+
+With `distributedTraceHosts` set, the SDK adds a `traceway-trace-id` header (a fresh UUID per request, exported as `DISTRIBUTED_TRACE_HEADER`) to the app's `fetch` calls to those hosts, and `getActiveDistributedTraceId()` returns the id of the instrumented `fetch` currently in flight. Traceway no longer uses that id to link traces, so a mobile exception is not linked to the backend request that failed; it still carries its attributes and the logs and actions recorded before it. Leave `distributedTraceHosts` empty. The W3C `traceparent` propagation of the 2.x browser SDK is not part of this package.
 
 ## Logs & Actions
 
-Every captured exception ships with the last ~10 seconds of session context, attached to the same `sessionRecordings[]` entry the other Traceway SDKs use:
+Every captured exception ships with the last ~10 seconds of session context, attached to a `sessionRecordings[]` entry on the wire, the same shape the Android and Flutter SDKs use:
 
 - **Logs** — every `console.{debug,log,info,warn,error}` call. The original `console` output is preserved; we only piggyback on the call.
 - **Actions** are split into three channels:
-  - **Network** — every `fetch` and `XMLHttpRequest` call (method, URL, status, duration, byte counts). Calls to the Traceway endpoint itself are skipped to avoid recursion.
+  - **Network** — every `fetch` and `XMLHttpRequest` call (method, URL, status, duration, byte counts). Calls to the Traceway host itself are skipped to avoid recursion.
   - **Navigation** — push transitions you record manually (see below).
   - **Custom** — anything you call `recordAction(...)` with.
 
-Logs and actions are kept in two separate rolling buffers, each capped at 200 entries / 10 seconds. They ship inside `sessionRecordings[].logs` and `sessionRecordings[].actions` on the wire, with `startedAt` / `endedAt` ISO 8601 timestamps spanning the captured window.
+Logs and actions are kept in two separate in-memory rolling buffers, each capped at 200 entries / 10 seconds by default (`eventsMaxCount` / `eventsWindowMs`). They ship inside `sessionRecordings[].logs` and `sessionRecordings[].actions` on the wire, with `startedAt` / `endedAt` ISO 8601 timestamps spanning the captured window.
 
 ### Navigation capture
 
@@ -166,31 +198,46 @@ Each channel can be turned off individually via `TracewayProvider`'s `options`:
 >
 ```
 
+Custom actions recorded with `recordAction(...)` have no switch; they are always kept.
+
 ## Attributes
 
 Every captured exception ships with an `attributes` map composed of three layers (per-call wins, then global scope, then device info):
 
 ### 1. Device info — auto-collected
 
-Auto-stamped at `init()` from React Native core APIs (no native modules required, works in Expo Go). The keys mirror what the [Flutter](https://github.com/tracewayapp/traceway-flutter) and [Android](https://github.com/tracewayapp/traceway-android) SDKs emit so the dashboard renders them consistently across platforms:
+`init()` stamps these two keys on every report. They need no native module and work in Expo Go:
 
 | Key | Source |
 |---|---|
-| `os.name` | `Platform.OS` (`ios` / `android` / `web`) |
-| `os.version` | `Platform.Version` |
-| `screen.resolution` | `Dimensions.get("screen")` (whole pixels) |
-| `screen.density` | `PixelRatio.get()` |
 | `device.locale` | `Intl.DateTimeFormat().resolvedOptions().locale` |
-| `runtime.engine` | `hermes` / `javascriptcore` |
+| `runtime.engine` | `hermes` when `HermesInternal` is defined, otherwise `javascriptcore` |
 
-To replace or extend the auto-collected map at runtime (e.g. add info from `expo-device` / `react-native-device-info` you've installed yourself):
+`collectSyncDeviceInfo()` also knows how to read `os.name` (`Platform.OS`), `os.version` (`Platform.Version`), `screen.resolution` (`Dimensions.get("screen")`, whole pixels) and `screen.density` (`PixelRatio.get()`), but it reaches `react-native` through a global `require`. Metro does not define one (it registers modules on `global.__r`), so in a real app those four keys come back empty. Pass them in yourself if you want them on the dashboard. The key names mirror what the [Flutter](https://github.com/tracewayapp/traceway-flutter) and [Android](https://github.com/tracewayapp/traceway-android) SDKs emit, so the dashboard renders them consistently across platforms:
+
+```ts
+import { setDeviceAttributes, collectSyncDeviceInfo } from "@tracewayapp/react-native";
+import { Dimensions, PixelRatio, Platform } from "react-native";
+
+const screen = Dimensions.get("screen");
+
+setDeviceAttributes({
+  ...collectSyncDeviceInfo(),  // keep the auto-collected ones
+  "os.name": Platform.OS,
+  "os.version": String(Platform.Version),
+  "screen.resolution": `${Math.round(screen.width)}x${Math.round(screen.height)}`,
+  "screen.density": PixelRatio.get().toFixed(1),
+});
+```
+
+`setDeviceAttributes` replaces the whole device map, so spread `collectSyncDeviceInfo()` to keep the auto-collected keys. Call it after the provider has mounted (before `init()` it does nothing). Use the same call to add info from `expo-device` / `react-native-device-info` you've installed yourself:
 
 ```ts
 import { setDeviceAttributes, collectSyncDeviceInfo } from "@tracewayapp/react-native";
 import * as Device from "expo-device";
 
 setDeviceAttributes({
-  ...collectSyncDeviceInfo(),  // keep the auto-collected ones
+  ...collectSyncDeviceInfo(),
   "device.model": Device.modelName ?? "",
   "device.manufacturer": Device.manufacturer ?? "",
 });
@@ -240,16 +287,35 @@ clearAttributes();
 
 ### Layering
 
-For each captured exception: `device info < global scope < per-call`. The same precedence applies to sessions when always-on session recording is on.
+For each captured exception or message: `device info < global scope < per-call`.
 
 ## What Gets Captured Automatically
 
 - **Uncaught throws** on the JS thread via `ErrorUtils.setGlobalHandler` — this is RN's equivalent of `window.onerror`. RN's red-box dev overlay still appears; we forward to the previous handler.
-- **Unhandled promise rejections** — `Promise.reject(...)` without a `.catch()` reaches the same `ErrorUtils` handler.
+- **Unhandled promise rejections are not captured.** The SDK installs only the `ErrorUtils` global handler, and React Native does not route unhandled rejections through it (it hands them to its own rejection tracking), so the SDK never sees them. Catch them yourself and call `captureException`.
 - **`fetch` calls** — wrapped at install time. Method, URL, status, duration, byte counts.
 - **`XMLHttpRequest` calls** — RN polyfills XHR (and `fetch` is implemented on top of it on some platforms); both paths are covered.
 - **Render errors** — `<TracewayProvider>` itself acts as an error boundary: exceptions thrown during render or in lifecycle methods are captured and re-thrown so the app behaves exactly as without Traceway.
 - **Console output** — `console.{debug,log,info,warn,error}` is mirrored into the log buffer that rides along the next exception.
+
+## Release Builds and Source Maps
+
+A release build ships one minified bundle (`index.android.bundle`, `main.jsbundle`), so its stack frames point into that bundle instead of your source files. Traceway resolves a frame against an uploaded source map by the frame's file name: frames in `index.android.bundle` are looked up in an upload named `index.android.bundle.map`. Upload the map of every release build, keeping the file name the build produced.
+
+Uploads use a dedicated **upload token**, not the token in your connection string. Open the project's **Connection** page, find the **Source Map Upload** card and click **Generate Upload Token**.
+
+The [`traceway-sourcemaps`](https://www.npmjs.com/package/@tracewayapp/sourcemap-upload) CLI uploads every `.map` file under a directory:
+
+```bash
+npm install -D @tracewayapp/sourcemap-upload
+
+export TRACEWAY_URL="https://traceway.example.com"
+export TRACEWAY_SOURCEMAP_TOKEN="your-upload-token"
+
+npx traceway-sourcemaps --directory android/app/build/generated/sourcemaps/react/release
+```
+
+`TRACEWAY_URL` is the origin of your Traceway instance, without `/api/report`. `--url` and `--token` can be passed as flags instead of the two variables. See the [React Native guide](https://docs.tracewayapp.com/client/react-native) for how to make Android and iOS release builds emit the map and where they write it, and the [source map upload reference](https://docs.tracewayapp.com/client/js-sdk/sourcemap-upload) for the CLI and the HTTP endpoint behind it.
 
 ## Platform Support
 
@@ -266,7 +332,15 @@ For native Android-only apps without React Native, use the [`com.tracewayapp:tra
 
 The `examples/expo-demo` directory is a tiny throwaway Expo app with buttons that exercise every capture path (caught throw, uncaught throw, render error, fetch error, custom action).
 
-To point it at your own Traceway backend:
+The demo resolves `@tracewayapp/react-native` and `@tracewayapp/core` to the workspace packages, so build them first. From the repo root:
+
+```bash
+npm install
+npm run build --workspace=@tracewayapp/core
+npm run build --workspace=@tracewayapp/react-native
+```
+
+Then point it at your own Traceway backend:
 
 ```bash
 cd packages/react-native/examples/expo-demo
@@ -276,11 +350,11 @@ TRACEWAY_DSN="YOUR_TOKEN@https://your-traceway-instance.com/api/report" npx expo
 
 Then open it in **Expo Go** (scan the QR code), or press `i` / `a` for iOS simulator / Android emulator.
 
-If `TRACEWAY_DSN` is missing, the app falls back to a placeholder DSN that won't reach any real server — the buttons still fire so you can verify the UI.
+If `TRACEWAY_DSN` is missing, the app falls back to a placeholder DSN that won't reach any real server — the buttons still fire so you can verify the UI. See the [example's README](examples/expo-demo/README.md) for what each button does.
 
 ## Running the tests
 
-JVM-fast Vitest unit tests cover the wire-format, the rolling event buffer, ignore-pattern handling, transport, retry logic, and stack-trace formatting against fake Hermes / JavaScriptCore stacks.
+Vitest unit tests cover the wire-format, the rolling event buffer, ignore-pattern handling, transport, retry logic, and stack-trace formatting against fake Hermes / JavaScriptCore stacks.
 
 ```bash
 npm test --workspace=@tracewayapp/react-native
@@ -288,19 +362,15 @@ npm test --workspace=@tracewayapp/react-native
 
 ## Publishing
 
-Releases are cut through the monorepo's `publish.sh` — it bumps every `@tracewayapp/*` package in lockstep, syncs cross-package dependency references, builds, and publishes. From the repo root:
-
-```bash
-./publish.sh
-```
-
-The script prompts for a new semver and confirms before pushing to npm. If publish fails, no commit or tag is created — fix the issue and re-run.
+This package is released together with every other active `@tracewayapp/*` package, at one shared version, by the monorepo's [Release npm packages](https://github.com/tracewayapp/js-client/actions/workflows/publish.yml) GitHub Actions workflow. See the [repository README](https://github.com/tracewayapp/js-client#publishing) for how a release is run.
 
 ## Links
 
 - [Traceway Website](https://tracewayapp.com)
 - [Traceway GitHub](https://github.com/tracewayapp/traceway)
 - [Documentation](https://docs.tracewayapp.com)
+- [React Native guide](https://docs.tracewayapp.com/client/react-native)
+- [Source repository](https://github.com/tracewayapp/js-client)
 - [Web SDK](https://www.npmjs.com/package/@tracewayapp/react)
 - [Android SDK](https://github.com/tracewayapp/traceway-android)
 

@@ -98,7 +98,10 @@ export default function App() {
       await fetch("https://this-domain-does-not-exist-12345.com/api");
     } catch (err) {
       captureException(err as Error);
-      log("Captured network error via useTraceway()", "success");
+      log(
+        "Passed the network error to captureException(); the default ignoreErrors drop it (\"Failed to fetch\")",
+        "info",
+      );
     }
   };
 

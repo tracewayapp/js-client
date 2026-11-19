@@ -2,6 +2,7 @@
   "name": "@tracewayapp/opamp",
   "version": "2.0.0",
   "description": "Minimal OpAMP (Open Agent Management Protocol) client over plain HTTP, for browsers and React Native",
+  "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",

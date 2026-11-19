@@ -11,7 +11,7 @@ import {
  * keys, `removeAttribute` for keys that disappeared. On unmount it removes
  * every key it currently owns.
  *
- *   useTracewayAttributes({ userId: user.id, tenant: org.id });
+ *   useTracewayAttributes({ "user.id": user.id, tenant: org.id });
  *
  * Important: the hook treats every key in the passed map as one it owns and
  * will remove on unmount. Don't share keys between this hook and direct

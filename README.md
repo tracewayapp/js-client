@@ -19,26 +19,36 @@ Official JavaScript / TypeScript client SDKs for [Traceway](https://tracewayapp.
 
 ## Migration guide from v1 to v2
 
-The v2 browser SDK uses OpenTelemetry for logs, request spans, and real user monitoring (RUM) metrics. Traceway can manage collection remotely over OpAMP and store session replay separately. These changes apply to the browser SDK and its React, Vue, Svelte, and jQuery wrappers. React Native still uses its native `/api/report` transport.
+The v2 browser SDK uses OpenTelemetry for logs, request spans, and real user monitoring (RUM) metrics. Traceway can manage collection remotely over OpAMP and store session replay separately. These changes apply to the browser SDK and its React, Vue, Svelte, and jQuery wrappers. `@tracewayapp/react-native` shares the version number but keeps its own API and its native `/api/report` transport, so a React Native app has nothing to migrate.
 
 Upgrade the Traceway packages your application installs directly to the same version. A vanilla browser app needs only the frontend package. A React app can install the React wrapper, which pulls in the matching frontend SDK.
 
 ```sh
-npm install @tracewayapp/frontend@2.0.0
+npm install @tracewayapp/frontend@2
+# or @tracewayapp/react@2, @tracewayapp/vue@2, @tracewayapp/svelte@2, @tracewayapp/jquery@2
 ```
+
+With a CDN script, change the pinned major from `@1` to `@2`: `https://cdn.jsdelivr.net/npm/@tracewayapp/frontend@2/dist/traceway.iife.global.js`.
 
 | If your v1 app uses… | What to do in v2 |
 | --- | --- |
-| `init(connectionString, options)` or a framework provider | Keep the existing project token and URL, including a URL ending in `/api/report`. Initialize once per page. To reinitialize with different options, call `await shutdown()` first. |
-| `captureException`, `captureMessage`, `recordAction`, or session attributes | Keep these calls. Pass per-error string attributes as the second argument to `captureException(error, attributes)` or `captureExceptionWithAttributes(error, attributes)`. Remove the old `distributedTraceId` option from both calls. For explicit correlation across a user action, use `startInteraction(name)` and its `run`, `captureException`, and `end` methods. |
+| `init(connectionString, options)` or a framework provider | Keep the existing project token and URL, including a URL ending in `/api/report`. Initialize once per page: a second `init()` is ignored. To reinitialize with different options, call `await shutdown()` first. |
+| `captureException`, `captureMessage`, `recordAction`, or session attributes (`setAttribute`, `setAttributes`, `removeAttribute`, `clearAttributes`) | Keep these calls. Pass per-error string attributes as the second argument to `captureException(error, attributes)` or `captureExceptionWithAttributes(error, attributes)`. Remove the old `distributedTraceId` option from both calls. For explicit correlation across a user action, use `startInteraction(name)` and its `run`, `captureException`, and `end` methods. |
 | `traceway-trace-id`, `DISTRIBUTED_TRACE_HEADER`, `getActiveDistributedTraceId()`, or `createAxiosInterceptor()` | Remove the custom header and interceptor. The SDK instruments browser fetch and XHR (including Axios) and propagates W3C `traceparent` on same-origin requests. For a cross-origin API, add its URL pattern to `propagateTraceHeaderCorsUrls` and allow `traceparent` in the API's CORS policy. |
-| Manual browser instrumentation helpers or `formatBrowserStackTrace` | Let `init()` install the handlers and pass the original error to `captureException()`. Import legacy report types such as `CollectionFrame` from `@tracewayapp/core` if you still consume that format. |
+| `installGlobalHandlers`, `installConsoleInstrumentation`, `installNavigationInstrumentation`, or `formatBrowserStackTrace` | Let `init()` install the handlers and pass the original error to `captureException()`. Import legacy report types such as `CollectionFrame` from `@tracewayapp/core` if you still consume that format. |
 | A `beforeCapture` callback that reads `stackTrace` | Read `type`, `message`, `stack`, and `attributes` from the callback argument. Return `false` to drop the event. `ignoreErrors` matches the error type and message. |
 | `eventsWindowMs`, `eventsMaxCount`, `debounceMs`, or `retryDelayMs` | Set retention with `collection.buffer.maxAgeSeconds` (seconds) and `collection.buffer.maxBytes` (bytes). Use `exportDelayMs` for log and span batching. The SDK manages retries for failed exports. |
-| `recordAllSessions` or error-triggered replay | Keep `recordAllSessions: true` for full replay by default. Otherwise errors and messages stream, most breadcrumbs and replay are buffered, and the built-in exception trigger can upload up to ten minutes of breadcrumbs and a 30-second clip. |
-| A self-hosted server that only accepts v1 reports | The default connected setup probes OpAMP and supports fallback to `/api/report`. For a known older server, set `transport: 'legacy'`. Use an OpAMP- and OTLP-capable Traceway server for remote rules and the Grafana split below. |
+| `recordAllSessions` or error-triggered replay | Keep `recordAllSessions: true` to stream every session's replay and breadcrumbs. Without it, errors and messages stream, most breadcrumbs and replay are buffered, and the built-in exception trigger can upload up to ten minutes of breadcrumbs and a 30-second clip. |
+| `flush()` before a redirect or after an error | Keep it. In v2 `flush()` only sends what is queued. It no longer stops the recorder or ends the session, and it does not release buffered breadcrumbs. |
+| A self-hosted server that only accepts v1 reports | Nothing by default: the connected setup probes OpAMP and falls back to `/api/report` when the server has no such endpoint. For a known older server, set `transport: 'legacy'` to skip the probe. Use an OpAMP- and OTLP-capable Traceway server for remote rules, request spans, performance metrics, and the Grafana split below. |
 
 **Collection and metrics.** Each signal can stream, stay buffered on the device, or be switched off. `flush()` sends queued exports and pending metrics. A trigger or capture can release buffered history. Performance metrics aggregate on the device and export every five minutes by default, even when individual performance events are buffered. Use `track()` for a named event, `count()` for a counter, and `metric()` for a distribution.
+
+**Sessions.** v1 reported a session only with `recordAllSessions`. v2 reports the start and end of every session unless you set `sessions: false`. The replay still stays on the device until an error, a trigger, or a capture asks for it.
+
+**Issues regroup once.** v2 sends the browser's raw stack, which Traceway normalizes differently from the text v1 formatted on the device. Existing issues of a v1 app start new groups after the upgrade.
+
+**Staying on v1.** v1 keeps working against current Traceway servers. `latest` on npm is now 2.x, so pin the major: `npm install @tracewayapp/frontend@1`. The docs keep a [v1 reference](https://docs.tracewayapp.com/client/js-sdk/v1), and the [migration page](https://docs.tracewayapp.com/client/js-sdk/migration) repeats this guide.
 
 ## Browser setups
 
@@ -55,7 +65,7 @@ init('PROJECT_TOKEN@https://traceway.example.com', {
 });
 ```
 
-The browser polls `/api/otel/v1/opamp` for collection rules, exports to `/api/otel/v1/logs`, `/api/otel/v1/traces`, and `/api/otel/v1/metrics`, and uploads rrweb replay clips to `/api/recordings` on that same host. To change what browsers collect, open **Edit Project → Data Collection** in Traceway. To check the installation in a test project, capture an exception after interacting with the page and open its replay from the issue.
+The browser polls `/api/otel/v1/opamp` for collection rules, exports to `/api/otel/v1/logs`, `/api/otel/v1/traces`, and `/api/otel/v1/metrics`, and uploads rrweb replay clips to `/api/recordings` on that same host. To change what browsers collect, open the **Data Collection** page in the project's sidebar in Traceway. To check the installation in a test project, capture an exception after interacting with the page and open its replay from the issue.
 
 ### 2. OpAMP, issues, and session replay on Traceway, telemetry on Grafana
 
@@ -144,6 +154,36 @@ init('PROJECT_TOKEN@https://traceway.example.com', {
 
 Local `collection` settings override SDK defaults. To disable automatic exception lookback uploads, set `collection.triggers` to `[{ id: 'default-exception', enabled: false }]`. In managed setups, cached or live remote rules overlay the local policy. Options such as `captureLogs: false` and `sessionRecording: false` take precedence over both. [Browser SDK options and collection defaults](packages/frontend/README.md#options)
 
+## Finding a user's sessions
+
+v2 reports every session by default, so finding a user's sessions needs no recording option. Attach the user's identity as a global attribute, at initialization when it is already known or later:
+
+```ts
+import { init, setAttribute, setAttributes, clearAttributes } from "@tracewayapp/frontend";
+
+init("your-token@https://traceway.example.com", {
+  attributes: { "user.id": "u_42" },
+});
+
+// When identity becomes available after initialization:
+setAttribute("user.id", "u_42");
+setAttributes({ tenant: "acme", plan: "pro" });
+
+// On logout, remove app-defined context:
+clearAttributes();
+```
+
+Attribute values are strings. `setAttribute`, `setAttributes`, `removeAttribute`,
+and `clearAttributes` update the open session at once and apply to later exceptions and messages.
+The React, Vue, Svelte, and jQuery integrations accept the same initialization options.
+In Traceway's Sessions page, search for the user ID, or add an attribute filter
+such as `user.id` = `u_42`. Filters appear as editable chips and can be combined.
+
+A session's replay is uploaded only when something asks for it: an error clip, a trigger, a capture, or
+`recordAllSessions: true`. Use the key `user.id` so that a capture or a rule on the **Data Collection** page can
+target the user. The SDK asks for its settings again shortly after a global attribute changes; call
+`refreshConfig()` to do it at once, for example right after login.
+
 ## Packages
 
 Every package below lives in `packages/<name>/` and is published as `@tracewayapp/<name>` on npm. All non-deprecated packages move in lockstep — one version, one release.
@@ -152,8 +192,8 @@ Every package below lives in `packages/<name>/` and is published as `@tracewayap
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| [`@tracewayapp/frontend`](packages/frontend) | <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a> | Browser SDK — built on OpenTelemetry (2.x): errors, console, navigation, clicks, web vitals, `fetch` / XHR spans with `traceparent`, rrweb session replay; local collection configuration or remote control over OpAMP |
-| [`@tracewayapp/react`](packages/react) | <a href="https://www.npmjs.com/package/@tracewayapp/react"><img src="https://img.shields.io/npm/v/@tracewayapp/react.svg" alt="npm"></a> | React wrapper — `<TracewayProvider>`, `<TracewayErrorBoundary>`, `useTraceway()` hook |
+| [`@tracewayapp/frontend`](packages/frontend) | <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a> | Browser SDK — built on OpenTelemetry (2.x): errors, console, navigation, clicks, web vitals, `fetch` / XHR spans with `traceparent`, performance metrics aggregated on the device, rrweb session replay; local collection configuration or remote control over OpAMP |
+| [`@tracewayapp/react`](packages/react) | <a href="https://www.npmjs.com/package/@tracewayapp/react"><img src="https://img.shields.io/npm/v/@tracewayapp/react.svg" alt="npm"></a> | React wrapper — `<TracewayProvider>` (also an error boundary), `useTraceway()` and `useTracewayRoute()` hooks |
 | [`@tracewayapp/vue`](packages/vue) | <a href="https://www.npmjs.com/package/@tracewayapp/vue"><img src="https://img.shields.io/npm/v/@tracewayapp/vue.svg" alt="npm"></a> | Vue 3 plugin + `useTraceway()` composable |
 | [`@tracewayapp/svelte`](packages/svelte) | <a href="https://www.npmjs.com/package/@tracewayapp/svelte"><img src="https://img.shields.io/npm/v/@tracewayapp/svelte.svg" alt="npm"></a> | Svelte / SvelteKit context-based setup |
 | [`@tracewayapp/jquery`](packages/jquery) | <a href="https://www.npmjs.com/package/@tracewayapp/jquery"><img src="https://img.shields.io/npm/v/@tracewayapp/jquery.svg" alt="npm"></a> | jQuery integration — auto-captures `$.ajax` errors |
@@ -168,8 +208,8 @@ Every package below lives in `packages/<name>/` and is published as `@tracewayap
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| [`@tracewayapp/core`](packages/core) | <a href="https://www.npmjs.com/package/@tracewayapp/core"><img src="https://img.shields.io/npm/v/@tracewayapp/core.svg" alt="npm"></a> | Shared types and utilities consumed by every other SDK, plus the 2.x control plane (settings, triggers, buffer). Zero runtime dependencies. You probably don't need to install this directly |
-| [`@tracewayapp/opamp`](packages/opamp) | — | Minimal OpAMP client over plain HTTP (fetch), used by the browser SDK for remote config. Zero runtime dependencies |
+| [`@tracewayapp/core`](packages/core) | <a href="https://www.npmjs.com/package/@tracewayapp/core"><img src="https://img.shields.io/npm/v/@tracewayapp/core.svg" alt="npm"></a> | Shared types and utilities for the browser and React Native SDKs, plus the 2.x control plane (settings, triggers, buffer, metric aggregation). Zero runtime dependencies. You probably don't need to install this directly |
+| [`@tracewayapp/opamp`](packages/opamp) | <a href="https://www.npmjs.com/package/@tracewayapp/opamp"><img src="https://img.shields.io/npm/v/@tracewayapp/opamp.svg" alt="npm"></a> | Minimal OpAMP client over plain HTTP (fetch), used by the browser SDK for remote config. Zero runtime dependencies |
 
 ### Tooling
 
@@ -180,41 +220,40 @@ Every package below lives in `packages/<name>/` and is published as `@tracewayap
 
 ### Deprecated
 
-These packages are no longer actively developed. New backend integrations should use [OpenTelemetry](https://opentelemetry.io/) instead — see the [OTel guide](https://docs.tracewayapp.com/client/otel). The packages still receive security fixes but are frozen at version `1.0.3`.
+These packages are no longer actively developed. New backend integrations should use [OpenTelemetry](https://opentelemetry.io/) instead — see the [OTel guide](https://docs.tracewayapp.com/client/otel). The packages are frozen at version `1.0.3` and get no further version bumps.
 
 | Package | Replacement |
 |---------|-------------|
-| [`@tracewayapp/backend`](packages/backend) | [Node.js + OTel](https://docs.tracewayapp.com/client/node-sdk) |
-| [`@tracewayapp/nestjs`](packages/nestjs) | [NestJS + OTel](https://docs.tracewayapp.com/client/nestjs) |
+| [`@tracewayapp/backend`](packages/backend) | [Node.js + OTel](https://docs.tracewayapp.com/client/otel/nodejs) |
+| [`@tracewayapp/nestjs`](packages/nestjs) | [NestJS + OTel](https://docs.tracewayapp.com/client/otel/nestjs) |
 
 ## Architecture
 
 ```
-                  ┌──────────────────────────────┐
-                  │ @tracewayapp/core            │  Types, EventBuffer, parseConnectionString,
-                  │ (zero deps)                  │  generateUUID, nowISO, wire-format definitions
-                  └──────────────┬───────────────┘
-                                 │
-              ┌──────────────────┼──────────────────┐
-              │                  │                  │
-              ▼                  ▼                  ▼
-   ┌────────────────────┐ ┌──────────────┐ ┌──────────────────────┐
-   │ @tracewayapp/      │ │ /react-native│ │ /sourcemap-upload    │
-   │   frontend         │ │  (RN, Expo)  │ │  (CLI tool)          │
-   │ (browser, rrweb)   │ │              │ │                      │
-   └─────────┬──────────┘ └──────────────┘ └──────────────────────┘
-             │
-   ┌─────────┴──────────┬─────────┬─────────┬──────────┐
-   ▼                    ▼         ▼         ▼          ▼
-┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
-│ /react │ │ /vue   │ │/svelte │ │/jquery │ │ direct │
-│        │ │        │ │        │ │        │ │ usage  │
-└────────┘ └────────┘ └────────┘ └────────┘ └────────┘
+┌──────────────────────────────┐      ┌──────────────────────────────┐
+│ @tracewayapp/core            │      │ @tracewayapp/opamp           │
+│ (zero deps)                  │      │ (zero deps)                  │
+└───────┬──────────────┬───────┘      └──────────────┬───────────────┘
+        │              │                             │
+        │              └────────┬────────────────────┘
+        ▼                       ▼
+ ┌──────────────┐     ┌────────────────────┐
+ │ /react-native│     │ @tracewayapp/      │
+ │  (RN, Expo)  │     │   frontend         │
+ └──────────────┘     │ (browser, rrweb)   │
+                      └─────────┬──────────┘
+                                │
+          ┌──────────┬──────────┼──────────┬──────────┐
+          ▼          ▼          ▼          ▼          ▼
+      ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+      │ /react │ │ /vue   │ │/svelte │ │/jquery │ │ direct │
+      │        │ │        │ │        │ │        │ │ usage  │
+      └────────┘ └────────┘ └────────┘ └────────┘ └────────┘
 ```
 
 In 2.x, `frontend` exports OpenTelemetry (OTLP/HTTP JSON) with local collection settings or optional Traceway OpAMP control (`@tracewayapp/opamp`); replay goes to a separate recordings endpoint. See `INTERNAL_DOCS.md` for the design.
 
-`@tracewayapp/core` is platform-agnostic. `frontend` is the browser SDK with rrweb; the framework wrappers (`react`, `vue`, `svelte`, `jquery`) are thin layers on top. `react-native` does **not** depend on `frontend` — it builds directly on `core` so the bundle stays free of `rrweb` and other browser-only APIs that don't exist on Hermes / JSC.
+`@tracewayapp/core` is platform-agnostic: the native report types, `EventBuffer`, `parseConnectionString` and `generateUUID`, plus the 2.x settings, triggers, ring buffer and metric aggregation. `frontend` is the browser SDK with rrweb; the framework wrappers (`react`, `vue`, `svelte`, `jquery`) are thin layers on top. `react-native` does **not** depend on `frontend` — it builds directly on `core` so the bundle stays free of `rrweb` and other browser-only APIs that don't exist on Hermes / JSC. `sourcemap-upload` and `bundler-plugin` are build-time tools that depend on none of the packages above.
 
 ## Getting started as a user
 
@@ -240,14 +279,15 @@ npm install @tracewayapp/jquery
 npm install @tracewayapp/react-native
 ```
 
-For browser apps, follow one of the [three browser setups](#browser-setups). For React Native and Expo, use the [native setup guide](packages/react-native).
+These commands install 2.x. Append `@2` to pin the major, or `@1` to stay on the previous browser SDK. For browser apps, follow one of the [three browser setups](#browser-setups). For React Native and Expo, use the [native setup guide](packages/react-native).
 
 ## Repo layout
 
 ```
 js-client/
 ├── packages/
-│   ├── core/              # Foundation — types, utilities, zero deps
+│   ├── core/              # Foundation — types, utilities, 2.x control plane, zero deps
+│   ├── opamp/             # OpAMP client over HTTP, used by frontend for remote config
 │   ├── frontend/          # Browser SDK (rrweb, browser instrumentation)
 │   │   └── examples/
 │   │       └── browser-demo/
@@ -265,8 +305,13 @@ js-client/
 │   │   └── examples/
 │   │       └── expo-demo/
 │   ├── sourcemap-upload/  # CLI for uploading .map files
+│   ├── bundler-plugin/    # Debug IDs for Vite, Rollup, and webpack builds
 │   ├── backend/           # DEPRECATED — use OTel
 │   └── nestjs/            # DEPRECATED — use OTel
+├── docs/releases.md       # Release setup and operations
+├── scripts/               # Release, bundle-size, and browser test runners
+├── tests/                 # Playwright browser tests and release-tool tests
+├── INTERNAL_DOCS.md       # Design notes for the 2.x browser SDK
 ├── package.json           # npm workspaces root
 ├── .github/workflows/publish.yml  # Stable and beta npm releases
 ├── deprecate.sh           # One-shot deprecate + final-version publish for backend/nestjs
@@ -365,28 +410,3 @@ The deprecated `backend` and `nestjs` packages are excluded from this rule — t
 ## License
 
 [MIT License](https://opensource.org/license/mit).
-
-## Finding a user's sessions
-
-Enable always-on recording and optionally supply identity attributes at initialization:
-
-```ts
-import { init, setAttributes, clearAttributes } from "@tracewayapp/frontend";
-
-init("your-token@https://traceway.example.com/api/report", {
-  recordAllSessions: true,
-  attributes: { userId: "u_42", email: "alice@example.com" },
-});
-
-// When identity becomes available after initialization:
-setAttributes({ userId: "u_42", tenant: "acme" });
-
-// On logout, remove app-defined context:
-clearAttributes();
-```
-
-Attribute values are strings. `setAttribute`, `setAttributes`, `removeAttribute`,
-and `clearAttributes` refresh the current session and affect subsequent exceptions.
-The React, Vue, Svelte, and jQuery integrations accept the same initialization options.
-In Traceway's Sessions page, search for a user ID or email, or add an attribute filter
-such as `userId=u_42`. Filters appear as editable chips and can be combined.

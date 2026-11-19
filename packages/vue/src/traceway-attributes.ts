@@ -10,7 +10,7 @@ export interface TracewayAttributesProps {
  * Declarative wrapper around `useTracewayAttributes`. Mount inside any tree
  * where you've established the user/tenant/etc. context:
  *
- *   <TracewayAttributes :attributes="{ userId: user.id, tenant: org.id }" />
+ *   <TracewayAttributes :attributes="{ 'user.id': user.id, tenant: org.id }" />
  *
  * Renders nothing. Removes the keys it owns on unmount.
  */

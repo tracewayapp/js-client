@@ -16,7 +16,7 @@ import {
  * <script setup>
  *   import { useTracewayAttributes } from "@tracewayapp/vue";
  *   const props = defineProps<{ user: User; org: Org }>();
- *   useTracewayAttributes(() => ({ userId: props.user.id, tenant: props.org.id }));
+ *   useTracewayAttributes(() => ({ "user.id": props.user.id, tenant: props.org.id }));
  * </script>
  * ```
  *

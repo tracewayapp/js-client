@@ -101,10 +101,14 @@ export function setMetricDimension(key: string, value: string | null): void {
   client?.setMetricDimension(key, value);
 }
 
-/** Sends everything that is queued for sending. Buffered telemetry stays on the device. */
+/**
+ * Sends everything that is queued for sending. Buffered telemetry stays on the device.
+ * Resolves when the attempt is over, whether or not every export succeeded: a batch that failed waits for the
+ * SDK's own retry, so there is nothing for the caller to handle.
+ */
 export async function flush(timeoutMs?: number): Promise<void> {
   if (!client) return;
-  const done = client.flush();
+  const done = client.flush().catch(() => undefined);
   if (timeoutMs === undefined) return done;
   await Promise.race([
     done,
@@ -177,6 +181,14 @@ export type {
   CustomEvent,
 } from "@tracewayapp/core";
 
-export function startInteraction(name: string) {
+/**
+ * Starts a span that ties the steps of one user action together, e.g. `startInteraction("checkout")`.
+ * Run the work inside `run()` (or wrap a callback with `bind()`) so its requests join the interaction's trace,
+ * report a failure with its `captureException()`, and call `end()` when the action is over.
+ * Returns `undefined` before `init()`.
+ */
+export function startInteraction(
+  name: string,
+): ReturnType<TracewayFrontendClient["startInteraction"]> | undefined {
   return client?.startInteraction(name);
 }

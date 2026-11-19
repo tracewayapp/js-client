@@ -120,6 +120,40 @@ describe("createTracewayPlugin", () => {
     expect(consoleSpy).toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
+
+  it("should keep calling an error handler installed before the plugin", () => {
+    const app = createApp({ render: () => h("div") });
+    const previous = vi.fn();
+    app.config.errorHandler = previous;
+    app.use(
+      createTracewayPlugin({
+        connectionString: "test-token@https://example.com/api/report",
+      }),
+    );
+
+    const error = new Error("boom");
+    app.config.errorHandler!(error, null, "test info");
+
+    expect(traceway.captureException).toHaveBeenCalledWith(error);
+    expect(previous).toHaveBeenCalledWith(error, null, "test info");
+  });
+
+  it("should leave Vue's error handling alone where there is no window", () => {
+    const realWindow = globalThis.window;
+    // @ts-expect-error simulating a server-side render
+    delete globalThis.window;
+    try {
+      const app = createApp({ render: () => h("div") });
+      app.use(
+        createTracewayPlugin({
+          connectionString: "test-token@https://example.com/api/report",
+        }),
+      );
+      expect(app.config.errorHandler).toBeUndefined();
+    } finally {
+      globalThis.window = realWindow;
+    }
+  });
 });
 
 describe("createTracewayPlugin — real component errors flow through to captureException", () => {

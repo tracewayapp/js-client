@@ -1,6 +1,7 @@
 {
   "name": "traceway-js",
   "private": true,
+  "license": "MIT",
   "workspaces": [
     "packages/core",
     "packages/opamp",

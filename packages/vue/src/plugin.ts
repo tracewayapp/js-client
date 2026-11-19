@@ -18,7 +18,12 @@ export function createTracewayPlugin(pluginOptions: TracewayPluginOptions) {
 
       app.provide(TracewayKey, context);
 
+      // On the server there is nothing to report to: the SDK only runs in the browser. A handler that swallowed
+      // render errors there would hide them from the framework, so Vue's own handling stays in place.
+      if (typeof window === "undefined") return;
+
       const debug = pluginOptions.options?.debug === true;
+      const previous = app.config.errorHandler;
 
       app.config.errorHandler = (err, instance, info) => {
         if (err instanceof Error) {
@@ -31,6 +36,8 @@ export function createTracewayPlugin(pluginOptions: TracewayPluginOptions) {
           console.error("[Traceway] Component:", instance);
           console.error("[Traceway] Info:", info);
         }
+        // A handler the app or its framework installed before this plugin keeps working.
+        previous?.(err, instance, info);
       };
     },
   };

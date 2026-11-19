@@ -3,10 +3,14 @@ import { setRoute } from "@tracewayapp/frontend";
 
 /**
  * Names the page being shown by its route template, so performance metrics group by route (`/orders/:id`) and
- * not by URL. Call it from the component a route renders, or once near the router with the matched pattern:
+ * not by URL. Call it from the component a route renders, with that route's pattern:
  *
- *   const match = useMatches().at(-1);
- *   useTracewayRoute(match?.route.path ?? null);
+ *   function OrderPage() {
+ *     useTracewayRoute("/orders/:id");
+ *     ...
+ *   }
+ *
+ * Pass `null` where no pattern is known; the SDK then replaces id-like path segments itself.
  */
 export function useTracewayRoute(template: string | null): void {
   useEffect(() => {

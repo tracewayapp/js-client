@@ -214,6 +214,7 @@ export class MetricsRecorder implements PerformanceSink {
   private lastSession: string | null = null;
   private readonly pending: PendingMetrics | null;
   private readonly inFlight = new Set<string>();
+  private readonly sending = new Set<Promise<void>>();
   private readonly dimensions = new Map<string, string>();
   private readonly viewObserver = new ViewVitalsObserver((entry) =>
     this.view.vitals.add(entry),
@@ -725,7 +726,7 @@ export class MetricsRecorder implements PerformanceSink {
     // A page that is going away may never see the answer, so its payload is stored first and removed on success.
     if (final) this.pending?.add(id, payload);
     this.inFlight.add(id);
-    void this.send(body, final).then((status) => {
+    const sent = this.send(body, final).then((status) => {
       this.inFlight.delete(id);
       const failed = status === 0 || status === 429 || status >= 500;
       if (final) {
@@ -736,6 +737,16 @@ export class MetricsRecorder implements PerformanceSink {
         this.resend();
       }
     });
+    // The upload of a page that is going away may never be answered, so nothing waits for it.
+    if (!final) {
+      this.sending.add(sent);
+      void sent.finally(() => this.sending.delete(sent));
+    }
+  }
+
+  /** Resolves when the uploads that are under way have been answered, so `flush()` can wait for them. */
+  async settled(): Promise<void> {
+    await Promise.all([...this.sending]);
   }
 
   private send(body: string, keepalive: boolean): Promise<number> {

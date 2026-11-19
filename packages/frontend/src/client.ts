@@ -19,7 +19,6 @@ import { ErrorsInstrumentation } from "@opentelemetry/browser-instrumentation/ex
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
 import { NavigationTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
-import { ResourceTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
 import { UserActionInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/user-action";
 import { WebVitalsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
 import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
@@ -185,7 +184,7 @@ export interface TracewayFrontendOptions {
   /** Allow session replay at all. Remote config decides between buffering and streaming it. Default true. */
   sessionRecording?: boolean;
   sessionRecordingSegmentDuration?: number;
-  /** Stream every replay segment by default instead of keeping them for error clips. Default false. */
+  /** Stream every replay segment and every breadcrumb by default instead of keeping them for error clips. Default false. */
   recordAllSessions?: boolean;
   /** Record session start and end. Default true. */
   sessions?: boolean;
@@ -196,16 +195,20 @@ export interface TracewayFrontendOptions {
   /** Diagnostic uploads per session: 50 MiB and 10,000 events by default. Developer options may lower these ceilings. */
   collectionLimits?: Partial<CollectionLimits>;
 
-  /** The following allow a signal at all; remote config can only restrict them further. All default true. */
+  /**
+   * The following allow a signal at all; collection settings, local or remote, can only restrict them further.
+   * All default true. Allowing a signal does not start it: resource timing, long task and route timing events
+   * are off in the default collection settings until `collection`, a rule, a trigger or a capture turns them on.
+   */
   captureLogs?: boolean;
   captureNetwork?: boolean;
   captureNavigation?: boolean;
   captureUserActions?: boolean;
   captureWebVitals?: boolean;
   captureResourceTiming?: boolean;
-  /** Main-thread blocks of 50 ms or more. Off until remote config, a trigger or a capture turns it on. */
+  /** Main-thread blocks of 50 ms or more. */
   captureLongTasks?: boolean;
-  /** How long single-page-app route changes take to render. Off until remote config, a trigger or a capture turns it on. */
+  /** How long single-page-app route changes take to render. */
   captureRouteTiming?: boolean;
   /**
    * Performance metrics: histograms and counters aggregated on the device and uploaded as one small payload per
@@ -774,12 +777,8 @@ export class TracewayFrontendClient {
           applyCustomLogRecordData: webVitalTarget,
         }),
       );
-    if (this.options.captureResourceTiming !== false) {
-      instrumentations.push(
-        new ResourceTimingInstrumentation(),
-        new NavigationTimingInstrumentation(),
-      );
-    }
+    if (this.options.captureResourceTiming !== false)
+      instrumentations.push(new NavigationTimingInstrumentation());
     if (this.options.captureLongTasks !== false) {
       const longTasks = new LongTaskInstrumentation();
       longTasks.sink = this.metrics;
@@ -799,6 +798,8 @@ export class TracewayFrontendClient {
       tracerProvider: this.tracerProvider,
       loggerProvider: this.loggerProvider,
     });
+    if (this.options.captureResourceTiming !== false)
+      this.startResourceTiming();
     this.metrics.start();
     const sessionId = this.sessions.currentId();
     if (sessionId) this.metrics.sessionStarted(sessionId);
@@ -966,6 +967,32 @@ export class TracewayFrontendClient {
     return this.sessions.currentId();
   }
 
+  /**
+   * The resource timing instrumentation reads `window` when its module is evaluated, so a static import would make
+   * the whole SDK fail to load where there is no window, which is every server-side render. It is loaded here, in
+   * the browser only; the entries it reports are buffered by the browser, so none are lost while it loads.
+   */
+  private startResourceTiming(): void {
+    const tracerProvider = this.tracerProvider;
+    const loggerProvider = this.loggerProvider;
+    void import("@opentelemetry/browser-instrumentation/experimental/resource-timing")
+      .then(({ ResourceTimingInstrumentation }) => {
+        const registered = this.deregisterInstrumentations;
+        // Shut down while the module loaded.
+        if (!registered || !tracerProvider || !loggerProvider) return;
+        const deregister = registerInstrumentations({
+          instrumentations: [new ResourceTimingInstrumentation()],
+          tracerProvider,
+          loggerProvider,
+        });
+        this.deregisterInstrumentations = () => {
+          registered();
+          deregister();
+        };
+      })
+      .catch(() => undefined);
+  }
+
   /** Asks Traceway for this client's collection settings now, e.g. right after login set `user.id`. */
   async refreshConfig(): Promise<void> {
     await this.opamp?.refresh();
@@ -974,7 +1001,7 @@ export class TracewayFrontendClient {
   /** Sends everything queued for sending. Buffered telemetry stays on the device. */
   async flush(): Promise<void> {
     this.metrics.flush();
-    await this.flushQueued();
+    await Promise.all([this.flushQueued(), this.metrics.settled()]);
   }
 
   /** Without the metrics: when the page is hidden the recorder uploads them itself, after the web vitals arrive. */
@@ -1016,6 +1043,11 @@ export class TracewayFrontendClient {
     this.deregisterInstrumentations?.();
     this.deregisterInstrumentations = null;
     this.routeTiming = null;
+    // Released before anything is awaited: a client started while this one is still flushing registers its own,
+    // and disabling them afterwards would take that client's `traceparent` propagation away.
+    if (this.ownsPropagator) propagation.disable();
+    if (this.ownsContextManager) context.disable();
+    this.ownsPropagator = this.ownsContextManager = false;
     await this.flush().catch(() => undefined);
     this.metrics.stop();
     this.persistence.stop();
@@ -1027,9 +1059,6 @@ export class TracewayFrontendClient {
       this.loggerProvider?.shutdown().catch(() => undefined),
       this.tracerProvider?.shutdown().catch(() => undefined),
     ]);
-    if (this.ownsPropagator) propagation.disable();
-    if (this.ownsContextManager) context.disable();
-    this.ownsPropagator = this.ownsContextManager = false;
     this.loggerProvider = this.tracerProvider = null;
     this.logger = null;
     this.router = null;

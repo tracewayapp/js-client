@@ -18,7 +18,7 @@ import {
  *   import { useTracewayAttributes } from "@tracewayapp/svelte";
  *   let { user, org } = $props();
  *   const sync = useTracewayAttributes();
- *   $effect(() => sync({ userId: user.id, tenant: org.id }));
+ *   $effect(() => sync({ "user.id": user.id, tenant: org.id }));
  * </script>
  * ```
  *
@@ -28,7 +28,7 @@ import {
  *   import { useTracewayAttributes } from "@tracewayapp/svelte";
  *   export let user; export let org;
  *   const sync = useTracewayAttributes();
- *   $: sync({ userId: user.id, tenant: org.id });
+ *   $: sync({ "user.id": user.id, tenant: org.id });
  * </script>
  * ```
  *

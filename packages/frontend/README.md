@@ -8,12 +8,12 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@tracewayapp/frontend"><img src="https://img.shields.io/npm/v/@tracewayapp/frontend.svg" alt="npm"></a>
-  <a href="https://github.com/tracewayapp/traceway-js/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://opensource.org/license/mit"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
 
 # Traceway Browser SDK
 
-Error tracking and session replay for browser apps. Capture exceptions with full stack traces and the events leading up to them. The default exception trigger can upload up to ten minutes of breadcrumbs and a 30-second rrweb replay clip.
+Error tracking, session replay and performance metrics for browser apps, built on OpenTelemetry. Capture exceptions with full stack traces and the events leading up to them. The default exception trigger can upload up to ten minutes of breadcrumbs and a 30-second rrweb replay clip.
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
@@ -22,26 +22,30 @@ This is the framework-agnostic browser SDK. Use it directly in vanilla JS / TS, 
 ## Features
 
 - Automatic capture of `window.onerror` and `unhandledrejection`
-- Built on OpenTelemetry: OTLP/HTTP logs and spans, with the Browser SIG's instrumentations
+- Built on OpenTelemetry: OTLP/HTTP logs, spans and metrics, with the Browser SIG's instrumentations
 - **rrweb session replay** — an error clip by default; stream whole sessions with `recordAllSessions` or a remote rule
 - **Breadcrumbs** — console, `fetch` / XHR, navigation, clicks and custom events, kept on the device and uploaded with an error
-- **Web vitals** and resource timing
-- **Long tasks** and **route change timing**, off until remote config, a trigger or a capture turns them on
-- **Auto-collected attributes** — `url`, `path`, `referrer`, `userAgent`, `language`, `platform`, `viewport`, `screen`, `timezone` stamped on every session and exception
-- **Global attribute scope** — `setAttribute("user.id", "42")` and friends to attach app-level identifiers (tenant, user id, feature flag) to every subsequent session and exception
+- **Sessions** — the start, end and attributes of every session, reported by default
+- **Performance metrics** — web vitals, route changes, requests, page views and errors aggregated on the device and uploaded as one small payload, plus your own `metric()` and `count()`
+- **Web vital events**, kept on the device like the other breadcrumbs
+- **Resource timing**, **long task** and **route change timing** events, off until `collection`, a remote rule, a trigger or a capture turns them on
+- **Auto-collected attributes** — `url`, `path`, `referrer`, `userAgent`, `language`, `platform`, `viewport`, `screen`, `timezone` stamped on every session, exception and message
+- **Global attribute scope** — `setAttribute("user.id", "42")` and friends to attach app-level identifiers (tenant, user id, feature flag) to every subsequent session, exception and message
 - Distributed tracing — `fetch` / XHR spans with the W3C `traceparent` header
 - Source-map resolution on the backend (see [`@tracewayapp/sourcemap-upload`](https://www.npmjs.com/package/@tracewayapp/sourcemap-upload))
 - Failed OTLP batches wait in IndexedDB and retry in the current page, on connectivity recovery, and on later pages
-- Remote control — Traceway decides over OpAMP what each group of clients sends, buffers or drops
+- Remote control — Traceway decides over OpAMP what each group of clients sends, buffers or drops; or keep a local `collection` policy
 - Simple one-line setup
 
-Upgrading a browser app? See the [migration guide from v1 to v2 and the three browser setups](https://github.com/tracewayapp/js-client/blob/main/README.md#migration-guide-from-v1-to-v2).
+Upgrading a browser app? See the [migration guide from v1 to v2 and the three browser setups](https://github.com/tracewayapp/js-client/blob/main/README.md#migration-guide-from-v1-to-v2), or the same guide in the [docs](https://docs.tracewayapp.com/client/js-sdk/migration).
 
 ## Installation
 
 ```bash
-npm install @tracewayapp/frontend@2
+npm install @tracewayapp/frontend
 ```
+
+This installs 2.x. Append `@2` to pin the major, or `@1` to stay on the 1.x SDK ([1.x reference](https://docs.tracewayapp.com/client/js-sdk/v1)).
 
 Or via CDN (no bundler):
 
@@ -57,7 +61,7 @@ Or via CDN (no bundler):
 ```ts
 import { init, captureException, captureMessage, recordAction, flush } from "@tracewayapp/frontend";
 
-// Initialize once at app startup
+// Initialize once at app startup; a second call is ignored until shutdown()
 init("your-token@https://traceway.example.com/api/report");
 
 // Capture errors
@@ -70,14 +74,18 @@ try {
 // Capture custom messages
 captureMessage("User completed checkout");
 
-// Record a custom breadcrumb that rides along with the next exception
+// Record a custom breadcrumb; it stays on the device and is uploaded with the next exception
 recordAction("checkout", "payment_submitted", { amount: 42 });
 
-// Force-send all pending exceptions (e.g. before page unload)
+// Send what is queued now, e.g. before a redirect your code performs
 await flush();
 ```
 
-`init()` automatically installs `window.onerror` and `unhandledrejection` handlers, patches `console.*`, instruments `fetch` / `XMLHttpRequest`, instruments the History API, and starts an rrweb session recorder. Each captured exception is paired with the rolling timeline that preceded it.
+The connection string is `token@url`. The URL is the Traceway server, with or without a trailing `/api/report`.
+
+`init()` automatically installs `window.onerror` and `unhandledrejection` handlers, patches `console.*`, instruments `fetch` / `XMLHttpRequest`, navigation and clicks, measures web vitals, and starts an rrweb session recorder unless replay is off. A captured exception uploads the breadcrumbs and the replay clip buffered before it.
+
+`flush()` sends the queued logs, spans and replay uploads and the pending performance metrics. It does not release buffered breadcrumbs, and it does not end the session or stop the recorder. The SDK sends what is queued by itself when the page is hidden, so you only need `flush()` where your code navigates away or must wait for delivery.
 
 ## Manual Capture
 
@@ -93,16 +101,22 @@ import {
 try {
   await riskyOperation();
 } catch (e) {
-  captureException(e as Error);
+  captureException(e);
 }
 
-// Capture with attributes (key-value tags)
-captureExceptionWithAttributes(error, { tenant: "acme", region: "us-east" });
+// Capture with attributes (string key-value tags)
+try {
+  await riskyOperation();
+} catch (e) {
+  captureException(e, { tenant: "acme", region: "us-east" });
+  // The same call under its 1.x name:
+  captureExceptionWithAttributes(e, { tenant: "acme", region: "us-east" });
+}
 
-// Capture a message
-captureMessage("User completed checkout");
+// Capture a message, optionally with attributes
+captureMessage("User completed checkout", { plan: "pro" });
 
-// Force send pending events
+// Send what is queued
 await flush();
 ```
 
@@ -111,40 +125,47 @@ await flush();
 | Option | Default | Description |
 |--------|---------|-------------|
 | `serviceName` | the page's host name | `service.name` of this app |
-| `version` | `""` | `service.version`; rules can target releases with it |
+| `version` | none | `service.version`; rules can target releases with it |
 | `environment` | none | `deployment.environment.name` |
 | `attributes` | `{}` | Initial global attributes, see `setAttribute` |
-| `debug` | `false` | Print debug info to the console |
-| `ignoreErrors` | sensible defaults | `string \| RegExp` patterns matched against `Type: message`; matching exceptions are dropped |
+| `debug` | `false` | Log the problems the SDK would otherwise swallow: rejected remote-config credentials and a `beforeCapture` that throws |
+| `ignoreErrors` | `DEFAULT_IGNORE_PATTERNS` | `string \| RegExp` patterns matched against `Type: message`; matching exceptions and messages are dropped |
 | `beforeCapture` | none | `({ type, message, stack, attributes }) => boolean`; return `false` to drop |
-| `transport` | `"auto"` | Detect older servers and use `/api/report`; `"legacy"` forces that protocol, `"otlp"` disables fallback |
+| `errorLimits` | `{ maxPerMinute: 60, duplicateWindowMs: 1000 }` | Per-client rolling error limit and duplicate suppression |
 | `remoteConfig` | `true` | Fetch collection settings from Traceway over OpAMP (see below) |
 | `collection` | SDK defaults | Local signal modes, sampling, triggers, buffer limits, and metric upload interval |
 | `telemetry` | Traceway endpoints | OTLP/HTTP base URL, per-signal URLs, and headers; required in standalone mode |
+| `transport` | `"auto"` | Detect older servers and use `/api/report`; `"legacy"` forces that protocol, `"otlp"` disables fallback |
+| `exportDelayMs` | `1000` | Delay between log and span exports (ms) |
+| `sessions` | `true` | Report session start and end |
 | `sessionRecording` | `true` | Allow rrweb session replay at all |
 | `sessionRecordingSegmentDuration` | `30000` | Replay segment length (ms) |
-| `collectionLimits` | `{ maxBytes: 52428800, maxEvents: 10000 }` | Shared per-session diagnostic upload ceiling; can be lowered |
-| `baselineSampleRate` | `0` | Stable healthy-session breadcrumb/request sample, from 0 to 1; does not stream replay |
-| `errorLimits` | `{ maxPerMinute: 60, duplicateWindowMs: 1000 }` | Per-client rolling error limit and duplicate suppression |
 | `recordAllSessions` | `false` | Stream every replay segment and every breadcrumb by default instead of keeping them for error clips |
-| `sessions` | `true` | Record session start and end |
-| `captureLogs`, `captureNetwork`, `captureNavigation`, `captureUserActions`, `captureWebVitals`, `captureResourceTiming`, `captureLongTasks`, `captureRouteTiming` | `true` | Allow a signal at all |
+| `baselineSampleRate` | `0` | Stable healthy-session breadcrumb/request sample, from 0 to 1; does not stream replay |
+| `collectionLimits` | `{ maxBytes: 52428800, maxEvents: 10000 }` | Shared per-session diagnostic upload ceiling; can only be lowered |
+| `captureLogs`, `captureNetwork`, `captureNavigation`, `captureUserActions`, `captureWebVitals`, `captureResourceTiming`, `captureLongTasks`, `captureRouteTiming` | `true` | Allow a signal at all: console output, `fetch` / XHR, navigation, clicks, web vital events, resource and navigation timing, long tasks, route change timing |
 | `captureMetrics` | `true` | Performance metrics: histograms and counters aggregated on the device, one small upload per flush |
-| `metricDimensions` | none | Up to two dimensions of your own on every performance metric, e.g. `{ plan: "pro" }` |
+| `metricDimensions` | none | Up to two dimensions of your own on every performance metric, e.g. `{ plan: "pro" }`; never a user id |
 | `captureHttpServerErrors` | `false` | Report fetch / XHR responses with status >= 500 as message issues |
 | `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that get the W3C `traceparent` header (same-origin requests always do) |
-| `exportDelayMs` | `1000` | Delay between OTLP exports |
+| `logExporter`, `spanExporter` | none | Advanced: replace the OTLP/HTTP exporter of logs or spans, e.g. with an in-memory exporter in tests |
 
-The `capture*`, `sessionRecording` and `sessions` options are **ceilings**: remote settings can switch a signal off or
-keep it on the device, but never turn on what `init()` turned off. The `DEFAULT_IGNORE_PATTERNS` export contains the
-built-in `ignoreErrors` list.
+The `capture*`, `sessionRecording` and `sessions` options are **ceilings**: collection settings, local or remote, can switch
+a signal off or keep it on the device, but never turn on what `init()` turned off. A ceiling that is left on does not
+start a signal by itself: the events of resource timing, long tasks and route timing are `off` in the default collection
+settings until `collection`, a rule, a trigger or a capture turns them on. The `DEFAULT_IGNORE_PATTERNS` export contains
+the built-in `ignoreErrors` list.
+
+The 1.x options `debounceMs`, `retryDelayMs`, `eventsWindowMs` and `eventsMaxCount` no longer exist: `exportDelayMs`
+sets the export delay, the SDK manages retries itself, and retention is set with `collection.buffer.maxAgeSeconds` and
+`collection.buffer.maxBytes`.
 
 ## Remote control
 
 Each signal is in one of three modes: **stream** (sent right away), **buffer** (kept on the device and uploaded only
-when a trigger fires or the dashboard starts a capture) or **off**. By default, errors and messages stream. The SDK buffers console, network, navigation, clicks, custom events, and replay. The default exception trigger can upload up to ten minutes of breadcrumbs and a 30-second replay clip, up to 20 times per session.
+when a trigger fires or the dashboard starts a capture) or **off**. By default, errors and messages stream. The SDK buffers console, network, navigation, clicks, custom events, web vital events, and replay; resource timing, long task and route timing events are off. The default exception trigger uploads up to ten minutes of breadcrumbs and a 30-second replay clip with an error; the clip has a 5-second cooldown and a limit of 20 per session.
 
-In the dashboard (**Edit Project → Data Collection**) you write rules that target clients by what they report: release
+On the **Data Collection** page in the project's sidebar you write rules that target clients by what they report: release
 (`service.version`), browser, OS, `user.id` or any attribute you set with `setAttribute`, and a percentage rollout. A rule
 can change modes and sample rates, and add triggers ("3 failed requests within a minute: upload the last 2 minutes and
 stream for 5"). A capture makes one device, user or session upload what it buffered and stream everything for a while,
@@ -170,7 +191,7 @@ complete. Replay goes to Traceway's recordings endpoint, not OTLP.
 
 ## Custom Attributes (global scope)
 
-Attach app-level identifiers (`userId`, `tenant`, feature flags, etc.) once and have them ride along every subsequent session and exception:
+Attach app-level identifiers (`user.id`, `tenant`, feature flags, etc.) once and have them ride along every subsequent session, exception and message. Values are strings. Use the key `user.id` for the user, so captures and rules can target it:
 
 ```ts
 import {
@@ -187,7 +208,7 @@ setAttributes({ tenant: "acme", plan: "pro" });
 clearAttributes();
 ```
 
-Layering order on each event: `auto-collected defaults < global scope < per-call attributes`. Per-call exception attributes from `captureExceptionWithAttributes(err, { … })` still win over global keys on collision.
+Layering order on each event: `auto-collected defaults < global scope < per-call attributes`. Per-call attributes from `captureException(err, { … })` still win over global keys on collision.
 
 When sessions are enabled and the global scope changes mid-session, the SDK pushes a refresh upsert so the in-flight session row picks up the new attributes immediately rather than waiting for close.
 
@@ -201,68 +222,38 @@ a backend instrumented with OpenTelemetry joins the same trace. List cross-origi
 covered because they use fetch or XHR. 1.x's `traceway-trace-id` header, `getActiveDistributedTraceId()` and
 `createAxiosInterceptor()` are gone.
 
-## Source Maps
+To tie several steps of one user action together, `startInteraction(name)` starts a span and returns
+`{ traceId, run, bind, captureException, end }` (`undefined` before `init()`). Requests started while a `run(callback)`
+or a `bind(callback)` function executes, and errors reported with its `captureException`, join that trace. The context
+is not carried across an `await`, so wrap each later step in another `run`. Call `end()` when the action is over.
 
-When you build for production, the browser stack traces are minified. Upload your source maps after each build so the dashboard can resolve them back to the original file:line:col:
+## Performance metrics
 
-```bash
-npx @tracewayapp/sourcemap-upload \
-  --url https://traceway.example.com \
-  --token YOUR_SOURCE_MAP_TOKEN \
-  --directory dist/assets
+Web vitals, route changes, main-thread blocking, requests, page views and errors are aggregated on the device into
+histograms and counters, and uploaded as one small payload when the page is hidden, at session end, and every five
+minutes. The detailed events behind them stay on the device until a trigger or a capture asks for them. A payload
+that fails to upload, or whose page goes away before the server answers, is kept in `localStorage` (three payloads,
+64 KB, 24 hours at most) and sent once more on the next page load; after that it is dropped.
+
+```ts
+import { metric, count, setRoute, setMetricDimension } from "@tracewayapp/frontend";
+
+setRoute("/orders/:id"); // name the page by its route template; without it the path is normalized
+metric("checkout.duration", 840, { plan: "pro" }); // a custom distribution, at most two dimensions
+count("cart.item_added");
+setMetricDimension("plan", "pro"); // on every metric from now on; at most two keys, never a user id
 ```
 
-Maps are matched by filename, so there is nothing to configure at runtime. See [`@tracewayapp/sourcemap-upload`](https://www.npmjs.com/package/@tracewayapp/sourcemap-upload) for the full CLI reference.
+Besides the web vitals of the page load, INP and CLS are measured per view (`browser.view.inp`,
+`browser.view.cls`), so a route reached by a single-page-app navigation has its own numbers. A slow LCP, INP or CLS
+also reports the element behind it as a short CSS selector, and long animation frames report the time each script
+took. "Users affected" comes from counters the device deduplicates itself: a browser profile is counted once per UTC
+day, and once per day for each kind of trouble (an error, a poor vital, a rage click, a failed request). No user or
+device id is sent; a browser without `localStorage` is left out of those counts. `metricDimensions` in `init()`
+sets the dimensions of your own from the start.
 
-For exact build-to-map matching, add [`@tracewayapp/bundler-plugin`](https://www.npmjs.com/package/@tracewayapp/bundler-plugin) to your Vite, Rollup, or webpack config. It embeds an ECMA-426 debug ID into each bundle and its map; the SDK picks the IDs up at runtime automatically and reports them with every exception, so frames resolve against the map from the exact build that threw, immune to filename collisions and concurrent deploys.
-
-## API
-
-| Function | Description |
-|----------|-------------|
-| `init(connectionString, options?)` | Start the SDK (a second call is a no-op until `shutdown()`) |
-| `captureException(error, attributes?)` | Capture an error |
-| `captureExceptionWithAttributes(error, attributes?)` | Same as `captureException` |
-| `captureMessage(message, attributes?)` | Capture a message issue |
-| `recordAction(category, name, data?)` | Record a breadcrumb triggers can match |
-| `track(eventName, attributes?)` | Record a named app event triggers can match |
-| `setAttribute(key, value)` / `setAttributes(map)` | Attach attributes to every later exception and the session; also used to target remote rules |
-| `removeAttribute(key)` / `clearAttributes()` | Drop global attributes |
-| `refreshConfig()` | Fetch remote settings now, e.g. right after login |
-| `flush(timeoutMs?)` | Send what is queued; buffered telemetry stays on the device |
-| `shutdown()` | Flush and remove all instrumentation |
-| `getInstanceId()` | This browser profile's id (`service.instance.id`), which the dashboard can capture |
-
-## Browser support and persistence
-
-The browser SDK needs modern JavaScript, Fetch, and Web Crypto. IndexedDB and Web Locks are used when available;
-blocked storage falls back to memory. Replay uploads use `fflate` for gzip and do not require `CompressionStream`.
-
-Buffered telemetry shares one byte/age budget across pages. IndexedDB stores it per session, with a bounded
-sessionStorage navigation checkpoint because unload-time asynchronous writes can be abandoned. Replay segments
-stay in memory. Failed OTLP exports retry with backoff and on connectivity recovery; durable delivery is best effort
-under storage quotas, browser termination, and permanent server rejection.
-
-Remote capture cancellation takes effect at the next successful poll. Input-masking changes restart rrweb and discard
-incompatible buffered replay. Collection limits are checked again before queued and restored telemetry is exported.
-See the [remote settings reference](https://docs.tracewayapp.com/learn/remote-config/reference) for limits and timing.
-
-For React Native and Expo apps, use [`@tracewayapp/react-native`](https://www.npmjs.com/package/@tracewayapp/react-native) instead — it intentionally omits rrweb (no DOM) but preserves the logs, actions, and exception capture pipeline.
-
-## Links
-
-- [Traceway Website](https://tracewayapp.com)
-- [Traceway GitHub](https://github.com/tracewayapp/traceway)
-- [Documentation](https://docs.tracewayapp.com)
-- [React wrapper](https://www.npmjs.com/package/@tracewayapp/react)
-- [Vue wrapper](https://www.npmjs.com/package/@tracewayapp/vue)
-- [Svelte wrapper](https://www.npmjs.com/package/@tracewayapp/svelte)
-- [jQuery wrapper](https://www.npmjs.com/package/@tracewayapp/jquery)
-- [React Native SDK](https://www.npmjs.com/package/@tracewayapp/react-native)
-
-## License
-
-MIT
+`@tracewayapp/react` has `useTracewayRoute(template)`, `@tracewayapp/vue` has `trackRouter(router)` and
+`@tracewayapp/svelte` has `trackRoute(routeId)`. Set `captureMetrics: false` to send none of it. See [Client Metrics](https://docs.tracewayapp.com/learn/client-metrics).
 
 ## Local configuration without OpAMP
 
@@ -333,13 +324,13 @@ These options apply to the 2.x browser SDK and its React, Vue, Svelte, and jQuer
 
 ## Production collection policy
 
-Production defaults keep session lifecycle metadata and performance metrics on, with healthy breadcrumbs, web vital events and replay buffered locally. An accepted exception uploads up to 10 minutes of buffered breadcrumbs and a 30-second replay clip; no full-session replay is uploaded by default. Error clips have a 5-second cooldown and a limit of 20 per session.
+Production defaults keep session lifecycle metadata and performance metrics on, with healthy breadcrumbs, web vital events and replay buffered locally. An accepted exception uploads up to 10 minutes of buffered breadcrumbs and a 30-second replay clip; no full-session replay is uploaded by default. Error clips have a 5-second cooldown and a limit of 20 per session; an error inside the cooldown or past the limit still uploads its breadcrumbs.
 
-Errors are not sampled by default. Duplicate exceptions (same type, message and stack) within 1 second are suppressed, and each running client accepts at most 60 errors in a rolling minute. The next accepted error carries the aggregate `traceway.error.suppressed_count`. Configure `errorLimits: { maxPerMinute: 60, duplicateWindowMs: 1000 }` to tune these limits; they reset when the SDK is recreated.
+Errors are not sampled by default. Duplicate exceptions (same type, message and stack) within 1 second are suppressed, and each running client accepts at most 60 errors in a rolling minute. The next accepted error carries the aggregate `traceway.error.suppressed_count`. Configure `errorLimits: { maxPerMinute: 60, duplicateWindowMs: 1000 }` to tune these limits: `maxPerMinute` is held between 1 and 1000, `duplicateWindowMs` is at most 60000, and 0 turns duplicate suppression off. The counts reset when the SDK is recreated. Messages are not limited.
 
-For an optional stable sample of healthy-session breadcrumbs and request spans, use `baselineSampleRate: 0.01` (1%). The default is 0. Selection uses the session ID and persists across page reloads within that session. It does not enable replay or override explicitly disabled signals, signal filters, or exporter limits. Web vitals remain enabled independently, so performance diagnosis is not restricted to sessions with errors.
+For an optional stable sample of healthy-session breadcrumbs and request spans, use `baselineSampleRate: 0.01` (1%). The default is 0. Selection uses the session ID and persists across page reloads within that session. It does not enable replay or override explicitly disabled signals, signal filters, or exporter limits. Performance metrics are uploaded independently of it, so performance diagnosis is not restricted to sessions with errors.
 
-### Older Traceway servers
+## Older Traceway servers
 
 The default transport probes OpAMP before exporting. A missing endpoint (404, 405, or 501) selects the legacy
 `/api/report` protocol for exceptions, messages, sessions, replay, and replay breadcrumbs. Existing connection
@@ -350,35 +341,83 @@ A cross-origin server without an OpAMP CORS route appears to browsers as a netwo
 also selects legacy reporting, while OpAMP retries with backoff. A later successful handshake switches to OTLP
 and remote settings. Once OpAMP has connected, a temporary outage keeps the last applied settings and OTLP
 transport. Authentication failures do not select legacy mode. Explicit external `telemetry` destinations are not
-automatically redirected to `/api/report`.
+automatically redirected to `/api/report`, and `telemetry` cannot be combined with `transport: "legacy"`. Request
+spans and performance metrics are not sent while the legacy protocol is in use.
 
 For a known older server, use `transport: "legacy"` to skip OpAMP entirely. If you disable `remoteConfig`, automatic
 server detection is disabled too; set `transport: "legacy"` when using that option with an older server.
 
-## Performance metrics
+## Source Maps
 
-Web vitals, route changes, main-thread blocking, requests, page views and errors are aggregated on the device into
-histograms and counters, and uploaded as one small payload when the page is hidden, at session end, and every five
-minutes. The detailed events behind them stay on the device until a trigger or a capture asks for them. A payload
-that fails to upload, or whose page goes away before the server answers, is kept in `localStorage` (three payloads,
-64 KB, 24 hours at most) and sent once more on the next page load; after that it is dropped.
+When you build for production, the browser stack traces are minified. Upload your source maps after each build so the dashboard can resolve them back to the original file:line:col:
 
-```ts
-import { metric, count, setRoute } from "@tracewayapp/frontend";
-
-setRoute("/orders/:id"); // name the page by its route template; without it the path is normalized
-metric("checkout.duration", 840, { plan: "pro" }); // a custom distribution, at most two dimensions
-count("cart.item_added");
-setMetricDimension("plan", "pro"); // on every metric from now on; at most two keys, never a user id
+```bash
+npx @tracewayapp/sourcemap-upload \
+  --url https://traceway.example.com \
+  --token YOUR_SOURCE_MAP_TOKEN \
+  --directory dist/assets
 ```
 
-Besides the web vitals of the page load, INP and CLS are measured per view (`browser.view.inp`,
-`browser.view.cls`), so a route reached by a single-page-app navigation has its own numbers. A slow LCP, INP or CLS
-also reports the element behind it as a short CSS selector, and long animation frames report the time each script
-took. "Users affected" comes from counters the device deduplicates itself: a browser profile is counted once per UTC
-day, and once per day for each kind of trouble (an error, a poor vital, a rage click, a failed request). No user or
-device id is sent; a browser without `localStorage` is left out of those counts. `metricDimensions` in `init()`
-sets the dimensions of your own from the start.
+Maps are matched by filename, so there is nothing to configure at runtime. See [`@tracewayapp/sourcemap-upload`](https://www.npmjs.com/package/@tracewayapp/sourcemap-upload) for the full CLI reference.
 
-`@tracewayapp/react` has `useTracewayRoute(template)`, `@tracewayapp/vue` has `trackRouter(router)` and
-`@tracewayapp/svelte` has `trackRoute(routeId)`. Set `captureMetrics: false` to send none of it.
+For exact build-to-map matching, add [`@tracewayapp/bundler-plugin`](https://www.npmjs.com/package/@tracewayapp/bundler-plugin) to your Vite, Rollup, or webpack config. It embeds an ECMA-426 debug ID into each bundle and its map; the SDK picks the IDs up at runtime automatically and reports them with every exception, so frames resolve against the map from the exact build that threw, immune to filename collisions and concurrent deploys.
+
+## API
+
+| Function | Description |
+|----------|-------------|
+| `init(connectionString, options?)` | Start the SDK (a second call is a no-op until `shutdown()`). `init(options)` with a single options object starts standalone mode |
+| `captureException(error, attributes?)` | Capture an error, optionally with string attributes |
+| `captureExceptionWithAttributes(error, attributes?)` | Same as `captureException` |
+| `captureMessage(message, attributes?)` | Capture a message issue |
+| `recordAction(category, name, data?)` | Record a breadcrumb triggers can match |
+| `track(eventName, attributes?)` | Record a named app event triggers can match |
+| `metric(name, value, dims?)` | Record one observation of a custom distribution; at most two dimensions |
+| `count(name, n?, dims?)` | Add to a custom counter |
+| `setRoute(template)` | Name the page by its route template, e.g. `/orders/:id`; `null` goes back to the normalized path |
+| `setMetricDimension(key, value)` | Set a dimension of your own on every performance metric from now on; `null` removes it |
+| `startInteraction(name)` | Start a span for one user action; returns `{ traceId, run, bind, captureException, end }`, or `undefined` before `init()` |
+| `setAttribute(key, value)` / `setAttributes(map)` | Attach attributes to every later exception and message and to the session; also used to target remote rules |
+| `removeAttribute(key)` / `clearAttributes()` | Drop global attributes |
+| `refreshConfig()` | Fetch remote settings now, e.g. right after login |
+| `flush(timeoutMs?)` | Send what is queued, including pending metrics; buffered telemetry stays on the device |
+| `shutdown()` | Flush, remove all instrumentation and stop recording; `init()` may be called again afterwards |
+| `getInstanceId()` | This browser profile's id (`service.instance.id`), which the dashboard can capture |
+| `getClient()` | The running `TracewayFrontendClient`, or `null` before `init()` |
+
+Also exported: `DEFAULT_IGNORE_PATTERNS`, `SDK_VERSION`, the `TracewayFrontendClient` class, and the types
+`TracewayFrontendOptions`, `StandaloneOptions`, `TelemetryOptions`, `TelemetryEndpoint`, `CapturedException`,
+`CollectionSettings`, `Settings`, `Trigger`, `TriggerAction`, `Capture`, `Mode` and `SignalName`.
+
+## Browser support and persistence
+
+The browser SDK needs modern JavaScript and Fetch. Web Crypto, IndexedDB and Web Locks are used when available;
+blocked storage falls back to memory. Web vitals are measured in browsers that have `Array.prototype.at` (Chrome 92,
+Safari 15.4 and later). Replay uploads use `fflate` for gzip and do not require `CompressionStream`.
+
+Buffered telemetry shares one byte/age budget across pages. IndexedDB stores it per session, with a bounded
+sessionStorage navigation checkpoint because unload-time asynchronous writes can be abandoned. Replay segments
+stay in memory. Failed OTLP exports retry with backoff and on connectivity recovery; durable delivery is best effort
+under storage quotas, browser termination, and permanent server rejection.
+
+Remote capture cancellation takes effect at the next successful poll. Input-masking changes restart rrweb and discard
+incompatible buffered replay. Collection limits are checked again before queued and restored telemetry is exported.
+See the [remote settings reference](https://docs.tracewayapp.com/learn/remote-config/reference) for limits and timing.
+
+For React Native and Expo apps, use [`@tracewayapp/react-native`](https://www.npmjs.com/package/@tracewayapp/react-native) instead. It shares the version number but not this SDK: it keeps its own API and the native reporting transport, captures exceptions with console logs and network and navigation actions, and has no session replay, remote config or OTLP export.
+
+## Links
+
+- [Traceway Website](https://tracewayapp.com)
+- [Traceway GitHub](https://github.com/tracewayapp/traceway)
+- [Documentation](https://docs.tracewayapp.com/client/js-sdk)
+- [Remote SDK config](https://docs.tracewayapp.com/learn/remote-config)
+- [React wrapper](https://www.npmjs.com/package/@tracewayapp/react)
+- [Vue wrapper](https://www.npmjs.com/package/@tracewayapp/vue)
+- [Svelte wrapper](https://www.npmjs.com/package/@tracewayapp/svelte)
+- [jQuery wrapper](https://www.npmjs.com/package/@tracewayapp/jquery)
+- [React Native SDK](https://www.npmjs.com/package/@tracewayapp/react-native)
+
+## License
+
+MIT

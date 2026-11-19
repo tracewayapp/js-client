@@ -48,6 +48,11 @@ btnInit.addEventListener("click", () => {
     return;
   }
 
+  if (isInitialized) {
+    log("Already initialized: a second init() is ignored until shutdown()", "info");
+    return;
+  }
+
   try {
     traceway.init(connectionString);
     setInitialized(true);

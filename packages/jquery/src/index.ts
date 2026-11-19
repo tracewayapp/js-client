@@ -20,7 +20,15 @@ export function init(
   installJQueryErrorHandler();
 }
 
+let ajaxHandlerInstalled = false;
+
+/**
+ * Bound once per page: `init()` is a no-op while the SDK is running, but would otherwise add another handler on
+ * every call and report each AJAX failure once per handler. After `shutdown()` the handler stays and reports
+ * nothing, because captures without a running SDK are ignored.
+ */
 function installJQueryErrorHandler(): void {
+  if (ajaxHandlerInstalled) return;
   const jq =
     typeof jQuery !== "undefined"
       ? jQuery
@@ -28,6 +36,7 @@ function installJQueryErrorHandler(): void {
         ? ($ as any)
         : null;
   if (!jq) return;
+  ajaxHandlerInstalled = true;
 
   jq(document).ajaxError(function (
     _event: any,

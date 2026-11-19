@@ -2,6 +2,7 @@
   "name": "@tracewayapp/react",
   "version": "2.0.0",
   "description": "Traceway React integration with ErrorBoundary and hooks",
+  "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",

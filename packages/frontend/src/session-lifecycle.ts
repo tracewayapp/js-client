@@ -1,5 +1,5 @@
 /**
- * Tracks user-session boundaries when `recordAllSessions: true`.
+ * Tracks user-session boundaries (whenever sessions are reported, which is the default).
  *
  *   - Inactivity timeout: 15 minutes since the last `markActivity()` call.
  *   - Max duration: 60 minutes from session start ends the session unconditionally.
@@ -7,10 +7,9 @@
  *   - Visibility transitions to `hidden` trigger a soft flush without ending the session.
  *   - Activity after an inactivity or max-duration end starts a new session.
  *
- * Activity detection itself is delegated to the caller — `client.ts` taps
- * rrweb's `emit` callback and forwards each event to `markActivity()`. That
- * single hook covers every input rrweb captures (mouse, keyboard, touch,
- * scroll, navigation) without re-registering the same listeners on `window`.
+ * Activity detection itself is delegated to the caller: the session manager
+ * listens for the user's input events and forwards each one to
+ * `markActivity()`, so it does not depend on the replay recorder running.
  */
 
 export const DEFAULT_INACTIVITY_MS = 15 * 60_000;
