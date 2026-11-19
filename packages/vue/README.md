@@ -25,6 +25,8 @@ Error tracking and session replay for Vue 3 apps. Provides a plugin with a globa
 - Vue Router push/replace flows through the History API and is captured automatically
 - Simple one-line setup
 
+Upgrading a browser app? See the [migration guide from v1 to v2 and the three browser setups](https://github.com/tracewayapp/js-client/blob/main/README.md#migration-guide-from-v1-to-v2).
+
 ## Installation
 
 ```bash
@@ -132,7 +134,7 @@ app.use(createTracewayPlugin({
 }));
 ```
 
-See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#always-on-session-recording) for the full description.
+See the [`@tracewayapp/frontend` README](https://github.com/tracewayapp/js-client/blob/main/packages/frontend/README.md#breadcrumbs--replay) for the full description.
 
 ## Options
 
@@ -147,8 +149,8 @@ The `options` field forwards directly to [`@tracewayapp/frontend`](https://www.n
 | `captureNavigation` | `true` | Record History API push / replace / pop as navigation actions |
 | `sessionRecording` | `true` | Enable the rrweb session recorder |
 | `recordAllSessions` | `false` | Always-on session recording (every ~30 s segment uploaded continuously) |
-| `eventsWindowMs` | `10000` | Rolling window kept in the log/action buffers (ms) |
-| `eventsMaxCount` | `200` | Hard cap applied independently to logs and actions |
+| `collection.buffer.maxAgeSeconds` | `600` | Maximum age of buffered telemetry in seconds |
+| `collection.buffer.maxBytes` | `2097152` | Shared byte limit for buffered telemetry |
 
 See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend) for the full options reference.
 

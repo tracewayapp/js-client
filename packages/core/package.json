@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/core",
-  "version": "2.1.0",
+  "version": "2.0.0",
   "description": "Shared types and utilities for Traceway SDKs",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -21,5 +21,10 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tracewayapp/js-client.git",
+    "directory": "packages/core"
   }
 }

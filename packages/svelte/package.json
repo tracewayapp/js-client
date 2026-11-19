@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/svelte",
-  "version": "2.1.0",
+  "version": "2.0.0",
   "description": "Traceway Svelte integration with context and helper functions",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -23,9 +23,14 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/frontend": "2.1.0"
+    "@tracewayapp/frontend": "2.0.0"
   },
   "peerDependencies": {
     "svelte": ">=4.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tracewayapp/js-client.git",
+    "directory": "packages/svelte"
   }
 }

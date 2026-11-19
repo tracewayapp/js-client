@@ -13,7 +13,7 @@
 
 # Traceway Browser SDK
 
-Error tracking and session replay for browser apps. Capture exceptions with full stack traces, plus the last 30 seconds of console logs, network calls, navigation transitions, custom breadcrumbs, and an rrweb DOM replay — automatically.
+Error tracking and session replay for browser apps. Capture exceptions with full stack traces and the events leading up to them. The default exception trigger can upload up to ten minutes of breadcrumbs and a 30-second rrweb replay clip.
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
@@ -34,6 +34,8 @@ This is the framework-agnostic browser SDK. Use it directly in vanilla JS / TS, 
 - Failed OTLP batches wait in IndexedDB and retry in the current page, on connectivity recovery, and on later pages
 - Remote control — Traceway decides over OpAMP what each group of clients sends, buffers or drops
 - Simple one-line setup
+
+Upgrading a browser app? See the [migration guide from v1 to v2 and the three browser setups](https://github.com/tracewayapp/js-client/blob/main/README.md#migration-guide-from-v1-to-v2).
 
 ## Installation
 
@@ -140,10 +142,9 @@ built-in `ignoreErrors` list.
 ## Remote control
 
 Each signal is in one of three modes: **stream** (sent right away), **buffer** (kept on the device and uploaded only
-when a trigger fires or the dashboard starts a capture) or **off**. Without remote settings:
-errors and messages stream; console, network, navigation, clicks, custom events and replay are buffered; and up to 20 errors per session upload the last 30 seconds of them with a replay clip.
+when a trigger fires or the dashboard starts a capture) or **off**. By default, errors and messages stream. The SDK buffers console, network, navigation, clicks, custom events, and replay. The default exception trigger can upload up to ten minutes of breadcrumbs and a 30-second replay clip, up to 20 times per session.
 
-In the dashboard (project Settings > Data Collection) you write rules that target clients by what they report: release
+In the dashboard (**Edit Project → Data Collection**) you write rules that target clients by what they report: release
 (`service.version`), browser, OS, `user.id` or any attribute you set with `setAttribute`, and a percentage rollout. A rule
 can change modes and sample rates, and add triggers ("3 failed requests within a minute: upload the last 2 minutes and
 stream for 5"). A capture makes one device, user or session upload what it buffered and stream everything for a while,

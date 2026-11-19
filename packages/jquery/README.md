@@ -25,6 +25,8 @@ Error tracking and session replay for jQuery apps. Adds an `$.ajaxError` handler
 - Works with `jQuery`, `$`, or `$.ajax` — picks whichever is on the page
 - Gzip-compressed transport, debounced batching, retry on failure
 
+Upgrading a browser app? See the [migration guide from v1 to v2 and the three browser setups](https://github.com/tracewayapp/js-client/blob/main/README.md#migration-guide-from-v1-to-v2).
+
 ## Installation
 
 ```bash
@@ -97,7 +99,7 @@ Layering order on each event: `auto-collected defaults < global scope < per-call
 
 ## Always-on Session Recording
 
-By default the SDK only ships a session-replay clip when an exception fires. Pass `recordAllSessions: true` to record every session continuously — see the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#always-on-session-recording) for the full description.
+By default the SDK only ships a session-replay clip when an exception fires. Pass `recordAllSessions: true` to record every session continuously — see the [`@tracewayapp/frontend` README](https://github.com/tracewayapp/js-client/blob/main/packages/frontend/README.md#breadcrumbs--replay) for the full description.
 
 ```ts
 init("your-token@https://traceway.example.com/api/report", {
@@ -112,7 +114,7 @@ init("your-token@https://traceway.example.com/api/report", {
 - **`fetch` / `XMLHttpRequest`** — every HTTP call (including jQuery's underlying XHR) recorded as a network action with method, URL, status, duration, byte counts
 - **History API navigation** — `pushState`, `replaceState`, `popstate`, `hashchange`
 - **Console output** — `console.{debug, log, info, warn, error}` mirrored into the rolling log buffer
-- **rrweb session replay** — last ~10 seconds of DOM events ship alongside each exception
+- **rrweb session replay** — the default exception trigger requests a 30-second DOM replay clip
 
 ## Distributed Tracing
 

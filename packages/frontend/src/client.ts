@@ -1,3 +1,4 @@
+import { version as packageVersion } from "../package.json";
 import {
   listenForSequenceActions,
   hasSequenceEvent,
@@ -119,7 +120,7 @@ import {
   PersistingSpanExporter,
 } from "./persistence/persisting-exporters.js";
 
-export const SDK_VERSION = "2.1.0";
+export const SDK_VERSION = packageVersion;
 const SCOPE_NAME = "@tracewayapp/frontend";
 const HEALTH_DELAY_MS = 1_000;
 const MAX_HEALTH_DELAY_MS = 300_000;

@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/sourcemap-upload",
-  "version": "2.1.0",
+  "version": "2.0.0",
   "description": "CLI tool for uploading source maps to Traceway",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,5 +19,10 @@
   },
   "dependencies": {
     "glob": "^14.0.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tracewayapp/js-client.git",
+    "directory": "packages/sourcemap-upload"
   }
 }
