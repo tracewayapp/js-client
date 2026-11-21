@@ -28,7 +28,8 @@ successful publish within two days; recreate an expired configuration before rel
 See [npm's Trusted Publisher instructions](https://docs.npmjs.com/trusted-publishers/).
 
 The GitHub `npm` environment is restricted to the `main` branch. This is already configured on GitHub.
-You do not need to add repository secrets or change workflow token write permissions.
+No repository secrets are needed. The release job requests `contents: write` and keeps the checkout
+credentials so the script can push the version tag with the workflow token.
 
 ## Release or release beta
 
@@ -39,7 +40,8 @@ You do not need to add repository secrets or change workflow token write permiss
 3. Leave **dry_run** checked first. This installs dependencies, builds all packages, runs unit/release/browser
    tests and bundle limits, packs tarballs, and checks the registry without publishing anything.
 4. Once the dry run passes and npm trust is configured for every package, run again with the same version
-   and channel and **dry_run unchecked**. This publishes public packages with provenance.
+   and channel and **dry_run unchecked**. This publishes public packages with provenance, then pushes
+   `vVERSION` (for example `v2.1.0` or `v2.1.0-beta.1`) at the source commit.
 
 The workflow validates version/channel combinations and refuses to move an npm channel backwards.
 It reads active packages from root `package.json`, updates all internal workspace dependencies to the
@@ -50,15 +52,19 @@ see [browser tests](../tests/browser/README.md).
 ## Version records and retries
 
 The workflow uses the source commit selected when the run starts. It changes versions only inside that
-checkout; it does not push a version commit, create a Git tag, or create a GitHub Release. Each successful
-validation uploads `npm-release-VERSION`, containing the ten exact tarballs plus `manifest.json` with the
+checkout; it does not push a version commit. After every package has published successfully, the script
+pushes a lightweight `vVERSION` Git tag at that source commit. It does not create a GitHub Release. Dry runs
+check for a conflicting tag but never create one. Each successful validation uploads `npm-release-VERSION`, containing the ten exact tarballs plus `manifest.json` with the
 version, npm tag, source SHA, and SHA-512 integrity of each tarball. This artifact is also uploaded before
 publication, so it remains available if publication fails partway through.
 
-For a partial publish failure, fix the npm configuration and **re-run the failed job in the same run**.
+For a partial publish failure or failed tag push, fix the reported configuration or access issue and
+**re-run the failed job in the same run**.
 That keeps the source commit fixed. The workflow preflights every package before publishing any; it skips
 already published packages only when their exact tarball integrity and channel match. npm package versions
-are immutable. A different tarball requires a new version. If a channel was moved by a later release,
+are immutable. A tag already pointing at the same source commit is accepted, including an annotated tag;
+a tag pointing elsewhere is rejected before publishing and is never moved. A retry after a tag-push failure
+skips the matching published packages and finishes the tag push. A different tarball requires a new version. If a channel was moved by a later release,
 choose a new version or repair it manually after review; this workflow never silently retags old packages.
 
 A dry run verifies the workflow and package contents, but cannot verify npm publishing authorization.

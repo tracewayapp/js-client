@@ -391,6 +391,7 @@ Publisher configuration and how to run or resume a release. No npm token is requ
 The workflow publishes all ten active workspace packages in dependency order, including OpAMP.
 Stable releases such as `2.0.0` use the npm tag `latest`. Prereleases use `beta`.
 The workflow sets package versions and internal dependencies in its release checkout.
+After publishing, it pushes a `vVERSION` Git tag at the source commit. Dry runs never create tags.
 The run retains the versioned tarballs and their source commit in an artifact.
 
 The older `publish.sh` and fixed-version `release-beta-2.0.0` scripts are retained for historical use;

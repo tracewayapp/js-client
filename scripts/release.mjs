@@ -73,6 +73,27 @@ export function checkExisting(pkg, remote, tags, version, tag) {
   if (tags?.[tag] && compareVersions(version, tags[tag]) < 0) throw new Error(`Refusing to move ${pkg.name}'s ${tag} backwards from ${tags[tag]} to ${version}.`);
   if (remote && tags?.[tag] !== version) throw new Error(`${pkg.name}@${version} exists but ${tag} points elsewhere; use a new version or repair the dist-tag manually.`);
 }
+export function ensureGitTag(version, source, { push = false, cwd = process.cwd() } = {}) {
+  releaseTag(version, version.includes('-beta.') ? 'beta' : 'stable');
+  if (!/^[0-9a-f]{40}$/.test(source ?? '')) throw new Error('Release source must be a full commit SHA');
+  const git = (args) => {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr || result.status}`);
+    return result.stdout.trim();
+  };
+  if (git(['rev-parse', 'HEAD']) !== source) throw new Error('Release source does not match the checkout');
+  const ref = `refs/tags/v${version}`;
+  const refs = new Map(git(['ls-remote', '--tags', 'origin', ref, `${ref}^{}`])
+    .split('\n').filter(Boolean).map((line) => {
+      const [sha, name] = line.split(/\s+/);
+      return [name, sha];
+    }));
+  // Peel annotated tags too, including versions tagged manually before this workflow supported tagging.
+  const existing = refs.get(`${ref}^{}`) ?? refs.get(ref);
+  if (existing && existing !== source) throw new Error(`${ref} already points to another commit; never move a release tag.`);
+  if (push && !existing) git(['push', 'origin', `${source}:${ref}`]);
+}
 async function main() {
   const [mode, version, channel] = process.argv.slice(2);
   const tag = releaseTag(version, channel);
@@ -103,6 +124,12 @@ async function main() {
   if (!['check', 'publish'].includes(mode)) throw new Error('Expected prepare, pack, check or publish');
   const manifest = JSON.parse(fs.readFileSync(`${out}/manifest.json`));
   if (manifest.version !== version || manifest.tag !== tag || manifest.packages.map((p) => p.name).join() !== packages.map((p) => p.data.name).join()) throw new Error('Release manifest mismatch');
+  if (mode === 'publish') {
+    if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REF !== 'refs/heads/main' || process.env.GITHUB_REPOSITORY !== 'tracewayapp/js-client') throw new Error('Publish only from the main release workflow');
+    if (!manifest.source || manifest.source !== process.env.GITHUB_SHA) throw new Error('Release manifest source mismatch');
+  }
+  // Fail before any npm publication if the version tag belongs to another source commit.
+  if (manifest.source) ensureGitTag(version, manifest.source);
   const existing = new Set();
   // Check every immutable version before the first publish; a registry outage is not a missing version.
   for (const p of manifest.packages) {
@@ -114,7 +141,6 @@ async function main() {
     if (remote) existing.add(p.name);
   }
   if (mode === 'publish') {
-    if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REF !== 'refs/heads/main' || process.env.GITHUB_REPOSITORY !== 'tracewayapp/js-client') throw new Error('Publish only from the main release workflow');
     for (const p of manifest.packages) {
       if (existing.has(p.name)) {
         console.log(`Already published with matching contents: ${p.name}@${version}`);
@@ -122,6 +148,9 @@ async function main() {
       }
       npm(['publish', `${out}/${p.filename}`, '--tag', tag, '--access', 'public', '--provenance', '--ignore-scripts']);
     }
+    // Only mark the source released after every package succeeds. A retry can finish a failed tag push.
+    ensureGitTag(version, manifest.source, { push: true });
+    console.log(`Git tag v${version}: ${manifest.source}`);
   }
   console.log(`${mode}: ${manifest.packages.length} packages at ${version}, npm tag ${tag}`);
 }
