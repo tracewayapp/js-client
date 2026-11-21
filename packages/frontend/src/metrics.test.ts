@@ -11,8 +11,10 @@ vi.mock("@rrweb/record", () => {
   return { record };
 });
 
+import { createBrowserRouter } from "react-router";
 import type { TracewayFrontendOptions } from "./client.js";
 import { TracewayFrontendClient } from "./client.js";
+import { forgetRouters, trackRouter } from "./otel/route-detect.js";
 
 const METRICS_URL = "https://traceway.test/api/otel/v1/metrics";
 
@@ -374,6 +376,18 @@ describe("device metrics", () => {
     ]);
   });
 
+  it("counts replacements between paths that normalize to the same route", async () => {
+    history.replaceState(null, "", "/orders/1");
+    start();
+    history.replaceState(null, "", "/orders/2");
+    history.pushState(null, "", "/cart");
+    await client.flush();
+    const views = payloads()[0]!.metrics["browser.page_view"].sum.dataPoints;
+    expect(
+      views.map((p: any) => [dims(p)["url.path"], Number(p.asDouble ?? p.asInt)]),
+    ).toEqual([["/orders/:id", 2]]);
+  });
+
   it("retries a failed upload once, on the next page load, as the same batch", async () => {
     status = 503;
     start();
@@ -641,5 +655,145 @@ describe("device metrics", () => {
       configurable: true,
       get: () => "visible",
     });
+  });
+});
+
+describe("route names read from the app's router", () => {
+  const shop = () =>
+    createBrowserRouter([
+      { path: "/", element: null },
+      { path: "/products/:slug", element: null },
+      { path: "/cart", element: null },
+    ]);
+
+  const paths = (metric: any) =>
+    (metric.sum ?? metric.exponentialHistogram).dataPoints.map(
+      (point: any) => dims(point)["url.path"],
+    );
+
+  afterEach(() => forgetRouters());
+
+  it("names every view by its route template without a setRoute call", async () => {
+    history.replaceState(null, "", "/products/blue-shoes");
+    const router = shop();
+    trackRouter(router);
+    start();
+    longFrame(100);
+    await router.navigate("/products/red-boots");
+    longFrame(100);
+    await router.navigate("/cart");
+    await client.flush();
+
+    const { metrics } = payloads()[0]!;
+    // Two views of one route are one series, which the normalized paths would not be.
+    const views = metrics["browser.page_view"].sum.dataPoints;
+    expect(views).toHaveLength(1);
+    expect(dims(views[0])["url.path"]).toBe("/products/:slug");
+    expect(views[0].asDouble).toBe(2);
+    expect(paths(metrics["browser.long_task.duration"])).toEqual([
+      "/products/:slug",
+    ]);
+  });
+
+  it("files the page load under a route the router names only later", async () => {
+    history.replaceState(null, "", "/products/blue-shoes");
+    start();
+    // TTFB, the session and the load timing arrive before the app has created its router.
+    emit("browser.web_vital", {
+      "browser.web_vital.name": "TTFB",
+      "browser.web_vital.id": "v1-ttfb",
+      "browser.web_vital.value": 120,
+      "browser.web_vital.rating": "good",
+    });
+    emit("browser.navigation_timing", {
+      "browser.navigation_timing.load_event_end": 900,
+    });
+    trackRouter(shop());
+    await client.flush();
+
+    const { metrics } = payloads()[0]!;
+    for (const name of [
+      "browser.web_vital.ttfb",
+      "browser.page_load.duration",
+      "browser.session",
+    ])
+      expect([name, paths(metrics[name])]).toEqual([name, ["/products/:slug"]]);
+  });
+
+  it("asks the router again when it was not ready at the history change", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      history.replaceState(null, "", "/");
+      start();
+      // The address changes first and the router commits later, as the Next.js Pages Router does.
+      history.pushState(null, "", "/products/blue-shoes");
+      longFrame(100);
+      const late = {
+        pathname: "/products/[slug]",
+        asPath: "/products/blue-shoes",
+      };
+      trackRouter(late);
+      vi.advanceTimersByTime(600);
+      // The router moves on before the view is closed: the name was taken while it still showed this view.
+      late.pathname = "/cart";
+      late.asPath = "/cart";
+      history.pushState(null, "", "/cart");
+    } finally {
+      vi.useRealTimers();
+    }
+    await client.flush();
+
+    const views = payloads()[0]!.metrics["browser.page_view"].sum.dataPoints;
+    expect(views.map((p: any) => dims(p)["url.path"]).sort()).toEqual([
+      "/",
+      "/products/[slug]",
+    ]);
+  });
+
+  it("does not count a view under the route of the page before when the router is slow", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      history.replaceState(null, "", "/settings");
+      const slow = { pathname: "/settings", asPath: "/settings" };
+      trackRouter(slow);
+      start();
+      // The address moves when the navigation starts and the router when its loader is done, as TanStack Router
+      // does, and the old path is the end of the new one.
+      history.pushState(null, "", "/acme/settings");
+      vi.advanceTimersByTime(150);
+      slow.pathname = "/[team]/settings";
+      slow.asPath = "/acme/settings";
+      history.pushState(null, "", "/cart");
+    } finally {
+      vi.useRealTimers();
+    }
+    await client.flush();
+
+    const views = payloads()[0]!.metrics["browser.page_view"].sum.dataPoints;
+    expect(views.map((p: any) => dims(p)["url.path"]).sort()).toEqual([
+      "/[team]/settings",
+      "/settings",
+    ]);
+  });
+
+  it("lets setRoute win and detectRoutes switch it off", async () => {
+    history.replaceState(null, "", "/products/blue-shoes");
+    trackRouter(shop());
+    start();
+    client.setRoute("/shop/item");
+    longFrame(100);
+    await client.flush();
+    expect(
+      paths(payloads()[0]!.metrics["browser.long_task.duration"]),
+    ).toEqual(["/shop/item"]);
+
+    await client.shutdown();
+    fetchMock.mockClear();
+    start({ detectRoutes: false });
+    longFrame(100);
+    await client.flush();
+    expect(
+      paths(payloads()[0]!.metrics["browser.long_task.duration"]),
+    ).toEqual(["/products/blue-shoes"]);
   });
 });

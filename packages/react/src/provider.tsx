@@ -24,6 +24,12 @@ const contextValue: TracewayContextValue = {
 export interface TracewayProviderProps {
   connectionString: string | StandaloneOptions;
   options?: TracewayFrontendOptions;
+  /**
+   * The app's router, to name every view by its route template (`/orders/:id`): what `createBrowserRouter`
+   * (React Router) or `createRouter` (TanStack Router) returned. Not needed in React Router's framework mode,
+   * Remix or the Next.js Pages Router, which are read from the page.
+   */
+  router?: object;
   children: React.ReactNode;
 }
 
@@ -39,6 +45,7 @@ export class TracewayProvider extends Component<
 
   constructor(props: TracewayProviderProps) {
     super(props);
+    if (props.router) traceway.trackRouter(props.router);
     traceway.init(props.connectionString, props.options);
   }
 

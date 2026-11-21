@@ -9,6 +9,11 @@ import { encodeServerToAgent } from "../packages/opamp/dist/index.mjs";
 const bundle = await readFile(
   new URL("../packages/frontend/dist/traceway.iife.global.js", import.meta.url),
 );
+// A real router in a real browser, for the check that views are named without any code in the app.
+const vendor = {
+  "/vue.js": "../node_modules/vue/dist/vue.global.prod.js",
+  "/vue-router.js": "../node_modules/vue-router/dist/vue-router.global.prod.js",
+};
 let document = { schemaVersion: 1 };
 let failLogs = false;
 let metricsStatus = 200;
@@ -20,6 +25,10 @@ const server = createServer(async (req, res) => {
   if (req.url === "/sdk.js") {
     res.setHeader("Content-Type", "text/javascript");
     return res.end(bundle);
+  }
+  if (vendor[req.url]) {
+    res.setHeader("Content-Type", "text/javascript");
+    return res.end(await readFile(new URL(vendor[req.url], import.meta.url)));
   }
   if (req.method === "POST") {
     const chunks = [];
@@ -751,6 +760,58 @@ try {
       } finally {
         metricsStatus = 200;
         await metricsPage.close();
+      }
+    },
+  );
+  await check(
+    "views are named by the route templates of a Vue Router the app never handed over",
+    async () => {
+      const routerPage = await browser.newPage();
+      try {
+        document = { schemaVersion: 1 };
+        metricPayloads.length = 0;
+        // Slugs the path normalization leaves alone, so `:slug` can only have come from the router.
+        await routerPage.goto(`${origin}/products/blue-shoes`);
+        await routerPage.evaluate(async () => {
+          Traceway.init(`routes@${location.origin}`, {
+            sessionRecording: false,
+          });
+          await Traceway.refreshConfig();
+        });
+        for (const src of ["/vue.js", "/vue-router.js"])
+          await routerPage.addScriptTag({ url: src });
+        await routerPage.evaluate(async () => {
+          const view = { render: () => Vue.h("p", "page") };
+          const router = VueRouter.createRouter({
+            history: VueRouter.createWebHistory(),
+            routes: [
+              { path: "/products/:slug", component: view },
+              { path: "/cart", component: view },
+            ],
+          });
+          const mount = window.document.createElement("div");
+          window.document.body.appendChild(mount);
+          Vue.createApp({ render: () => Vue.h(VueRouter.RouterView) })
+            .use(router)
+            .mount(mount);
+          await router.isReady();
+          await router.push("/products/red-boots");
+          await router.push("/cart");
+          await Traceway.flush();
+        });
+        await expect.poll(() => metricPayloads.length).toBeGreaterThan(0);
+        const views = {};
+        for (const payload of metricPayloads)
+          for (const metric of payload.resourceMetrics[0].scopeMetrics[0].metrics)
+            if (metric.name === "browser.page_view")
+              for (const point of metric.sum.dataPoints) {
+                const path = point.attributes.find((a) => a.key === "url.path");
+                views[path.value.stringValue] =
+                  (views[path.value.stringValue] ?? 0) + Number(point.asDouble ?? point.asInt);
+              }
+        assert.deepEqual(views, { "/products/:slug": 2 });
+      } finally {
+        await routerPage.close();
       }
     },
   );

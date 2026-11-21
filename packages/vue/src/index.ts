@@ -19,6 +19,7 @@ export {
   count,
   setMetricDimension,
   setRoute,
+  routeFromParams,
   startInteraction,
   refreshConfig,
   shutdown,
@@ -31,5 +32,6 @@ export type {
   CollectionSettings,
   TelemetryOptions,
   TelemetryEndpoint,
+  RouteParams,
 } from "@tracewayapp/frontend";
 export type { TracewayPluginOptions, TracewayContextValue } from "./types.js";

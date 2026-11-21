@@ -110,6 +110,7 @@ import {
   ATTR_WEB_VITAL_TARGET,
   MetricsRecorder,
 } from "./otel/metrics-recorder.js";
+import { findRoute } from "./otel/route-detect.js";
 import { TelemetryPersistence } from "./persistence/telemetry-persistence.js";
 import type { StoredBatch } from "./persistence/idb.js";
 import { filterRequest } from "./persistence/otlp-json.js";
@@ -220,6 +221,12 @@ export interface TracewayFrontendOptions {
    * At most two keys (`[a-z][a-z0-9_]`, up to 32 characters) with a small set of values each: never a user id.
    */
   metricDimensions?: Record<string, string>;
+  /**
+   * Name each view by the route template of the app's router (`/orders/:id`) when the router can be read from
+   * the page: React Router in framework mode, Remix, TanStack Router, the Next.js Pages Router, Vue Router and
+   * Nuxt, or a router passed to `trackRouter`. `setRoute` wins over it. Default true.
+   */
+  detectRoutes?: boolean;
 
   /** Report fetch/XHR responses with status >= 500 as message issues. Default false. */
   captureHttpServerErrors?: boolean;
@@ -616,6 +623,7 @@ export class TracewayFrontendClient {
       },
       profileId: () => this.instanceId,
       dimensions: options.metricDimensions,
+      detectRoute: options.detectRoutes === false ? undefined : findRoute,
     });
     this.control.onChange(() => this.applySettings());
     if (options.remoteConfig !== false && options.transport !== "legacy")

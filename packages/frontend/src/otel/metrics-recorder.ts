@@ -9,6 +9,7 @@ import {
   type MetricResource,
 } from "@tracewayapp/core";
 import { PendingMetrics, type MetricsStorage } from "./metrics-pending.js";
+import type { FoundRoute } from "./route-detect.js";
 import { ViewVitals, ViewVitalsObserver } from "./view-vitals.js";
 
 export const METRIC_PAGE_VIEW = "browser.page_view";
@@ -106,11 +107,23 @@ export interface MetricsRecorderDeps {
   profileId?: () => string;
   /** App-defined dimensions applied to every metric, e.g. `{ plan: "pro" }`. At most two. */
   dimensions?: Record<string, string>;
+  /** The route template the app's router shows at a path, when one can be read. Without it paths are normalized. */
+  detectRoute?: (pathname: string) => FoundRoute | null;
 }
+
+/**
+ * When a view asks the router for its route again. A router commits a navigation just before or some time after
+ * the address changes (Next.js after it loaded the page's code), and one that is not there yet at page load is
+ * created by the app shortly after.
+ */
+const ROUTE_DETECT_DELAYS_MS = [0, 100, 500, 2000, 5000];
 
 interface View {
   path: string;
+  /** `location.pathname` as it was, to ask the router whether it is showing this view. */
+  raw: string;
   template: string | null;
+  detected: string | null;
   counted: boolean;
   blockingMs: number;
   soft: boolean;
@@ -123,6 +136,14 @@ interface PendingVital {
   dims: MetricDims;
   rating: string;
   target?: string;
+}
+
+/** A number of the page load, kept until the next flush so the route it is filed under can still arrive. */
+interface PendingLoad {
+  name: string;
+  value: number;
+  dims: MetricDims;
+  unit?: string;
 }
 
 interface LogLike {
@@ -204,6 +225,8 @@ export class MetricsRecorder implements PerformanceSink {
   private readonly initialView: View;
   private view: View;
   private readonly vitals = new Map<string, PendingVital>();
+  private loads: PendingLoad[] = [];
+  private readonly routeTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly sentVitals = new Set<string>();
   private readonly hosts = new Set<string>();
   private clicks: { target: string; timeMs: number }[] = [];
@@ -242,6 +265,7 @@ export class MetricsRecorder implements PerformanceSink {
     document.addEventListener("visibilitychange", this.onVisibility);
     window.addEventListener("pagehide", this.onPageHide);
     this.viewObserver.start();
+    this.watchRoute(this.view);
     this.schedule();
     this.resend();
     this.user();
@@ -255,6 +279,8 @@ export class MetricsRecorder implements PerformanceSink {
     this.viewObserver.stop();
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
+    for (const timer of this.routeTimers) clearTimeout(timer);
+    this.routeTimers.clear();
   }
 
   /**
@@ -266,8 +292,13 @@ export class MetricsRecorder implements PerformanceSink {
     const rate = this.deps.control.metrics()?.sampleRate ?? 0;
     if (rate !== this.batchRate) {
       // Switched off means nothing more is sent, including what was already measured.
-      if (rate > 0) this.upload(false);
-      else this.aggregator.drain();
+      if (rate > 0) {
+        this.commitLoads();
+        this.upload(false);
+      } else {
+        this.loads = [];
+        this.aggregator.drain();
+      }
       this.batchRate = rate;
     }
     if (this.timer !== null) this.schedule();
@@ -290,7 +321,9 @@ export class MetricsRecorder implements PerformanceSink {
   private newView(soft: boolean): View {
     return {
       path: currentPath(),
+      raw: typeof location === "undefined" ? "/" : location.pathname,
       template: null,
+      detected: null,
       counted: false,
       blockingMs: 0,
       soft,
@@ -298,8 +331,34 @@ export class MetricsRecorder implements PerformanceSink {
     };
   }
 
+  /** The app's own name for the view, else the router's, else the normalized path. */
+  private route(view: View): string {
+    if (view.template) return view.template;
+    if (view.detected) return view.detected;
+    const found = this.deps.detectRoute?.(view.raw);
+    if (!found) return view.path;
+    const template = found.template.slice(0, MAX_DIMENSION_LENGTH);
+    // An answer that may still change is used and asked for again, so the view is counted under the route the
+    // router shows once it has caught up with the address.
+    if (found.settled) view.detected = template;
+    return template;
+  }
+
+  private watchRoute(view: View, attempt = 0): void {
+    const delay = ROUTE_DETECT_DELAYS_MS[attempt];
+    if (!this.deps.detectRoute || delay === undefined) return;
+    const timer = setTimeout(() => {
+      this.routeTimers.delete(timer);
+      // The router has moved on with the page: what it shows now is another view's route.
+      if (view !== this.view || view.template) return;
+      this.route(view);
+      if (!view.detected) this.watchRoute(view, attempt + 1);
+    }, delay);
+    this.routeTimers.add(timer);
+  }
+
   private dims(view: View, extra?: MetricDims): MetricDims {
-    const dims: MetricDims = { "url.path": view.template ?? view.path };
+    const dims: MetricDims = { "url.path": this.route(view) };
     const network = networkType();
     if (network) dims["network.type"] = network;
     return extra ? Object.assign(dims, extra) : dims;
@@ -389,14 +448,19 @@ export class MetricsRecorder implements PerformanceSink {
     }
     if (!this.active()) return;
     this.countedSession = sessionId;
-    this.aggregator.count(METRIC_SESSION, 1, this.dims(this.view));
+    const dims = this.dims(this.view);
+    // A session starts with the page, before the app's router is up to name the landing route.
+    if (this.view === this.initialView)
+      this.loads.push({ name: METRIC_SESSION, value: 1, dims });
+    else this.aggregator.count(METRIC_SESSION, 1, dims);
   }
 
   routeChanged(type?: "push" | "replace" | "traverse"): void {
     // Rewriting the query string in place (a search box, a filter) is the same view.
-    if (type === "replace" && currentPath() === this.view.path) return;
+    if (type === "replace" && location.pathname === this.view.raw) return;
     this.closeView();
     this.view = this.newView(true);
+    this.watchRoute(this.view);
   }
 
   /** A view is counted when it ends, so a route template that arrives after the history change still names it. */
@@ -537,9 +601,27 @@ export class MetricsRecorder implements PerformanceSink {
       this.user(`poor_${name}` as UserIssue);
   }
 
+  /**
+   * What was measured of the page load is filed under the landing view's route as it is known now: the first
+   * numbers (TTFB, FCP, the session) arrive before the app has created its router or called `setRoute`.
+   */
+  private commitLoads(): void {
+    const route = this.route(this.initialView);
+    for (const load of this.loads) {
+      load.dims["url.path"] = route;
+      if (load.unit === undefined)
+        this.aggregator.count(load.name, load.value, load.dims);
+      else this.aggregator.observe(load.name, load.value, load.dims, load.unit);
+    }
+    this.loads = [];
+  }
+
   private commitVitals(): void {
+    this.commitLoads();
+    const route = this.route(this.initialView);
     for (const [id, vital] of this.vitals) {
       this.sentVitals.add(id);
+      vital.dims["url.path"] = route;
       this.aggregator.observe(
         `browser.web_vital.${vital.name}`,
         vital.value,
@@ -569,14 +651,16 @@ export class MetricsRecorder implements PerformanceSink {
   private navigationTiming(attrs: Record<string, unknown>): void {
     const dims = this.dims(this.initialView);
     const load = numberAttr(attrs, "browser.navigation_timing.load_event_end");
-    if (load) this.aggregator.observe(METRIC_PAGE_LOAD, load, dims, "ms");
+    const keep = (name: string, value: number, unit: string) =>
+      this.loads.push({ name, value, dims: { ...dims }, unit });
+    if (load) keep(METRIC_PAGE_LOAD, load, "ms");
     const ready = numberAttr(
       attrs,
       "browser.navigation_timing.dom_content_loaded_event_end",
     );
-    if (ready) this.aggregator.observe(METRIC_DOM_READY, ready, dims, "ms");
+    if (ready) keep(METRIC_DOM_READY, ready, "ms");
     const size = numberAttr(attrs, "browser.resource_timing.transfer_size");
-    if (size) this.aggregator.observe(METRIC_TRANSFER_SIZE, size, dims, "By");
+    if (size) keep(METRIC_TRANSFER_SIZE, size, "By");
   }
 
   private click(target: string): void {

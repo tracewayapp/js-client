@@ -156,6 +156,7 @@ The parts of the 2.x browser SDK that do not need a browser. `@tracewayapp/front
 | `MetricAggregator` (`MetricDims`, `MetricBatch`, `HistogramPoint`, `SumPoint`, `MetricExemplar`, `ExemplarSource`, `MetricAggregatorOptions`) | In-memory histograms and counters of one device |
 | `encodeMetrics(...)` (`MetricResource`) | Render a metric batch as an OTLP/HTTP JSON request |
 | `normalizePath(path)` | Turn a URL path into something close to its route template (`/orders/8841` becomes `/orders/:id`) |
+| `routeFromParams(pathname, params)` (`RouteParams`) | Infer a route template from router params (`/orders/8841` with `{ id: "8841" }` becomes `/orders/:id`); catch-all arrays become `:name*` |
 
 ## Constants
 

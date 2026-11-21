@@ -238,7 +238,7 @@ that fails to upload, or whose page goes away before the server answers, is kept
 ```ts
 import { metric, count, setRoute, setMetricDimension } from "@tracewayapp/frontend";
 
-setRoute("/orders/:id"); // name the page by its route template; without it the path is normalized
+setRoute("/orders/:id"); // name the page yourself; without it the app's router or the normalized path names it
 metric("checkout.duration", 840, { plan: "pro" }); // a custom distribution, at most two dimensions
 count("cart.item_added");
 setMetricDimension("plan", "pro"); // on every metric from now on; at most two keys, never a user id
@@ -252,8 +252,31 @@ day, and once per day for each kind of trouble (an error, a poor vital, a rage c
 device id is sent; a browser without `localStorage` is left out of those counts. `metricDimensions` in `init()`
 sets the dimensions of your own from the start.
 
-`@tracewayapp/react` has `useTracewayRoute(template)`, `@tracewayapp/vue` has `trackRouter(router)` and
-`@tracewayapp/svelte` has `trackRoute(routeId)`. Set `captureMetrics: false` to send none of it. See [Client Metrics](https://docs.tracewayapp.com/learn/client-metrics).
+Set `captureMetrics: false` to send none of it. See [Client Metrics](https://docs.tracewayapp.com/learn/client-metrics).
+
+### Route names
+
+Metrics are grouped by page, and a page is named by its route template (`/orders/:id`), so two orders are one
+series. The SDK takes the template from the app's router wherever the router can be read from the page, and a
+name set with `setRoute` wins over it:
+
+| Router | What names the route |
+| --- | --- |
+| React Router in framework mode, Remix | Nothing to do: the SDK reads the router from the page |
+| TanStack Router | Nothing to do |
+| Next.js Pages Router | Nothing to do |
+| Vue Router, Nuxt | Nothing to do |
+| React Router `createBrowserRouter` | `trackRouter(router)`, or `<TracewayProvider router={router}>` |
+| React Router `<BrowserRouter>` and `<Routes>` | `useTracewayRoute(useLocation().pathname, useParams())` in a layout route |
+| Next.js App Router | `useTracewayRoute(usePathname(), useParams())` in a client component of the root layout |
+| SvelteKit | `$effect(() => { page.url.pathname; trackRoute(page.route.id); })` in the root layout |
+| Anything else | `setRoute("/orders/:id")`, or nothing: id-like path segments are replaced (`/orders/8841` becomes `/orders/:id`) |
+
+`trackRouter(router)` takes a React Router data router, a TanStack Router, a Vue Router or the Next.js Pages Router
+and may be called before `init()`. `routeFromParams(pathname, params)` is what `useTracewayRoute` uses to rebuild
+a template from a path and its params. A view is only named after a route the router is showing for that view's
+path. A match with an unreported base or locale prefix is provisional and checked again as the router catches up. `detectRoutes: false` in `init()` switches the
+reading of routers off.
 
 ## Local configuration without OpAMP
 
@@ -374,7 +397,9 @@ For exact build-to-map matching, add [`@tracewayapp/bundler-plugin`](https://www
 | `track(eventName, attributes?)` | Record a named app event triggers can match |
 | `metric(name, value, dims?)` | Record one observation of a custom distribution; at most two dimensions |
 | `count(name, n?, dims?)` | Add to a custom counter |
-| `setRoute(template)` | Name the page by its route template, e.g. `/orders/:id`; `null` goes back to the normalized path |
+| `setRoute(template)` | Name the page by its route template, e.g. `/orders/:id`; `null` goes back to the router's name or the normalized path |
+| `trackRouter(router)` | Name every page from this router's route templates. See [Route names](#route-names) |
+| `routeFromParams(pathname, params)` | Rebuild a route template from a path and the params a router matched in it |
 | `setMetricDimension(key, value)` | Set a dimension of your own on every performance metric from now on; `null` removes it |
 | `startInteraction(name)` | Start a span for one user action; returns `{ traceId, run, bind, captureException, end }`, or `undefined` before `init()` |
 | `setAttribute(key, value)` / `setAttributes(map)` | Attach attributes to every later exception and message and to the session; also used to target remote rules |

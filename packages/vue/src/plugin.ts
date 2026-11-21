@@ -18,6 +18,13 @@ export function createTracewayPlugin(pluginOptions: TracewayPluginOptions) {
 
       app.provide(TracewayKey, context);
 
+      // Vue Router is usually installed next to this plugin, before or after it: views are named by its route
+      // patterns without the app calling `trackRouter`.
+      const useRouter = () =>
+        traceway.trackRouter(app.config.globalProperties.$router);
+      useRouter();
+      Promise.resolve().then(useRouter);
+
       // On the server there is nothing to report to: the SDK only runs in the browser. A handler that swallowed
       // render errors there would hide them from the framework, so Vue's own handling stays in place.
       if (typeof window === "undefined") return;

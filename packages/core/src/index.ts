@@ -102,4 +102,5 @@ export type {
 } from "./metrics/aggregator.js";
 export { encodeMetrics } from "./metrics/otlp.js";
 export type { MetricResource } from "./metrics/otlp.js";
-export { normalizePath } from "./metrics/route.js";
+export { normalizePath, routeFromParams } from "./metrics/route.js";
+export type { RouteParams } from "./metrics/route.js";

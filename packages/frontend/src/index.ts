@@ -87,11 +87,22 @@ export function count(
 
 /**
  * Names the page being shown by its route template (`/orders/:id`), so metrics group by route and not by URL.
- * Without it the SDK replaces id-like path segments itself. The framework packages call this from the router.
+ * Without it the SDK reads the template from the app's router where it can (see `trackRouter`), and otherwise
+ * replaces id-like path segments itself.
  */
 export function setRoute(template: string | null): void {
   client?.setRoute(template);
 }
+
+/**
+ * Names every view by the route template of this router, with no `setRoute` calls. Takes a React Router data
+ * router (`createBrowserRouter`), a TanStack Router, a Vue Router or the Next.js Pages Router; may be called
+ * before `init()`. Routers their framework leaves on the page are found without it: React Router in framework
+ * mode, Remix, TanStack Router, the Next.js Pages Router, Vue Router and Nuxt.
+ */
+export { trackRouter } from "./otel/route-detect.js";
+export { routeFromParams } from "@tracewayapp/core";
+export type { RouteParams } from "@tracewayapp/core";
 
 /**
  * Sets a dimension of your own on every performance metric from now on, e.g. `setMetricDimension("plan", "pro")`;

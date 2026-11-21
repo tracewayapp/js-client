@@ -17,6 +17,12 @@ Official JavaScript / TypeScript client SDKs for [Traceway](https://tracewayapp.
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
+## Changes in 2.0.1
+
+Browser metrics now use route templates from supported routers automatically. React data routers can be passed to `TracewayProvider` with `router={router}`; apps using React Router's declarative mode or the Next.js App Router can use `useTracewayRoute(pathname, params)`. See [route setup by framework](packages/frontend/README.md#route-names).
+
+Page-load metrics wait until export to pick up the landing route's name. Path normalization also groups percent-encoded ASCII segments, preserves optional parameters before another segment, and replacement navigation counts distinct paths even when they normalize to the same route. All ten active packages are released together as 2.0.1.
+
 ## Migration guide from v1 to v2
 
 The v2 browser SDK uses OpenTelemetry for logs, request spans, and real user monitoring (RUM) metrics. Traceway can manage collection remotely over OpAMP and store session replay separately. These changes apply to the browser SDK and its React, Vue, Svelte, and jQuery wrappers. `@tracewayapp/react-native` shares the version number but keeps its own API and its native `/api/report` transport, so a React Native app has nothing to migrate.

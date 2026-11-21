@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/svelte",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Traceway Svelte integration with context and helper functions",
   "license": "MIT",
   "main": "./dist/index.js",
@@ -24,7 +24,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/frontend": "2.0.0"
+    "@tracewayapp/frontend": "2.0.1"
   },
   "peerDependencies": {
     "svelte": ">=4.0.0"

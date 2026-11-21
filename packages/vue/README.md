@@ -108,7 +108,9 @@ The exports are `captureException`, `captureExceptionWithAttributes`, `captureMe
 
 ## Route Names
 
-Performance metrics are grouped by page. Pass your `vue-router` instance to `trackRouter` once, after creating it, and every navigation reports its matched route pattern (`/orders/:id`), so metrics group by route and not by URL:
+Performance metrics are grouped by page, and a page is named by its matched route pattern (`/orders/:id`), not by its URL. There is nothing to set up: the plugin takes Vue Router from the app it is installed in, whichever of the two is installed first, and Nuxt works the same way. Nuxt writes the patterns of its file routes with a trailing `()` (`pages/orders/[id].vue` is `/orders/:id()`, a catch-all is `/docs/:slug(.*)*`), and that is the name the page gets.
+
+A router that is not installed in the app can be passed once, after creating it:
 
 ```ts
 import { createRouter, createWebHistory } from "vue-router";
@@ -118,7 +120,7 @@ const router = createRouter({ history: createWebHistory(), routes });
 trackRouter(router);
 ```
 
-Without it the SDK replaces id-like path segments itself.
+Without a router the SDK replaces id-like path segments itself.
 
 ## Custom Attributes (global scope)
 

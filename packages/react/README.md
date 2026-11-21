@@ -108,18 +108,47 @@ The exports are `captureException`, `captureExceptionWithAttributes`, `captureMe
 
 ## Route Names
 
-Performance metrics are grouped by page. Call `useTracewayRoute` from the component a route renders so they group by the route template (`/orders/:id`) and not by URL:
+Performance metrics are grouped by page, and a page is named by its route template (`/orders/:id`), not by its URL. Most routers need no code for it:
+
+| Router | What names the route |
+| --- | --- |
+| React Router in framework mode, Remix | Nothing to do: the SDK reads the router from the page |
+| TanStack Router | Nothing to do |
+| Next.js Pages Router | Nothing to do |
+| React Router `createBrowserRouter` | `<TracewayProvider router={router}>`, or `trackRouter(router)` |
+| React Router `<BrowserRouter>` and `<Routes>` | `useTracewayRoute(useLocation().pathname, useParams())` in a layout route |
+| Next.js App Router | `useTracewayRoute(usePathname(), useParams())` in a client component of the root layout |
 
 ```tsx
-import { useTracewayRoute } from "@tracewayapp/react";
+// React Router, data mode
+const router = createBrowserRouter(routes);
 
-function OrderPage() {
-  useTracewayRoute("/orders/:id");
-  // ...
+<TracewayProvider connectionString="..." router={router}>
+  <RouterProvider router={router} />
+</TracewayProvider>;
+```
+
+```tsx
+// React Router with <Routes>: a layout route sees the params of the page below it
+function Layout() {
+  useTracewayRoute(useLocation().pathname, useParams());
+  return <Outlet />;
 }
 ```
 
-Pass `null` to name nothing. Without a name the SDK replaces id-like path segments itself.
+```tsx
+// Next.js App Router: app/traceway-route.tsx, rendered once in app/layout.tsx
+"use client";
+import { usePathname, useParams } from "next/navigation";
+import { useTracewayRoute } from "@tracewayapp/react";
+
+export function TracewayRoute() {
+  useTracewayRoute(usePathname(), useParams());
+  return null;
+}
+```
+
+To name a route yourself, call `useTracewayRoute("/orders/:id")` from the component it renders; that name wins. Between two pages of one route the component usually stays mounted and the second page is not named again, so prefer the path-and-params form where the router is not read from the page. With no router and no name the SDK replaces id-like path segments itself.
 
 ## Custom Attributes (global scope)
 
@@ -257,9 +286,13 @@ Returns `{ captureException, captureExceptionWithAttributes, captureMessage, rec
 
 Throws if used outside a `TracewayProvider`. Class components can read the same object from the exported `TracewayContext`.
 
-### `useTracewayRoute(template)`
+### `useTracewayRoute(template)` / `useTracewayRoute(pathname, params)`
 
-Names the page being shown by its route template (`string | null`), so performance metrics group by route. Calls `setRoute` whenever the template changes.
+Names the page being shown by its route template (`string | null`), so performance metrics group by route. With a path and the params a router matched in it, the template is rebuilt from the two (`/orders/8841` and `{ id: "8841" }` give `/orders/:id`; a catch-all gives `:name*`, React Router's splat `*`). Calls `setRoute` whenever the template or the supplied pathname changes.
+
+### `trackRouter(router)`
+
+Names every page from the route templates of a React Router data router (`createBrowserRouter`) or a TanStack Router. The `router` prop of `<TracewayProvider>` does the same.
 
 ### `<TracewayAttributes>` / `useTracewayAttributes`
 

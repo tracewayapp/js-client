@@ -83,9 +83,31 @@ events only when a rule, trigger or capture asks.
 - A web vital can be reported more than once per page (CLS and INP grow) and an uploaded histogram cannot be taken
   back: the latest value waits in the recorder until the next flush, and each vital instance is counted once.
 - A page view is counted when its view ends, so a route template that arrives after the history change still
-  names it. `setRoute(template)` names the view (`useTracewayRoute`, `trackRouter`, `trackRoute` in the framework
-  packages); without it the path is normalized (`/orders/8841` becomes `/orders/:id`). The server applies the same
-  rules (`backend/app/clientmetrics/route.go`), so the two tables of test cases must stay equal.
+  names it. A view's name is, in this order: `setRoute(template)` (`useTracewayRoute`, `trackRoute` in the
+  framework packages), the template read from the app's router, the normalized path (`/orders/8841` becomes
+  `/orders/:id`, and so does a segment with a percent-encoded ASCII character). The server applies the same
+  normalization (`backend/app/clientmetrics/route.go`), so the two tables of test cases must stay equal. The
+  server normalizes whatever it gets, a template included, so a template must pass unchanged: a `?` that ends an
+  optional parameter before another segment (`/:lang?/about`, Nuxt's `[[lang]]`, Remix's `($lang)`) is not the
+  start of a query (`queryStart`).
+- Reading the router (`otel/route-detect.ts`, `detectRoutes` in `init()`, default on): `detectRoute(pathname)` asks
+  the routers handed over with `trackRouter` (the `router` prop of the React provider, `$router` in the Vue
+  plugin) and the ones frameworks leave on the page: `__reactRouterDataRouter` (React Router framework mode),
+  `__remixRouter`, `__TSR_ROUTER__` (TanStack), `next.router` (Pages Router) and `__vue_app__` on a child of
+  `<body>` (Vue Router, Nuxt). Nothing is imported from a router package; `route-detect.test.ts` runs against the
+  real React Router, TanStack Router and Vue Router, so a shape change in one of them fails there. The Next.js App
+  Router (its `window.nd` is development only), `<BrowserRouter>` and SvelteKit leave nothing to read; they use
+  `useTracewayRoute(pathname, params)` (`routeFromParams` in `core`; its effect depends on the path as well as
+  the template, since two pages of one route give the same template and each starts an unnamed view) and
+  `trackRoute`. A template is only taken
+  from a router that is showing the view's own path (its deepest match's path, with the base), because a router
+  commits a navigation just before or some time after the address changes: the recorder asks when a view is
+  used, when it ends, and on a short schedule after it starts (`ROUTE_DETECT_DELAYS_MS`), and keeps the first
+  answer of a router showing the whole path. A router whose path is only the end of the address (`findRoute`,
+  `settled: false`) has a prefix it does not report, a locale or an unknown base, or is still on the page before
+  (`/settings` while the address is already `/acme/settings`, TanStack Router during a loader): that answer is
+  used and asked for again, so the view is counted under what the router shows when the view ends. The numbers of the page load (the web vitals, navigation timing, the session count) are filed under the
+  landing view's name at the flush and not on arrival, since TTFB and FCP are there before the app's router is.
 - Upload: one `fetch` to `/api/otel/v1/metrics` per flush, `keepalive` when the page is hidden or unloading, never
   through the outbox. One bounded retry (`otel/metrics-pending.ts`, localStorage key
   `traceway:metrics:pending:<token>`, 3 payloads, 64 KB, 24 h, oldest dropped first): a hidden-page payload is stored

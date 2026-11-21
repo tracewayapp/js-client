@@ -8,6 +8,7 @@ vi.mock("@tracewayapp/frontend", () => ({
   captureExceptionWithAttributes: vi.fn(),
   captureMessage: vi.fn(),
   recordAction: vi.fn(),
+  trackRouter: vi.fn(),
 }));
 
 import * as traceway from "@tracewayapp/frontend";
@@ -30,6 +31,24 @@ describe("createTracewayPlugin", () => {
       "test-token@https://example.com/api/report",
       { debug: true }
     );
+  });
+
+  it("hands Vue Router to the SDK whichever plugin is installed first", async () => {
+    const { createRouter, createMemoryHistory } = await import("vue-router");
+    const routes = [{ path: "/", component: { render: () => h("div") } }];
+    const plugin = () =>
+      createTracewayPlugin({ connectionString: "token@https://example.com" });
+
+    const first = createRouter({ history: createMemoryHistory(), routes });
+    createApp({ render: () => h("div") }).use(first).use(plugin());
+    expect(traceway.trackRouter).toHaveBeenCalledWith(first);
+
+    vi.clearAllMocks();
+    const second = createRouter({ history: createMemoryHistory(), routes });
+    createApp({ render: () => h("div") }).use(plugin()).use(second);
+    expect(traceway.trackRouter).not.toHaveBeenCalledWith(second);
+    await Promise.resolve();
+    expect(traceway.trackRouter).toHaveBeenCalledWith(second);
   });
 
   it("should provide traceway context to the app", () => {

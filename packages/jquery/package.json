@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/jquery",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Traceway jQuery integration with automatic AJAX error capture and distributed tracing",
   "license": "MIT",
   "main": "./dist/index.js",
@@ -26,7 +26,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/frontend": "2.0.0"
+    "@tracewayapp/frontend": "2.0.1"
   },
   "repository": {
     "type": "git",

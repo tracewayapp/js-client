@@ -9,6 +9,7 @@ vi.mock("@tracewayapp/frontend", () => ({
   captureExceptionWithAttributes: vi.fn(),
   captureMessage: vi.fn(),
   recordAction: vi.fn(),
+  trackRouter: vi.fn(),
 }));
 
 describe("useTraceway", () => {

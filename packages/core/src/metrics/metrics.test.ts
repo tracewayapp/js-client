@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MetricAggregator } from "./aggregator.js";
 import { Histogram, bucketIndex } from "./histogram.js";
 import { encodeMetrics } from "./otlp.js";
-import { normalizePath } from "./route.js";
+import { normalizePath, routeFromParams } from "./route.js";
 
 describe("Histogram", () => {
   it("puts a value in the bucket whose bounds contain it", () => {
@@ -165,6 +165,22 @@ describe("normalizePath", () => {
     ["/products/blue-suede-shoes", "/products/blue-suede-shoes"],
     ["/deadbeef", "/deadbeef"],
     ["/a/b/c/d/e/f/g/h", "/a/b/c/d/e/f/*"],
+    ["/search/hello%20world", "/search/:id"],
+    [
+      "/endpoints/POST%20%2Ftasks%2F%7BtaskId%7D/9fceb02d0ae598e9",
+      "/endpoints/:id/:id",
+    ],
+    ["/caf%C3%A9/menu", "/caf%C3%A9/menu"],
+    ["/:lang?/about", "/:lang?/about"],
+    ["/:locale(en|fr)?/products/:slug", "/:locale(en|fr)?/products/:slug"],
+    ["/users/:id?", "/users/:id"],
+    ["/orders/8841?/next", "/orders/:id"],
+    // Route templates as real routers write them (Nuxt, Next.js, TanStack) pass unchanged.
+    ["/products/:slug()", "/products/:slug()"],
+    ["/docs/:slug(.*)*", "/docs/:slug(.*)*"],
+    ["/docs/:slug*", "/docs/:slug*"],
+    ["/posts/$postId", "/posts/$postId"],
+    ["/posts/[id]", "/posts/[id]"],
   ])("%s -> %s", (input, expected) => {
     expect(normalizePath(input)).toBe(expected);
   });
@@ -174,5 +190,31 @@ describe("normalizePath", () => {
     const out = normalizePath(long);
     expect(out.length).toBeLessThanOrEqual(64);
     expect(out.endsWith("/*")).toBe(true);
+  });
+});
+
+describe("routeFromParams", () => {
+  it.each([
+    ["/orders/8841", { id: "8841" }, "/orders/:id"],
+    ["/orders/8841/", { id: "8841" }, "/orders/:id"],
+    ["/orders/8841?tab=items#top", { id: "8841" }, "/orders/:id"],
+    ["/", {}, "/"],
+    ["/pricing", undefined, "/pricing"],
+    ["/teams/acme/users/42", { team: "acme", id: "42" }, "/teams/:team/users/:id"],
+    // React Router's splat and a Next.js catch-all
+    ["/files/a/b/c", { "*": "a/b/c" }, "/files/*"],
+    ["/docs/guides/setup", { slug: ["guides", "setup"] }, "/docs/:slug*"],
+    ["/docs/intro", { slug: ["intro"] }, "/docs/:slug*"],
+    // The path is encoded, the param may be either
+    ["/search/hello%20world", { q: "hello world" }, "/search/:q"],
+    ["/search/hello%20world", { q: "hello%20world" }, "/search/:q"],
+    // A value equal to a static segment names the deeper one
+    ["/users/users", { name: "users" }, "/users/:name"],
+    // Both params have the same value
+    ["/compare/7/7", { left: "7", right: "7" }, "/compare/:left/:right"],
+    ["/orders/8841", { id: "9999" }, "/orders/8841"],
+    ["/orders/8841", { id: undefined }, "/orders/8841"],
+  ])("%s with %o -> %s", (pathname, params, expected) => {
+    expect(routeFromParams(pathname, params)).toBe(expected);
   });
 });
