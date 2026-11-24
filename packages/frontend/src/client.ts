@@ -807,7 +807,7 @@ export class TracewayFrontendClient {
       loggerProvider: this.loggerProvider,
     });
     if (this.options.captureResourceTiming !== false)
-      this.startResourceTiming();
+      this.startResourceTiming(ownUrls);
     this.metrics.start();
     const sessionId = this.sessions.currentId();
     if (sessionId) this.metrics.sessionStarted(sessionId);
@@ -979,8 +979,11 @@ export class TracewayFrontendClient {
    * The resource timing instrumentation reads `window` when its module is evaluated, so a static import would make
    * the whole SDK fail to load where there is no window, which is every server-side render. It is loaded here, in
    * the browser only; the entries it reports are buffered by the browser, so none are lost while it loads.
+   *
+   * Every export is itself a fetch with a resource entry. Recorded, that entry is a log record that needs another
+   * export, so a streaming resourceTiming signal would send a batch a second for as long as the page is open.
    */
-  private startResourceTiming(): void {
+  private startResourceTiming(ownUrls: RegExp): void {
     const tracerProvider = this.tracerProvider;
     const loggerProvider = this.loggerProvider;
     void import("@opentelemetry/browser-instrumentation/experimental/resource-timing")
@@ -989,7 +992,9 @@ export class TracewayFrontendClient {
         // Shut down while the module loaded.
         if (!registered || !tracerProvider || !loggerProvider) return;
         const deregister = registerInstrumentations({
-          instrumentations: [new ResourceTimingInstrumentation()],
+          instrumentations: [
+            new ResourceTimingInstrumentation({ ignoreUrls: [ownUrls] }),
+          ],
           tracerProvider,
           loggerProvider,
         });

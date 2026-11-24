@@ -815,6 +815,67 @@ try {
       }
     },
   );
+  await check(
+    "streamed resource timing leaves out the SDK's own requests, so exports do not feed themselves",
+    async () => {
+      const previous = document;
+      document = {
+        schemaVersion: 1,
+        signals: { resourceTiming: { mode: "stream" } },
+      };
+      const timingContext = await browser.newContext();
+      const timingPage = await timingContext.newPage();
+      timingPage.on("pageerror", (error) => errors.push(error.message));
+      const resourceUrls = (from) =>
+        requests
+          .slice(from)
+          .filter((r) => r.path === "/api/otel/v1/logs")
+          .flatMap((r) =>
+            JSON.parse(r.body).resourceLogs.flatMap((resource) =>
+              resource.scopeLogs.flatMap((scope) => scope.logRecords),
+            ),
+          )
+          .filter((record) => record.eventName === "browser.resource_timing")
+          .map(
+            (record) =>
+              record.attributes.find((a) => a.key === "url.full")?.value
+                .stringValue,
+          );
+      try {
+        await timingPage.goto(origin);
+        const start = requests.length;
+        await timingPage.evaluate(async () => {
+          Traceway.init(`browser@${location.origin}`, {
+            captureWebVitals: false,
+            exportDelayMs: 100,
+          });
+          await Traceway.refreshConfig();
+          await fetch("/resource-timing-application-request");
+        });
+        await expect
+          .poll(() =>
+            resourceUrls(start).some((url) =>
+              url.endsWith("/resource-timing-application-request"),
+            ),
+          )
+          .toBe(true);
+        // Before the fix every export was measured and sent again a moment later, for as long as the page lived.
+        await timingPage.waitForTimeout(1500);
+        const idle = requests.length;
+        await timingPage.waitForTimeout(1500);
+        assert.deepEqual(resourceUrls(idle), []);
+        assert.deepEqual(
+          resourceUrls(start).filter((url) =>
+            new URL(url).pathname.startsWith("/api/"),
+          ),
+          [],
+        );
+      } finally {
+        document = previous;
+        await timingContext.close();
+      }
+    },
+  );
   await check("standalone local policy exports to independent OTLP endpoints without OpAMP or replay", async () => {
     const standaloneContext = await browser.newContext();
     const standalonePage = await standaloneContext.newPage();
