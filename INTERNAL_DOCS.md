@@ -39,10 +39,15 @@ signal, then route by the effective mode: **stream** to the OTLP batch exporter,
 
 ### Performance signals
 
-Web vitals (`browser.web_vital`: LCP, INP, CLS, FCP, TTFB; buffered by default since 2.1, because their numbers travel as
-metrics, see below) and resource and navigation timing
-(`resourceTiming`, off by default) come from the Browser SIG instrumentations. Two more are the SDK's own, built on
-`LogInstrumentation` (`frontend/src/otel/performance-instrumentation.ts`), each its own signal and off by default:
+Resource and navigation timing (`resourceTiming`, off by default) come from the Browser SIG instrumentations. Web
+vitals (`browser.web_vital`: LCP, INP, CLS, FCP, TTFB; buffered by default since 2.1, because their numbers travel as
+metrics, see below) come from the SDK's own `WebVitalsInstrumentation` (`otel/web-vitals.ts`), which emits the Browser
+SIG record (same event name, attributes and timestamp rule) and adds the attribution described under Performance
+metrics; the Browser SIG class forwards only `reportAllChanges` to the web-vitals library, so it cannot pass
+`generateTarget`. `web-vitals` is a direct dependency with the same range as `browser-instrumentation` (`^6.2.3`), not
+an exact pin, so an app that already uses web-vitals 6 bundles one copy. Two more are the SDK's own, built on
+`LogInstrumentation`
+(`frontend/src/otel/performance-instrumentation.ts`), each its own signal and off by default:
 
 - `longTasks` (`otel/long-tasks.ts`, event `browser.long_task`): main-thread blocks of 50 ms or more. It observes
   both `long-animation-frame` and `longtask` and reports each block once. Frames are preferred because they name the
@@ -78,7 +83,8 @@ events only when a rule, trigger or capture asks.
   `normalizePath`. No dependencies, so another SDK can reuse it.
 - `frontend/src/otel/metrics-recorder.ts` (`MetricsRecorder`): long tasks and route timing call it directly through
   `LogInstrumentation.sink`, before the 30-a-minute cap of the event. Web vitals, navigation timing, errors and
-  clicks come from third-party instrumentations, so they are read from the log records in `client.observe`.
+  clicks are read from the log records in `client.observe`, since all but web vitals come from third-party
+  instrumentations.
   Requests come from CLIENT spans (`ControlSpanProcessor`).
 - A web vital can be reported more than once per page (CLS and INP grow) and an uploaded histogram cannot be taken
   back: the latest value waits in the recorder until the next flush, and each vital instance is counted once.
@@ -129,10 +135,28 @@ events only when a rule, trigger or capture asks.
   counters and no id is sent. Without working storage these are not counted at all. They are sampled by the profile
   (`unitHash(instanceId)`, the id itself never leaves in a metrics payload) and not by the session, and carry no
   point dimensions.
-- Attribution: the web vitals instrumentation is created with `includeRawAttribution`, and `webVitalTarget`
-  (`client.ts`) keeps only the element selector of the library's attribution as the event attribute
-  `browser.web_vital.target` and drops the body. A non-good LCP, INP or CLS with a target counts
-  `browser.web_vital.attribution{vital, rating, target}`, and a poor one puts the target on its exemplar.
+- Attribution: the web vitals instrumentation passes `generateTarget` to the library, and the element behind a value
+  is the event attribute `browser.web_vital.target`. Element selectors (`otel/selector.ts`, shared with the per-view
+  vitals) must stay the same across renders: at most 3 elements and 100 characters; an id only when it does not
+  look generated (bits-ui, Radix, React `useId`, runs of digits, hex tokens), else the first short safe value of
+  `data-testid`, `data-test`, `data-cy`, `data-slot`, `name` or `role` (a test id ends the walk), else up to two
+  plain class names (Tailwind variants and arbitrary values are dropped); never `aria-label`, text, `href` or `value`.
+  web-vitals does not call `generateTarget` for an element that has left the page: it reports `#id` (LCP) or the
+  browser's positional `targetSelector` (INP, e.g. `BODY > DIV:nth-child(2)`) instead, so a target that is not in the
+  shape `selectorOf` writes (`isStableSelector`) is dropped. The element of a slow click whose handler removes it (a
+  deleted row, a menu item, a submit that leaves the view) is still named: `otel/interaction-targets.ts` names the
+  target of every `pointerdown`, `pointerup`, `click`, `keydown` and `keyup` in a window capture listener, before
+  any handler runs, and pairs it with the entry by time (an entry's `startTime` is its event's `timeStamp`; the
+  latest 64 are kept). Per-view INP reads it when the entry arrives. web-vitals reports INP only when the page is
+  hidden, so the instrumentation keeps the names of the ten slowest interactions (its own `event` observer, 40 ms
+  like web-vitals, reset on a back/forward cache restore) and uses one when web-vitals has no stable target.
+  INP events also carry `browser.web_vital.inp.input_delay`, `.processing_duration`, `.presentation_delay` (ms),
+  `.phase` (the largest: `input_delay`, `processing` or `presentation`), `.interaction_type` and `.script` (file
+  name and function of the longest script, when the Long Animation Frame API names one). Long INP values are not
+  capped: a paused debugger and a real freeze cannot be told apart, so the phases say where the time went instead.
+  A non-good LCP, INP or CLS with a target counts `browser.web_vital.attribution{vital, rating, target}` (INP adds
+  `phase`; a target too long for a dimension loses its outer ancestors first), and a poor one puts the target on its
+  exemplar.
   `browser.long_task.script_time{script}` is the time per script (origin + path) of a long animation frame.
 - Per-view vitals (`otel/view-vitals.ts`): `browser.view.inp` and `browser.view.cls` with `view_type: load | soft`,
   measured with the recorder's own `event` (40 ms threshold) and `layout-shift` observers and the page rules (the

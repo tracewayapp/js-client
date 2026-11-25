@@ -6,9 +6,10 @@ const budgets = [
   // The IIFE inlines rrweb (~60 KB gzipped); ESM consumers load it lazily, only when replay is on.
   { file: "packages/frontend/dist/traceway.iife.global.js", maxKb: 145 },
   // Includes the pre-OpAMP /api/report compatibility adapter, the long task and route timing instrumentations,
-  // the metrics recorder, sequence listeners with per-tab navigation recovery, and reading route templates from
-  // the app's router.
-  { file: "packages/frontend/dist/index.mjs", maxKb: 43 },
+  // the metrics recorder, sequence listeners with per-tab navigation recovery, reading route templates from
+  // the app's router, and the web vitals instrumentation with its stable element selector (the Browser SIG one it
+  // replaces was a dependency, outside this file).
+  { file: "packages/frontend/dist/index.mjs", maxKb: 45 },
   { file: "packages/opamp/dist/index.mjs", maxKb: 6 },
 ];
 

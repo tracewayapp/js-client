@@ -592,6 +592,35 @@ describe("device metrics", () => {
     ).toHaveLength(2);
   });
 
+  it("names the element of a slow interaction whose handler removed it", async () => {
+    start();
+    document.body.innerHTML = `<table><tr class="row"><td><button data-slot="delete">Delete</button></td></tr></table>`;
+    const button = document.querySelector("button")!;
+    button.addEventListener("click", () => button.closest("tr")!.remove());
+    const click = new Event("click", { bubbles: true });
+    button.dispatchEvent(click);
+    // The entry arrives after the next paint, when its target has left the page.
+    observers.get("event")!([
+      {
+        entryType: "event",
+        startTime: click.timeStamp,
+        duration: 640,
+        interactionId: 9,
+        target: null,
+      },
+    ]);
+    hide();
+    await settle();
+    const [inp] = payloads().flatMap(
+      (p) => p.metrics["browser.view.inp"]?.exponentialHistogram.dataPoints ?? [],
+    );
+    expect(inp.exemplars[0].filteredAttributes[1]).toEqual({
+      key: "traceway.target",
+      value: { stringValue: 'tr.row>td>button[data-slot="delete"]' },
+    });
+    document.body.innerHTML = "";
+  });
+
   it("names the element behind a slow vital, as a counter and on the exemplar", async () => {
     start();
     emit("browser.web_vital", {
@@ -623,6 +652,49 @@ describe("device metrics", () => {
     expect(lcp.exemplars[0].filteredAttributes[1].value.stringValue).toBe(
       "#hero>img",
     );
+  });
+
+  it("counts which phase made an interaction slow", async () => {
+    start();
+    const vital = (
+      name: string,
+      id: string,
+      target: string,
+      phase: string,
+    ) =>
+      emit("browser.web_vital", {
+        "browser.web_vital.name": name,
+        "browser.web_vital.id": id,
+        "browser.web_vital.value": name === "cls" ? 0.4 : 26_400,
+        "browser.web_vital.rating": "poor",
+        "browser.web_vital.target": target,
+        "browser.web_vital.inp.phase": phase,
+      });
+    vital("inp", "v1-20", 'button[data-slot="button"]', "processing");
+    vital("inp", "v1-21", "a.nav", "paused");
+    vital("cls", "v1-22", "div.hero", "presentation");
+    const ancestors = 'section[data-slot="table-container"]>div.rows';
+    vital("inp", "v1-23", `${ancestors}>tr[data-slot="table-row"]`, "");
+    await client.flush();
+    const counted = payloads()[0]!.metrics[
+      "browser.web_vital.attribution"
+    ].sum.dataPoints.map(dims);
+    expect(counted).toEqual([
+      expect.objectContaining({
+        vital: "inp",
+        target: 'button[data-slot="button"]',
+        phase: "processing",
+      }),
+      expect.not.objectContaining({ phase: expect.anything() }),
+      expect.not.objectContaining({ phase: expect.anything() }),
+      expect.not.objectContaining({ phase: expect.anything() }),
+    ]);
+    expect(counted.map((d: Record<string, string>) => d.target)).toEqual([
+      'button[data-slot="button"]',
+      "a.nav",
+      "div.hero",
+      'div.rows>tr[data-slot="table-row"]',
+    ]);
   });
 
   it("attributes long frame time to the scripts that ran", async () => {

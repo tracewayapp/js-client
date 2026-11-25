@@ -4,29 +4,19 @@ import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
 
 const constructed = vi.hoisted(() => ({ count: 0 }));
 
-vi.mock(
-  "@opentelemetry/browser-instrumentation/experimental/web-vitals",
-  async (importOriginal) => {
-    const actual =
-      await importOriginal<
-        typeof import("@opentelemetry/browser-instrumentation/experimental/web-vitals")
-      >();
-    class CountedWebVitalsInstrumentation
-      extends actual.WebVitalsInstrumentation
-    {
-      constructor(
-        ...args: ConstructorParameters<typeof actual.WebVitalsInstrumentation>
-      ) {
-        super(...args);
-        constructed.count++;
-      }
+vi.mock("./otel/web-vitals.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./otel/web-vitals.js")>();
+  class CountedWebVitalsInstrumentation extends actual.WebVitalsInstrumentation {
+    constructor() {
+      super();
+      constructed.count++;
     }
-    return {
-      ...actual,
-      WebVitalsInstrumentation: CountedWebVitalsInstrumentation,
-    };
-  },
-);
+  }
+  return {
+    ...actual,
+    WebVitalsInstrumentation: CountedWebVitalsInstrumentation,
+  };
+});
 
 vi.mock("@rrweb/record", () => {
   const record = Object.assign(

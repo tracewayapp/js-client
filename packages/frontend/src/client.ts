@@ -20,7 +20,6 @@ import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/exp
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
 import { NavigationTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
 import { UserActionInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/user-action";
-import { WebVitalsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
 import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -79,6 +78,7 @@ import { collectDefaultAttributes } from "./default-attributes.js";
 import { browserResourceAttributes } from "./otel/browser-resource.js";
 import { LongTaskInstrumentation } from "./otel/long-tasks.js";
 import { RouteTimingInstrumentation } from "./otel/route-timing.js";
+import { WebVitalsInstrumentation } from "./otel/web-vitals.js";
 import type { RecordSignal } from "./otel/events.js";
 import {
   ATTR_DEBUG_IDS,
@@ -106,10 +106,7 @@ import { ReplayController } from "./replay/replay-controller.js";
 import type { SessionInfo } from "./session/session-manager.js";
 import { SessionManager } from "./session/session-manager.js";
 import { RecordingsTransport } from "./transport/recordings.js";
-import {
-  ATTR_WEB_VITAL_TARGET,
-  MetricsRecorder,
-} from "./otel/metrics-recorder.js";
+import { MetricsRecorder } from "./otel/metrics-recorder.js";
 import { findRoute } from "./otel/route-detect.js";
 import { TelemetryPersistence } from "./persistence/telemetry-persistence.js";
 import type { StoredBatch } from "./persistence/idb.js";
@@ -285,30 +282,6 @@ interface LocalCapture {
   untilMs: number;
   signals: SignalSelector;
   replay: boolean;
-}
-
-/**
- * The web vitals instrumentation only exposes the library's attribution as a JSON body. The one field worth
- * keeping is the element behind the value; the rest would make every event several kilobytes.
- */
-function webVitalTarget(record: {
-  body?: unknown;
-  attributes?: Record<string, unknown>;
-}): void {
-  const body = record.body;
-  delete record.body;
-  if (typeof body !== "string" || !record.attributes) return;
-  try {
-    const attribution = JSON.parse(body);
-    const target =
-      attribution.target ??
-      attribution.interactionTarget ??
-      attribution.largestShiftTarget;
-    if (typeof target === "string" && target)
-      record.attributes[ATTR_WEB_VITAL_TARGET] = target.slice(0, 100);
-  } catch {
-    // An event without a target is still a measurement.
-  }
 }
 
 function escapeRegExp(value: string): string {
@@ -779,12 +752,7 @@ export class TracewayFrontendClient {
       this.options.captureWebVitals !== false &&
       typeof Array.prototype.at === "function"
     )
-      instrumentations.push(
-        new WebVitalsInstrumentation({
-          includeRawAttribution: true,
-          applyCustomLogRecordData: webVitalTarget,
-        }),
-      );
+      instrumentations.push(new WebVitalsInstrumentation());
     if (this.options.captureResourceTiming !== false)
       instrumentations.push(new NavigationTimingInstrumentation());
     if (this.options.captureLongTasks !== false) {

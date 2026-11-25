@@ -30,8 +30,11 @@ export const METRIC_VITAL_ATTRIBUTION = "browser.web_vital.attribution";
 export const METRIC_SCRIPT_TIME = "browser.long_task.script_time";
 export const METRIC_VIEW_INP = "browser.view.inp";
 export const METRIC_VIEW_CLS = "browser.view.cls";
-/** Set on the web vital event by the client, from the library's attribution. */
+/** Set on the web vital event by `WebVitalsInstrumentation`: the element behind the value, from `selectorOf`. */
 export const ATTR_WEB_VITAL_TARGET = "browser.web_vital.target";
+/** Which part of a slow interaction took longest: `input_delay`, `processing` or `presentation`. */
+export const ATTR_INP_PHASE = "browser.web_vital.inp.phase";
+const INP_PHASES = ["input_delay", "processing", "presentation"];
 
 export type UserIssue =
   | "js_error"
@@ -136,6 +139,7 @@ interface PendingVital {
   dims: MetricDims;
   rating: string;
   target?: string;
+  phase?: string;
 }
 
 /** A number of the page load, kept until the next flush so the route it is filed under can still arrive. */
@@ -198,6 +202,14 @@ function scriptName(sourceURL: string | undefined): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Too long for a dimension, a selector loses its outer ancestors first, so what is left still selects. */
+function selectorDimension(selector: string): string {
+  let short = selector;
+  while (short.length > MAX_DIMENSION_LENGTH && short.includes(">"))
+    short = short.slice(short.indexOf(">") + 1);
+  return short.slice(0, MAX_DIMENSION_LENGTH);
 }
 
 function numberAttr(
@@ -590,12 +602,14 @@ export class MetricsRecorder implements PerformanceSink {
     const navigation = attrs["browser.web_vital.navigation_type"];
     if (navigation) extra.navigation_type = String(navigation);
     const target = attrs[ATTR_WEB_VITAL_TARGET];
+    const phase = String(attrs[ATTR_INP_PHASE] ?? "");
     this.vitals.set(id, {
       name,
       value,
       dims: this.dims(this.initialView, extra),
       rating,
       target: target ? String(target) : undefined,
+      phase: name === "inp" && INP_PHASES.includes(phase) ? phase : undefined,
     });
     if (rating === "poor" && ATTRIBUTED_VITALS.includes(name))
       this.user(`poor_${name}` as UserIssue);
@@ -641,7 +655,8 @@ export class MetricsRecorder implements PerformanceSink {
           this.dims(this.initialView, {
             vital: vital.name,
             rating: vital.rating,
-            target: vital.target.slice(0, MAX_DIMENSION_LENGTH),
+            target: selectorDimension(vital.target),
+            ...(vital.phase ? { phase: vital.phase } : {}),
           }),
         );
     }

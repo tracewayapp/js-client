@@ -246,11 +246,21 @@ setMetricDimension("plan", "pro"); // on every metric from now on; at most two k
 
 Besides the web vitals of the page load, INP and CLS are measured per view (`browser.view.inp`,
 `browser.view.cls`), so a route reached by a single-page-app navigation has its own numbers. A slow LCP, INP or CLS
-also reports the element behind it as a short CSS selector, and long animation frames report the time each script
-took. "Users affected" comes from counters the device deduplicates itself: a browser profile is counted once per UTC
-day, and once per day for each kind of trouble (an error, a poor vital, a rage click, a failed request). No user or
-device id is sent; a browser without `localStorage` is left out of those counts. `metricDimensions` in `init()`
-sets the dimensions of your own from the start.
+also reports the element behind it as a short CSS selector that stays the same across renders: ids that look
+generated and utility classes are left out in favour of `data-testid`, `data-slot`, `name`, `role` and plain class
+names, and nothing the user typed or reads is used. Give the controls people use a `data-testid` and a slow interaction
+names them, for example `button[data-testid="place-order"]`. The element is named as it is clicked or typed in, so a
+control that removes itself (a deleted row, a menu item) is still named. A slow interaction also reports which part took longest (input
+delay, processing or presentation) and, where the browser names it, the longest script. Long animation frames
+report the time each script took. "Users affected" comes from counters the device deduplicates itself: a browser
+profile is counted once per UTC day, and once per day for each kind of trouble (an error, a poor vital, a rage click,
+a failed request). No user or device id is sent; a browser without `localStorage` is left out of those counts.
+`metricDimensions` in `init()` sets the dimensions of your own from the start.
+
+**Elements regroup once.** Versions up to 2.0.2 named the element with the web-vitals library's selector, which keeps
+generated ids and every class. After upgrading, web vitals attributed to an element (`browser.web_vital.target` and
+the `browser.web_vital.attribution` counter) start new groups once, and from then on stay the same across renders
+and releases.
 
 Set `captureMetrics: false` to send none of it. See [Client Metrics](https://docs.tracewayapp.com/learn/client-metrics).
 

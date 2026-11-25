@@ -1,4 +1,6 @@
+import { interactionTargets } from "./interaction-targets.js";
 import { supportsEntryType } from "./performance-instrumentation.js";
+import { selectorOf } from "./selector.js";
 
 const SLOWEST_KEPT = 10;
 /** The web vitals rule: one outlier is forgiven per 50 interactions. */
@@ -7,7 +9,6 @@ const INTERACTIONS_PER_OUTLIER = 50;
 const EVENT_DURATION_THRESHOLD_MS = 16;
 const SHIFT_GAP_MS = 1000;
 const SHIFT_WINDOW_MS = 5000;
-const MAX_TARGET_LENGTH = 100;
 
 interface EventEntry extends PerformanceEntry {
   interactionId?: number;
@@ -24,27 +25,6 @@ interface Interaction {
   id: number;
   duration: number;
   target?: string;
-}
-
-/** A short CSS selector of an element: enough to find it, bounded so it can be a dimension. */
-export function selectorOf(node: unknown): string | undefined {
-  let element = node as Element | null | undefined;
-  if (!element || element.nodeType !== 1) return undefined;
-  const parts: string[] = [];
-  for (; element && parts.length < 3; element = element.parentElement) {
-    let part = element.localName;
-    if (element.id) {
-      parts.unshift(`${part}#${element.id}`);
-      break;
-    }
-    const classes =
-      typeof element.className === "string"
-        ? element.className.split(/\s+/).filter(Boolean).slice(0, 2)
-        : [];
-    if (classes.length) part += `.${classes.join(".")}`;
-    parts.unshift(part);
-  }
-  return parts.join(">").slice(0, MAX_TARGET_LENGTH);
 }
 
 function interactionCount(): number {
@@ -92,7 +72,7 @@ export class ViewVitals {
       this.slowest.push({
         id,
         duration: entry.duration,
-        target: selectorOf(entry.target),
+        target: interactionTargets.of(entry),
       });
     }
     this.slowest.sort((a, b) => b.duration - a.duration);
@@ -139,6 +119,11 @@ export class ViewVitals {
     return { value: chosen.duration, target: chosen.target };
   }
 
+  /** The element of one of the slowest interactions. */
+  targetOf(interactionId: number | undefined): string | undefined {
+    return this.slowest.find((i) => i.id === interactionId)?.target;
+  }
+
   /**
    * Starts the next visible stretch of the same view. Reports whether this was the first: a view with no shift at
    * all has a CLS of 0 once, not once per time the tab was hidden.
@@ -159,12 +144,17 @@ export class ViewVitals {
 /** Feeds `event` and `layout-shift` entries to whoever tracks the current view. */
 export class ViewVitalsObserver {
   private observers: PerformanceObserver[] = [];
+  private naming = false;
   readonly interactions = supportsEntryType("event");
   readonly shifts = supportsEntryType("layout-shift");
 
   constructor(private readonly handle: (entry: PerformanceEntry) => void) {}
 
   start(): void {
+    if (this.interactions && !this.naming) {
+      this.naming = true;
+      interactionTargets.retain();
+    }
     try {
       if (this.interactions)
         this.observe({
@@ -196,5 +186,9 @@ export class ViewVitalsObserver {
   stop(): void {
     for (const observer of this.observers) observer.disconnect();
     this.observers = [];
+    if (this.naming) {
+      this.naming = false;
+      interactionTargets.release();
+    }
   }
 }

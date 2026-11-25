@@ -9,6 +9,7 @@ export const EVENT_SESSION_UPDATE = "traceway.session.update";
 export const EVENT_TRIGGER_FIRED = "traceway.trigger.fired";
 export const EVENT_CAPTURE_STARTED = "traceway.capture.started";
 export const EVENT_CONFIG_APPLIED = "traceway.config.applied";
+export const EVENT_WEB_VITAL = "browser.web_vital";
 export const EVENT_LONG_TASK = "browser.long_task";
 export const EVENT_ROUTE_TIMING = "browser.route_timing";
 
@@ -44,7 +45,7 @@ export function classifyLog(eventName: string | undefined): RecordSignal {
       return "navigation";
     case "browser.user_action.click":
       return "userActions";
-    case "browser.web_vital":
+    case EVENT_WEB_VITAL:
       return "webVitals";
     case "browser.resource_timing":
     case "browser.navigation_timing":

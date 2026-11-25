@@ -41,7 +41,8 @@
     "@tracewayapp/opamp": "2.0.1",
     "fflate": "^0.8.2",
     "@rrweb/record": "2.1.7",
-    "@rrweb/types": "2.1.7"
+    "@rrweb/types": "2.1.7",
+    "web-vitals": "^6.2.3"
   },
   "repository": {
     "type": "git",
