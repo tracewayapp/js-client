@@ -146,6 +146,62 @@ describe("ReplayController", () => {
     session.stop();
   });
 
+  it("restarts rrweb with the picture policy when replay.images changes (§14.5)", async () => {
+    const { sent, session, replay } = setup();
+    const blockSelector = () =>
+      String(vi.mocked(record).mock.lastCall?.[0]?.blockSelector);
+    replay.apply("buffer", options);
+    await vi.waitFor(() => expect(emit).not.toBeNull());
+    expect(blockSelector()).not.toContain("img, picture");
+    emit!({ type: 2, timestamp: Date.now(), data: { photo: "url" } });
+    const calls = vi.mocked(record).mock.calls.length;
+    replay.apply("buffer", { ...options, images: "off" });
+    await vi.waitFor(() =>
+      expect(vi.mocked(record).mock.calls.length).toBe(calls + 1),
+    );
+    expect(blockSelector()).toContain("img, picture");
+    // What was recorded under the other policy is gone.
+    replay.flush(600_000);
+    expect(sent).toHaveLength(0);
+    replay.apply("buffer", { ...options, images: "off" });
+    expect(vi.mocked(record).mock.calls.length).toBe(calls + 1);
+    replay.apply("buffer", { ...options, images: "always" });
+    await vi.waitFor(() =>
+      expect(vi.mocked(record).mock.calls.length).toBe(calls + 2),
+    );
+    expect(blockSelector()).not.toContain("img, picture");
+    // The recorder mock has no mirror and its events no nodes: nothing to add, and the events are still kept.
+    emit!({ type: 2, timestamp: Date.now() });
+    emit!({ type: 3, timestamp: Date.now(), data: { source: 0 } });
+    replay.flush(600_000);
+    expect(sent.flat()[0]?.events).toHaveLength(2);
+    replay.onSessionStart();
+    expect(replay.imageBytes()).toBe(0);
+    replay.stop();
+    session.stop();
+  });
+
+  it("keeps a session's picture budget across its pages, and starts a new session's at zero (§14.5)", async () => {
+    const { session, replay } = setup();
+    await started(replay, "stream");
+    (replay as any).recorder.images.bytes = 1_000;
+    const t0 = Date.now();
+    emit!({ type: 2, timestamp: t0 });
+    emit!({ type: 3, timestamp: t0 + SEGMENT_MS + 1 });
+    replay.stop();
+    // The next page of the same session.
+    const next = new ReplayController(session, { discard() {}, send: () => 1 } as any);
+    next.onSessionStart();
+    expect(next.imageBytes()).toBe(1_000);
+    sessionStorage.setItem("traceway:replay-image-bytes", "{not json");
+    next.onSessionStart();
+    expect(next.imageBytes()).toBe(0);
+    sessionStorage.setItem("traceway:replay-image-bytes", JSON.stringify(["another-session", 5]));
+    next.onSessionStart();
+    expect(next.imageBytes()).toBe(0);
+    session.stop();
+  });
+
   it("drains the final segment before ending the session and persists its index", async () => {
     const sent: RecordingSegment[][] = [];
     let replay: ReplayController;

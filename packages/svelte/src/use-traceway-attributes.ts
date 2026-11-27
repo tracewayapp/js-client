@@ -1,4 +1,5 @@
 import { onDestroy } from "svelte";
+import { guarded } from "@tracewayapp/core";
 import {
   setAttributes as setAttrs,
   removeAttribute,
@@ -48,23 +49,27 @@ export function useTracewayAttributes(): (
     prev = {};
   });
 
+  // Inside the app's `$effect` or `$:` block: an SDK failure must not break it (CONTRACT §13.1).
   return function sync(attributes) {
-    const next = attributes ?? {};
+    guarded("useTracewayAttributes", () => {
+      // Untyped JS may pass a string or a number: it holds no attributes.
+      const next = attributes && typeof attributes === "object" ? attributes : {};
 
-    const toSet: Record<string, string> = {};
-    for (const k of Object.keys(next)) {
-      if (prev[k] !== next[k]) toSet[k] = next[k]!;
-    }
-    if (Object.keys(toSet).length > 0) {
-      setAttrs(toSet);
-    }
-
-    for (const k of Object.keys(prev)) {
-      if (!(k in next)) {
-        removeAttribute(k);
+      const toSet: Record<string, string> = {};
+      for (const k of Object.keys(next)) {
+        if (prev[k] !== next[k]) toSet[k] = next[k]!;
       }
-    }
+      if (Object.keys(toSet).length > 0) {
+        setAttrs(toSet);
+      }
 
-    prev = { ...next };
+      for (const k of Object.keys(prev)) {
+        if (!(k in next)) {
+          removeAttribute(k);
+        }
+      }
+
+      prev = { ...next };
+    });
   };
 }

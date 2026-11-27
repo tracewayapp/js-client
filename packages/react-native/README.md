@@ -54,7 +54,7 @@ import { TracewayProvider } from "@tracewayapp/react-native";
 
 export default function App() {
   return (
-    <TracewayProvider connectionString="your-token@https://your-traceway-instance.com/api/report">
+    <TracewayProvider connectionString="your-token@https://cloud.tracewayapp.com/api/report">
       <RootNavigator />
     </TracewayProvider>
   );
@@ -309,7 +309,7 @@ The [`traceway-sourcemaps`](https://www.npmjs.com/package/@tracewayapp/sourcemap
 ```bash
 npm install -D @tracewayapp/sourcemap-upload
 
-export TRACEWAY_URL="https://traceway.example.com"
+export TRACEWAY_URL="https://cloud.tracewayapp.com"
 export TRACEWAY_SOURCEMAP_TOKEN="your-upload-token"
 
 npx traceway-sourcemaps --directory android/app/build/generated/sourcemaps/react/release
@@ -345,7 +345,7 @@ Then point it at your own Traceway backend:
 ```bash
 cd packages/react-native/examples/expo-demo
 npm install
-TRACEWAY_DSN="YOUR_TOKEN@https://your-traceway-instance.com/api/report" npx expo start
+TRACEWAY_DSN="YOUR_TOKEN@https://cloud.tracewayapp.com/api/report" npx expo start
 ```
 
 Then open it in **Expo Go** (scan the QR code), or press `i` / `a` for iOS simulator / Android emulator.

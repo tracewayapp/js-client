@@ -90,6 +90,15 @@ describe("settings", () => {
     expect(merged.buffer.maxAgeSeconds).toBe(120);
   });
 
+  it("reads replay.images: wifi by default, off and always applied, anything else ignored (§14.5)", () => {
+    expect(defaultSettings().replay.images).toBe("wifi");
+    for (const images of ["off", "always", "wifi"] as const)
+      expect(applyOverlay(defaultSettings(), { replay: { images } }).replay.images).toBe(images);
+    const always = applyOverlay(defaultSettings(), { replay: { images: "always" } });
+    for (const images of ["sometimes", 1, null, true])
+      expect(applyOverlay(always, { replay: { images } }).replay.images).toBe("always");
+  });
+
   it("merges triggers by id: disables, patches and appends", () => {
     const base = defaultSettings();
     const merged = applyOverlay(base, {
@@ -170,6 +179,107 @@ describe("settings", () => {
     expect(clamped.signals.console.mode).toBe("off");
     expect(clamped.replay.mode).toBe("off");
     expect(clamped.signals.network.mode).toBe("buffer");
+  });
+
+  it("holds replay.images at or below the replayImages ceiling: off < wifi < always (§14.5)", () => {
+    const policies = ["off", "wifi", "always"] as const;
+    expect(ceilingsFrom().replayImages).toBe("always");
+    expect(ceilingsFrom({ replayImages: undefined }).replayImages).toBe("always");
+    expect(ceilingsFrom({ replayImages: null as any }).replayImages).toBe("always");
+    for (const setting of policies)
+      for (const ceiling of policies) {
+        const images = clampToCeilings(
+          applyOverlay(defaultSettings(), { replay: { images: setting } }),
+          ceilingsFrom({ replayImages: ceiling }),
+        ).replay.images;
+        expect(images, `${setting} under ${ceiling}`).toBe(
+          policies[Math.min(policies.indexOf(setting), policies.indexOf(ceiling))],
+        );
+      }
+    // A value the page set that is not a policy can only lower the setting: it counts as off.
+    for (const garbage of ["Always", "sometimes", 2, true, false, {}])
+      expect(ceilingsFrom({ replayImages: garbage as any }).replayImages).toBe("off");
+    // Ceilings built by hand without the field allow what the setting says, as before.
+    const { replayImages: _, ...older } = ceilingsFrom();
+    expect(
+      clampToCeilings(
+        applyOverlay(defaultSettings(), { replay: { images: "always" } }),
+        older,
+      ).replay.images,
+    ).toBe("always");
+    // No replay, no pictures in it.
+    expect(
+      clampToCeilings(
+        applyOverlay(defaultSettings(), { replay: { images: "always" } }),
+        ceilingsFrom({ sessionRecording: false }),
+      ).replay.images,
+    ).toBe("off");
+  });
+});
+
+describe("the page's replay privacy limits against remote rules (§14.5)", () => {
+  it("lets no rule, limit or reset raise replay.images past replayImages", () => {
+    const state = new ControlState(
+      defaultSettings(),
+      ceilingsFrom({ replayImages: "wifi" }),
+    );
+    expect(state.settings().replay.images).toBe("wifi");
+    state.applyRemote({ replay: { images: "always" } });
+    expect(state.settings().replay.images).toBe("wifi");
+    state.applyRemote({ replay: { images: "off" } });
+    expect(state.settings().replay.images).toBe("off");
+    state.applyRemote({ replay: { images: "always" }, limits: { replay: "off" } });
+    expect(state.settings().replay.images).toBe("off");
+    state.applyRemote(null);
+    expect(state.settings().replay.images).toBe("wifi");
+
+    const off = new ControlState(
+      applyOverlay(defaultSettings(), { replay: { images: "always" } }),
+      ceilingsFrom({ replayImages: "off" }),
+    );
+    expect(off.settings().replay.images).toBe("off");
+    off.applyRemote({ replay: { images: "always" } });
+    expect(off.settings().replay.images).toBe("off");
+
+    // The default ceiling is always: the setting decides, as before.
+    const open = new ControlState(defaultSettings(), ceilingsFrom());
+    open.applyRemote({ replay: { images: "always" } });
+    expect(open.settings().replay.images).toBe("always");
+  });
+
+  it("keeps inputs masked when the page set maskAllInputs: true, whatever a rule says", () => {
+    const masked = (local: boolean | undefined, remote: unknown) => {
+      const state = new ControlState(
+        applyOverlay(
+          defaultSettings(),
+          local === undefined ? {} : { replay: { maskAllInputs: local } },
+        ),
+        ceilingsFrom({ maskAllInputs: local === true }),
+      );
+      state.applyRemote({ replay: { maskAllInputs: remote } });
+      return state.settings().replay.maskAllInputs;
+    };
+    // The page set it true: a floor.
+    expect(masked(true, false)).toBe(true);
+    expect(masked(true, true)).toBe(true);
+    // The page did not set it: on by default, and a rule may still switch it off (unchanged).
+    expect(masked(undefined, false)).toBe(false);
+    expect(masked(undefined, true)).toBe(true);
+    // The page set it false: a rule may mask inputs, as it may lower any signal.
+    expect(masked(false, true)).toBe(true);
+    expect(masked(false, false)).toBe(false);
+    // What a rule sends that is not a boolean changes nothing.
+    expect(masked(true, "false")).toBe(true);
+    expect(masked(undefined, "false")).toBe(true);
+
+    const state = new ControlState(
+      defaultSettings(),
+      ceilingsFrom({ maskAllInputs: true }),
+    );
+    state.applyRemote({ replay: { maskAllInputs: false }, limits: { replay: "buffer" } });
+    expect(state.settings().replay.maskAllInputs).toBe(true);
+    state.applyRemote(null);
+    expect(state.settings().replay.maskAllInputs).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
 import type { AnyValueMap, LogRecord } from "@opentelemetry/api-logs";
 import { SeverityNumber } from "@opentelemetry/api-logs";
+import { guarded } from "../guarded.js";
 import type {
   INPMetricWithAttribution,
   MetricWithAttribution,
@@ -39,7 +40,7 @@ class SlowestInteractions {
     if (!supportsEntryType("event")) return;
     interactionTargets.retain();
     this.observer = new PerformanceObserver((list) =>
-      this.add(list.getEntries()),
+      guarded("web vitals", () => this.add(list.getEntries())),
     );
     this.observer.observe({
       type: "event",
@@ -194,12 +195,14 @@ export class WebVitalsInstrumentation extends LogInstrumentation {
 
   private report(metric: MetricWithAttribution): void {
     if (!this.enabled || !this.logger) return;
-    try {
-      const named =
-        metric.name === "INP" ? this.interactions.targetOf(metric) : undefined;
-      this.logger.emit(webVitalRecord(metric, named));
-    } catch {
-      // It runs in the library's own listeners: a throw would reach the page as an uncaught error.
-    }
+    // It runs in the library's own listeners: a throw would reach the page as an uncaught error.
+    guarded("web vitals", () =>
+      this.logger!.emit(
+        webVitalRecord(
+          metric,
+          metric.name === "INP" ? this.interactions.targetOf(metric) : undefined,
+        ),
+      ),
+    );
   }
 }

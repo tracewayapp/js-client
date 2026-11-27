@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { useTraceway } from "@tracewayapp/vue";
-import * as traceway from "@tracewayapp/frontend";
+import {
+  useTraceway,
+  flush,
+  getClient,
+  log as tracewayLog,
+  recordNavigation,
+  startInteraction,
+  tracer,
+} from "@tracewayapp/vue";
 
 const { captureException, captureExceptionWithAttributes, captureMessage } =
   useTraceway();
@@ -19,8 +26,12 @@ function log(message: string, type: LogEntry["type"] = "info") {
   logs.value.unshift({ time, message, type });
 }
 
+// init() never throws: with options it cannot use it logs one warning and stays off.
+const started = getClient() !== null;
+
 onMounted(() => {
-  log("SDK initialized via createTracewayPlugin", "success");
+  if (started) log("SDK initialized via createTracewayPlugin", "success");
+  else log("The plugin did not start the SDK: see the console warning", "error");
 });
 
 // 1. Event handler error (try/catch)
@@ -116,12 +127,43 @@ function handleCaptureWithAttributes() {
 // 10. Flush
 async function handleFlush() {
   log("Flushing...", "info");
-  try {
-    await traceway.flush();
-    log("Flush completed", "success");
-  } catch (err) {
-    log(`Flush failed: ${err}`, "error");
-  }
+  await flush();
+  log("Flush completed", "success");
+}
+
+// 11. A log line of the app's own: kept on the device like console output and uploaded with the next error
+function handleLog() {
+  tracewayLog("cart synced", "info", { items: 3 });
+  log('log("cart synced", "info", { items: 3 }): kept on the device, uploaded with the next error', "info");
+}
+
+// 12. A navigation the address does not show (a modal, a wizard step): a new screen and a new page view
+let order = 41;
+function handleNavigation() {
+  order += 1;
+  recordNavigation(`/orders/${order}`, "push", `/orders/${order - 1}`, "/orders/:id");
+  log(`recordNavigation("/orders/${order}", "push", ..., "/orders/:id"): later records name the screen /orders/:id`, "info");
+}
+
+// 13. A span of the app's own; the request inside it is its child
+async function handleSpan() {
+  await tracer()?.startActiveSpan("load cart", async (span) => {
+    try {
+      await fetch(location.href);
+    } finally {
+      span.end();
+    }
+  });
+  log('tracer() span "load cart" ended, with the request it made as its child', "info");
+}
+
+// 14. One user action from start to end: its requests join the interaction's trace
+async function handleInteraction() {
+  const checkout = startInteraction("checkout", { "cart.size": 3 });
+  await checkout.run(() => fetch(location.href));
+  checkout.setAttribute("payment.method", "card");
+  checkout.end(); // end(true) would mark it failed without an exception
+  log(`Interaction "checkout" ended, trace ${checkout.traceId}`, "success");
 }
 
 function clearLogs() {
@@ -138,7 +180,9 @@ if (triggerComponentError.value) {
   <div>
     <h1>
       Traceway Vue Demo
-      <span class="status status-ready">Initialized</span>
+      <span :class="started ? 'status status-ready' : 'status status-not-ready'">
+        {{ started ? "Initialized" : "Not started" }}
+      </span>
     </h1>
     <p class="subtitle">
       Test various Vue error scenarios with @tracewayapp/vue
@@ -197,6 +241,34 @@ if (triggerComponentError.value) {
         <button class="btn-secondary" @click="handleFlush">
           Flush to Server
         </button>
+      </div>
+    </div>
+
+    <!-- 2.1 features -->
+    <div class="error-section">
+      <h2>Breadcrumbs, screens and traces</h2>
+      <p>
+        These are kept on the device and uploaded with the next error: capture
+        one afterwards to see them.
+      </p>
+
+      <div class="error-grid">
+        <button class="btn-feature" @click="handleLog">log()</button>
+        <button class="btn-feature" @click="handleNavigation">
+          recordNavigation()
+        </button>
+        <button class="btn-feature" @click="handleSpan">tracer() span</button>
+        <button class="btn-feature" @click="handleInteraction">
+          startInteraction()
+        </button>
+      </div>
+
+      <div class="mask-demo">
+        <p class="traceway-mask">Card ending 4242, Alice Smith</p>
+        <p class="hint">
+          The line above has <code>class="traceway-mask"</code>: the replay
+          shows it as <code>****</code>.
+        </p>
       </div>
     </div>
 

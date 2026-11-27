@@ -1,8 +1,8 @@
 <script>
   import { setupTraceway, getTraceway } from '@tracewayapp/svelte';
   import { onMount } from 'svelte';
-  import { connectionString, options, mountActions } from './shared';
-  setupTraceway({ connectionString, options });
+  import { token, baseUrl, options, mountActions } from './shared';
+  setupTraceway({ token, baseUrl, options });
   const api = getTraceway();
   onMount(() => { window.ready = true; });
 </script>

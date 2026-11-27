@@ -8,6 +8,7 @@ import {
   type MetricDims,
   type MetricResource,
 } from "@tracewayapp/core";
+import { guarded } from "../guarded.js";
 import { PendingMetrics, type MetricsStorage } from "./metrics-pending.js";
 import type { FoundRoute } from "./route-detect.js";
 import { ViewVitals, ViewVitalsObserver } from "./view-vitals.js";
@@ -131,6 +132,9 @@ interface View {
   blockingMs: number;
   soft: boolean;
   vitals: ViewVitals;
+  startMs: number;
+  /** Named by a path the app reported with `recordNavigation`. */
+  reported?: boolean;
 }
 
 interface PendingVital {
@@ -159,12 +163,6 @@ interface SpanLike {
   attributes: Record<string, unknown>;
   duration: [number, number];
   status: { code: number };
-}
-
-function currentPath(): string {
-  return typeof location === "undefined"
-    ? "/"
-    : normalizePath(location.pathname);
 }
 
 function networkType(): string | undefined {
@@ -256,9 +254,9 @@ export class MetricsRecorder implements PerformanceSink {
   );
   private userDay: { day: number; seen: string[] } | null = null;
   private readonly onVisibility = () => {
-    if (document.visibilityState === "hidden") this.flush(true);
+    if (document.visibilityState === "hidden") this.onPageHide();
   };
-  private readonly onPageHide = () => this.flush(true);
+  private readonly onPageHide = () => guarded("metrics", () => this.flush(true));
 
   constructor(private readonly deps: MetricsRecorderDeps) {
     this.view = this.initialView = this.newView(false);
@@ -330,16 +328,20 @@ export class MetricsRecorder implements PerformanceSink {
     return this.rate() > 0;
   }
 
-  private newView(soft: boolean): View {
+  private newView(
+    soft: boolean,
+    raw = typeof location === "undefined" ? "/" : location.pathname,
+  ): View {
     return {
-      path: currentPath(),
-      raw: typeof location === "undefined" ? "/" : location.pathname,
+      path: normalizePath(raw),
+      raw,
       template: null,
       detected: null,
       counted: false,
       blockingMs: 0,
       soft,
       vitals: new ViewVitals(),
+      startMs: Date.now(),
     };
   }
 
@@ -363,7 +365,7 @@ export class MetricsRecorder implements PerformanceSink {
       this.routeTimers.delete(timer);
       // The router has moved on with the page: what it shows now is another view's route.
       if (view !== this.view || view.template) return;
-      this.route(view);
+      guarded("routes", () => this.route(view));
       if (!view.detected) this.watchRoute(view, attempt + 1);
     }, delay);
     this.routeTimers.add(timer);
@@ -473,6 +475,27 @@ export class MetricsRecorder implements PerformanceSink {
     this.closeView();
     this.view = this.newView(true);
     this.watchRoute(this.view);
+  }
+
+  /**
+   * `recordNavigation`: the app shows `path`, which the address may not show (a memory or hash router, a modal).
+   * Every arrival is a view, as on the mobile SDKs, except the path replaced by itself. A view started less than a
+   * second ago that no reported path named yet is the one reported: the page's landing view, or a route change the
+   * SDK followed from the address that the app reports as well.
+   */
+  navigated(path: string, type: string, template: string | null): void {
+    let view = this.view;
+    if (!view.reported && Date.now() - view.startMs < 1000) {
+      view.raw = path;
+      view.path = normalizePath(path);
+      view.detected = null;
+    } else if (type !== "replace" || path !== view.raw) {
+      this.closeView();
+      view = this.view = this.newView(true, path);
+      this.watchRoute(view);
+    }
+    view.reported = true;
+    if (template) this.setRoute(template);
   }
 
   /** A view is counted when it ends, so a route template that arrives after the history change still names it. */
@@ -877,7 +900,8 @@ export class MetricsRecorder implements PerformanceSink {
     const seconds = this.deps.control.settings().metrics.flushSeconds;
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.flush();
+      // A flush that fails must not stop the ones after it.
+      guarded("metrics", () => this.flush());
       this.schedule();
     }, seconds * 1000);
   }

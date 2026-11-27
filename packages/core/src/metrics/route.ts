@@ -1,3 +1,4 @@
+import { guarded } from "../guarded.js";
 const MAX_SEGMENTS = 6;
 const MAX_LENGTH = 64;
 const ID = ":id";
@@ -76,6 +77,18 @@ function decoded(segment: string): string {
  * Router's unnamed splat). A param whose value is not found in the path is left out.
  */
 export function routeFromParams(
+  pathname: string,
+  params: RouteParams | null | undefined,
+): string {
+  // Called in the app's render with whatever its router handed over: what it cannot read leaves the path as it is.
+  return guarded(
+    "routeFromParams",
+    () => templateOf(pathname, params),
+    typeof pathname === "string" ? pathname : "",
+  );
+}
+
+function templateOf(
   pathname: string,
   params: RouteParams | null | undefined,
 ): string {

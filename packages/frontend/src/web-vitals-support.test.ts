@@ -32,17 +32,16 @@ let client: TracewayFrontendClient | undefined;
 const nativeAt = Object.getOwnPropertyDescriptor(Array.prototype, "at")!;
 
 function start(): void {
-  client = new TracewayFrontendClient(
-    "tok_123@https://traceway.test/api/report",
-    {
+  client = new TracewayFrontendClient({
+      token: "tok_123",
+      baseUrl: "https://traceway.test",
       logExporter: new InMemoryLogRecordExporter(),
       spanExporter: new InMemorySpanExporter(),
       captureWebVitals: true,
       captureResourceTiming: false,
       sessionRecording: false,
       remoteConfig: false,
-    },
-  );
+  });
   client.start();
 }
 

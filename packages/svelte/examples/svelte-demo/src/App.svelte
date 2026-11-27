@@ -1,15 +1,32 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { setupTraceway } from "@tracewayapp/svelte";
-  import * as traceway from "@tracewayapp/frontend";
+  import {
+    setupTraceway,
+    flush,
+    getClient,
+    log as tracewayLog,
+    recordNavigation,
+    startInteraction,
+    tracer,
+  } from "@tracewayapp/svelte";
 
-  export let connectionString: string;
+  let { token, baseUrl }: { token: string; baseUrl?: string } = $props();
 
+  // Read once: the SDK starts once per page.
   const { captureException, captureExceptionWithAttributes, captureMessage } =
     setupTraceway({
-      connectionString,
-      options: { debug: true },
+      token,
+      baseUrl,
+      options: {
+        // Logs what the SDK sends, drops and why to the console.
+        debug: true,
+        // Adds small copies of the page's own pictures to the replay.
+        collection: { replay: { images: "always" } },
+      },
     });
+
+  // init() never throws: with options it cannot use it logs one warning and stays off.
+  const started = getClient() !== null;
 
   type LogEntry = {
     time: string;
@@ -17,7 +34,7 @@
     type: "info" | "error" | "success";
   };
 
-  let logs: LogEntry[] = [];
+  let logs = $state<LogEntry[]>([]);
 
   function log(message: string, type: LogEntry["type"] = "info") {
     const time = new Date().toLocaleTimeString();
@@ -25,7 +42,8 @@
   }
 
   onMount(() => {
-    log("SDK initialized via setupTraceway", "success");
+    if (started) log("SDK initialized via setupTraceway", "success");
+    else log("setupTraceway did not start the SDK: see the console warning", "error");
   });
 
   // 1. Event handler error (try/catch)
@@ -113,12 +131,43 @@
   // 9. Flush
   async function handleFlush() {
     log("Flushing...", "info");
-    try {
-      await traceway.flush();
-      log("Flush completed", "success");
-    } catch (err) {
-      log(`Flush failed: ${err}`, "error");
-    }
+    await flush();
+    log("Flush completed", "success");
+  }
+
+  // 10. A log line of the app's own: kept on the device like console output and uploaded with the next error
+  function handleLog() {
+    tracewayLog("cart synced", "info", { items: 3 });
+    log('log("cart synced", "info", { items: 3 }): kept on the device, uploaded with the next error', "info");
+  }
+
+  // 11. A navigation the address does not show (a modal, a wizard step): a new screen and a new page view
+  let order = 41;
+  function handleNavigation() {
+    order += 1;
+    recordNavigation(`/orders/${order}`, "push", `/orders/${order - 1}`, "/orders/:id");
+    log(`recordNavigation("/orders/${order}", "push", ..., "/orders/:id"): later records name the screen /orders/:id`, "info");
+  }
+
+  // 12. A span of the app's own; the request inside it is its child
+  async function handleSpan() {
+    await tracer()?.startActiveSpan("load cart", async (span) => {
+      try {
+        await fetch(location.href);
+      } finally {
+        span.end();
+      }
+    });
+    log('tracer() span "load cart" ended, with the request it made as its child', "info");
+  }
+
+  // 13. One user action from start to end: its requests join the interaction's trace
+  async function handleInteraction() {
+    const checkout = startInteraction("checkout", { "cart.size": 3 });
+    await checkout.run(() => fetch(location.href));
+    checkout.setAttribute("payment.method", "card");
+    checkout.end(); // end(true) would mark it failed without an exception
+    log(`Interaction "checkout" ended, trace ${checkout.traceId}`, "success");
   }
 
   function clearLogs() {
@@ -129,7 +178,9 @@
 <div>
   <h1>
     Traceway Svelte Demo
-    <span class="status status-ready">Initialized</span>
+    <span class={started ? "status status-ready" : "status status-not-ready"}>
+      {started ? "Initialized" : "Not started"}
+    </span>
   </h1>
   <p class="subtitle">Test various Svelte error scenarios with @tracewayapp/svelte</p>
 
@@ -143,44 +194,68 @@
 
     <div class="error-grid">
       <!-- Event Handler Errors -->
-      <button class="btn-error" on:click={handleEventError}>
+      <button class="btn-error" onclick={handleEventError}>
         Event Handler Error (try/catch)
       </button>
 
-      <button class="btn-error" on:click={handleAsyncEventError}>
+      <button class="btn-error" onclick={handleAsyncEventError}>
         Async Event Error (unhandled)
       </button>
 
       <!-- Network Errors -->
-      <button class="btn-warning" on:click={handleFetchError}>
+      <button class="btn-warning" onclick={handleFetchError}>
         Fetch HTTP 500 Error
       </button>
 
-      <button class="btn-warning" on:click={handleNetworkError}>
+      <button class="btn-warning" onclick={handleNetworkError}>
         Network Error (bad domain)
       </button>
 
       <!-- Global Handler Errors -->
-      <button class="btn-error" on:click={handleUnhandledRejection}>
+      <button class="btn-error" onclick={handleUnhandledRejection}>
         Unhandled Promise Rejection
       </button>
 
-      <button class="btn-error" on:click={handleTimeoutError}>
+      <button class="btn-error" onclick={handleTimeoutError}>
         setTimeout Error (window.onerror)
       </button>
 
       <!-- Manual Capture -->
-      <button class="btn-success" on:click={handleCaptureMessage}>
+      <button class="btn-success" onclick={handleCaptureMessage}>
         Capture Message
       </button>
 
-      <button class="btn-success" on:click={handleCaptureWithAttributes}>
+      <button class="btn-success" onclick={handleCaptureWithAttributes}>
         Capture with Attributes
       </button>
 
-      <button class="btn-secondary" on:click={handleFlush}>
+      <button class="btn-secondary" onclick={handleFlush}>
         Flush to Server
       </button>
+    </div>
+  </div>
+
+  <!-- 2.1 features -->
+  <div class="error-section">
+    <h2>Breadcrumbs, screens and traces</h2>
+    <p>
+      These are kept on the device and uploaded with the next error: capture one
+      afterwards to see them.
+    </p>
+
+    <div class="error-grid">
+      <button class="btn-feature" onclick={handleLog}>log()</button>
+      <button class="btn-feature" onclick={handleNavigation}>recordNavigation()</button>
+      <button class="btn-feature" onclick={handleSpan}>tracer() span</button>
+      <button class="btn-feature" onclick={handleInteraction}>startInteraction()</button>
+    </div>
+
+    <div class="mask-demo">
+      <p class="traceway-mask">Card ending 4242, Alice Smith</p>
+      <p class="hint">
+        The line above has <code>class="traceway-mask"</code>: the replay shows it as
+        <code>****</code>.
+      </p>
     </div>
   </div>
 
@@ -188,7 +263,7 @@
   <div class="log-section">
     <div class="log-header">
       <h2>Event Log</h2>
-      <button class="clear-btn" on:click={clearLogs}>Clear</button>
+      <button class="clear-btn" onclick={clearLogs}>Clear</button>
     </div>
     <div class="log-content">
       {#if logs.length === 0}

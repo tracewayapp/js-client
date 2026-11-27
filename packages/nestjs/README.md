@@ -48,7 +48,7 @@ import {
 @Module({
   imports: [
     TracewayModule.forRoot({
-      connectionString: "your-token@https://traceway.example.com/api/report",
+      connectionString: "your-token@https://cloud.tracewayapp.com/api/report",
       version: "1.0.0",
       onErrorRecording: ["url", "query", "body", "headers"],
     }),

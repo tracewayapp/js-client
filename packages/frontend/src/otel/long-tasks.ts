@@ -1,4 +1,5 @@
 import { SeverityNumber } from "@opentelemetry/api-logs";
+import { guarded } from "../guarded.js";
 import { EVENT_LONG_TASK } from "./events.js";
 import {
   LogInstrumentation,
@@ -59,7 +60,10 @@ export class LongTaskInstrumentation extends LogInstrumentation {
       this.observe(LONG_TASK, (task) => {
         if (!frames) return this.report(task);
         this.unmatched.push(task);
-        this.timer ??= setTimeout(() => this.reportUnmatched(), FRAME_WAIT_MS);
+        this.timer ??= setTimeout(
+          () => guarded("long tasks", () => this.reportUnmatched()),
+          FRAME_WAIT_MS,
+        );
       });
   }
 
@@ -72,9 +76,11 @@ export class LongTaskInstrumentation extends LogInstrumentation {
   }
 
   private observe(type: string, handle: (entry: LongEntry) => void): void {
-    const observer = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) handle(entry as LongEntry);
-    });
+    const observer = new PerformanceObserver((list) =>
+      guarded("long tasks", () => {
+        for (const entry of list.getEntries()) handle(entry as LongEntry);
+      }),
+    );
     observer.observe({ type, buffered: true });
     this.observers.push(observer);
   }
@@ -89,7 +95,10 @@ export class LongTaskInstrumentation extends LogInstrumentation {
     }
     this.unmatched = waiting;
     if (waiting.length)
-      this.timer = setTimeout(() => this.reportUnmatched(), FRAME_WAIT_MS);
+      this.timer = setTimeout(
+        () => guarded("long tasks", () => this.reportUnmatched()),
+        FRAME_WAIT_MS,
+      );
   }
 
   private report(entry: LongEntry): void {

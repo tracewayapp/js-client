@@ -169,3 +169,171 @@ describe("SessionRecorder with the real recorder", () => {
     expect(recorder.hasSegments()).toBe(false);
   });
 });
+
+describe("replay.images with the real recorder (§14.5)", () => {
+  const page = `
+    <img id="photo" src="https://app.test/photo.jpg">
+    <picture><source srcset="https://app.test/art.webp"><img src="https://app.test/art.jpg"></picture>
+    <div class="traceway-mask"><img id="secret" src="https://app.test/secret.jpg"></div>
+  `;
+
+  /** jsdom loads no images and lays nothing out: a picture as a browser has it once loaded and shown. */
+  function loaded(img: HTMLImageElement, width = 640, height = 480): HTMLImageElement {
+    for (const [key, value] of Object.entries({
+      complete: true,
+      naturalWidth: width,
+      naturalHeight: height,
+      width: width / 2,
+      height: height / 2,
+    }))
+      Object.defineProperty(img, key, { configurable: true, value });
+    return img;
+  }
+
+  it("off: records every picture as an empty box of its size", async () => {
+    document.body.innerHTML = page;
+    recorder = new SessionRecorder();
+    await recorder.start({ maskAllInputs: false, images: "off" });
+    const events = recorder.getClipEvents();
+    expect(JSON.stringify(events)).not.toContain("app.test");
+    const pictures = serializedElements(events).filter((node) => ["img", "picture"].includes(node.tagName));
+    expect(pictures.map((node) => node.tagName).sort()).toEqual(["img", "img", "picture"]);
+    for (const node of pictures) {
+      expect(node.attributes.rr_width).toBeDefined();
+      expect(node.attributes.src).toBeUndefined();
+      expect(node.childNodes).toEqual([]);
+    }
+  });
+
+  it("wifi (the default): records the URLs of the pictures and no pixels", async () => {
+    document.body.innerHTML = page;
+    recorder = new SessionRecorder();
+    await recorder.start({ maskAllInputs: false });
+    const json = JSON.stringify(recorder.getClipEvents());
+    expect(json).toContain("https://app.test/photo.jpg");
+    expect(json).toContain("https://app.test/art.jpg");
+    expect(json).not.toContain("secret.jpg");
+    expect(json).not.toContain("rr_dataURL");
+  });
+
+  it("always: adds small copies of the page's pictures, never of masked ones, and leaves the page's images as they are", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+      getImageData: () => ({ data: new Uint8ClampedArray(4).fill(255) }),
+    } as any);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(
+      (type?: string) => `data:${type};base64,AAAA`,
+    );
+    try {
+      document.body.innerHTML = page;
+      document.querySelectorAll("img").forEach((img) => loaded(img));
+      recorder = new SessionRecorder();
+      await recorder.start({ maskAllInputs: false, images: "always" });
+      const late = loaded(document.createElement("img"), 100, 100);
+      late.src = "https://app.test/late.jpg";
+      document.body.append(late);
+      await vi.waitFor(() => {
+        const images = serializedElements(recorder!.getClipEvents()).filter((node) => node.tagName === "img");
+        expect(images.filter((node) => node.attributes.rr_dataURL)).toHaveLength(3);
+      });
+      const images = serializedElements(recorder.getClipEvents()).filter((node) => node.tagName === "img");
+      const bySrc = Object.fromEntries(images.map((node) => [String(node.attributes.src), node]));
+      for (const src of ["photo", "art", "late"])
+        expect(bySrc[`https://app.test/${src}.jpg`]!.attributes.rr_dataURL).toBe("data:image/jpeg;base64,AAAA");
+      // The masked one: an empty box, no URL, no pixels.
+      const masked = images.find((node) => node.attributes.src === undefined)!;
+      expect(masked.attributes.rr_dataURL).toBeUndefined();
+      expect(JSON.stringify(recorder.getClipEvents())).not.toContain("secret.jpg");
+      for (const img of document.querySelectorAll("img")) {
+        expect(img.hasAttribute("crossorigin")).toBe(false);
+        expect(img.getAttribute("src")).toMatch(/^https:\/\/app\.test\//);
+      }
+      expect(recorder.images.bytes).toBe(3 * "data:image/jpeg;base64,AAAA".length);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+describe("traceway-mask beyond rrweb's own masking (JS-13, JS-16)", () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("masks text that a shadow root inside traceway-mask renders or changes later (JS-13)", async () => {
+    document.body.innerHTML = `<div class="traceway-mask"><span id="host"></span></div><p id="plain">Plain text</p>`;
+    recorder = new SessionRecorder();
+    await recorder.start({ maskAllInputs: false });
+    const root = document.querySelector("#host")!.attachShadow({ mode: "open" });
+    root.innerHTML = "<b>Shadow secret</b>Loose secret<i class='traceway-mask'></i>";
+    await settle();
+    root.querySelector("b")!.textContent = "Changed secret";
+    root.querySelector("b")!.firstChild!.textContent = "Edited secret";
+    await settle();
+    // A mask inside a shadow root outside any mask.
+    const open = document.querySelector("#plain")!.attachShadow({ mode: "open" });
+    open.innerHTML = "<span class='traceway-mask'>Inner secret</span><span>Shown text</span>";
+    await settle();
+    open.querySelector(".traceway-mask")!.append("Appended secret");
+    await settle();
+    const json = JSON.stringify(recorder.getClipEvents());
+    for (const secret of ["Shadow secret", "Loose secret", "Changed secret", "Edited secret", "Inner secret", "Appended secret"])
+      expect(json, secret).not.toContain(secret);
+    expect(json).toContain("Shown text");
+    expect(json).toContain("****** ******");
+  });
+
+  it("masks text added later in a same-origin frame inside traceway-mask (JS-13)", async () => {
+    document.body.innerHTML = `<div class="traceway-mask"><iframe id="frame"></iframe></div><iframe id="open"></iframe>`;
+    recorder = new SessionRecorder();
+    await recorder.start({ maskAllInputs: false });
+    const frame = document.querySelector<HTMLIFrameElement>("#frame")!;
+    const open = document.querySelector<HTMLIFrameElement>("#open")!;
+    await vi.waitFor(() => expect(frame.contentDocument?.body && open.contentDocument?.body).toBeTruthy());
+    await settle();
+    frame.contentDocument!.body.innerHTML = "<p>Frame secret</p>";
+    open.contentDocument!.body.innerHTML = "<p>Open frame text</p>";
+    await settle();
+    frame.contentDocument!.querySelector("p")!.textContent = "Frame changed secret";
+    await settle();
+    const json = JSON.stringify(recorder.getClipEvents());
+    // The frame outside the mask shows rrweb records frames here at all.
+    expect(json).toContain("Open frame text");
+    expect(json).not.toContain("Frame secret");
+    expect(json).not.toContain("Frame changed secret");
+  });
+
+  it("hides attribute values, pictures in styles and typed values inside traceway-mask (JS-16)", async () => {
+    document.body.innerHTML = `
+      <div class="traceway-mask">
+        <span title="Alice Smith" aria-label="Alice's card" data-user="alice@example.test">x</span>
+        <input type="submit" value="Pay Alice">
+        <input placeholder="Alice's PIN">
+        <div style="background-image: url(/avatars/42.jpg); color: red"></div>
+        <input type="image" src="/avatars/43.jpg">
+        <a href="/users/alice">profile</a>
+        <input id="field">
+      </div>
+      <span title="Public title">shown</span>
+      <input id="open">
+    `;
+    recorder = new SessionRecorder();
+    await recorder.start({ maskAllInputs: false });
+    const field = document.querySelector<HTMLInputElement>("#field")!;
+    field.value = "123-45-6789";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    const open = document.querySelector<HTMLInputElement>("#open")!;
+    open.value = "typed in the open";
+    open.dispatchEvent(new Event("input", { bubbles: true }));
+    const span = document.querySelector(".traceway-mask span")!;
+    span.setAttribute("title", "Bob Jones");
+    (document.querySelector(".traceway-mask div") as HTMLElement).style.backgroundImage = "url(/avatars/44.jpg)";
+    await settle();
+    const json = JSON.stringify(recorder.getClipEvents());
+    for (const secret of ["Alice", "alice", "42.jpg", "43.jpg", "44.jpg", "123-45-6789", "Bob Jones"])
+      expect(json, secret).not.toContain(secret);
+    // Outside the mask everything stays as it was, and inside it the layout does.
+    expect(json).toContain("Public title");
+    expect(json).toContain("typed in the open");
+    expect(json).toContain("color: red");
+    expect(json).toContain("*** ****");
+  });
+});

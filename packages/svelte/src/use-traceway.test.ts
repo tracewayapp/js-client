@@ -19,6 +19,7 @@ vi.mock("@tracewayapp/frontend", () => ({
   captureException: vi.fn(),
   captureExceptionWithAttributes: vi.fn(),
   captureMessage: vi.fn(),
+  recordAction: vi.fn(),
 }));
 
 import { getContext } from "svelte";
@@ -39,12 +40,13 @@ describe("getTraceway", () => {
     expect(result).toBe(mockContext);
   });
 
-  it("should throw when context does not exist", () => {
+  // It used to throw; a server render that skipped setupTraceway would crash on it (CONTRACT §13).
+  it("returns the SDK's capture functions when the context does not exist", () => {
     vi.mocked(getContext).mockReturnValue(undefined);
 
-    expect(() => getTraceway()).toThrow(
-      "getTraceway must be used within a Svelte component tree that has called setupTraceway"
-    );
+    const result = getTraceway();
+    expect(result.captureException).toBeDefined();
+    expect(result.captureMessage).toBeDefined();
   });
 
   it("should return all capture methods", () => {

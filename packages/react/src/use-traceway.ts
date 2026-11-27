@@ -1,11 +1,11 @@
 import { useContext } from "react";
-import { TracewayContext } from "./provider.js";
+import { TracewayContext, contextValue } from "./provider.js";
 import type { TracewayContextValue } from "./provider.js";
 
+/**
+ * The capture functions of the SDK. Outside a `TracewayProvider` (an app that calls `init()` itself) they are the
+ * same functions: they work once the SDK runs and do nothing before, so this never throws.
+ */
 export function useTraceway(): TracewayContextValue {
-  const context = useContext(TracewayContext);
-  if (context === null) {
-    throw new Error("useTraceway must be used within a TracewayProvider");
-  }
-  return context;
+  return useContext(TracewayContext) ?? contextValue;
 }

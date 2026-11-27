@@ -1,4 +1,5 @@
 import React, { Component } from "react";
+import { guarded } from "@tracewayapp/core";
 import * as traceway from "@tracewayapp/frontend";
 
 export interface TracewayErrorBoundaryProps {
@@ -30,7 +31,8 @@ export class TracewayErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    traceway.captureException(error);
+    guarded("TracewayErrorBoundary", () => traceway.captureException(error));
+    // The app's own callback: whatever it throws is the app's.
     this.props.onError?.(error, errorInfo);
   }
 

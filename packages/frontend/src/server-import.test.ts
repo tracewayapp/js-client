@@ -6,7 +6,9 @@ describe("loading the SDK without a window (server-side rendering)", () => {
     expect(typeof window).toBe("undefined");
     const traceway = await import("./index.js");
 
-    traceway.init("token@https://traceway.example.com/api/report");
+    traceway.init({ token: "token", baseUrl: "https://traceway.example.com" });
+    // Nothing is built on the server: no client, no attributes shared by every request (JS2-19).
+    expect(traceway.getClient()).toBeNull();
     traceway.captureException(new Error("server"));
     traceway.captureMessage("server");
     traceway.track("server");

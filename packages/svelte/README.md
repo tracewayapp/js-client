@@ -45,18 +45,24 @@ Call `setupTraceway` in your root component:
   import { setupTraceway } from "@tracewayapp/svelte";
 
   setupTraceway({
-    connectionString: "your-token@https://traceway.example.com/api/report",
+    token: import.meta.env.VITE_TRACEWAY_TOKEN,
   });
 </script>
 
 <slot />
 ```
 
+`token` is the project token, here from `VITE_TRACEWAY_TOKEN` (in SvelteKit, `PUBLIC_TRACEWAY_TOKEN` from `$env/static/public`, see below). The SDK sends to Traceway Cloud; for a self-hosted server, pass its address as `baseUrl` (`baseUrl: import.meta.env.VITE_TRACEWAY_URL`). Every other option of the browser SDK goes in `options`: `options: { version: "1.4.2", debug: true }`.
+
 That's it. `setupTraceway` runs `init(...)` synchronously, which installs the `window.onerror` and `unhandledrejection` handlers, instruments `console.*`, `fetch` / `XHR`, the History API and clicks, and starts the rrweb recorder.
 
 By default errors and messages are sent as they happen, and session start and end are reported for every visit. Console output, requests, navigation, clicks and the replay stay on the device: a captured error uploads up to 10 minutes of those breadcrumbs and a 30-second replay clip.
 
 The examples use Svelte 4 syntax, which Svelte 5 still compiles. In Svelte 5 runes mode, write `{@render children()}` instead of `<slot />` and `onclick` instead of `on:click`.
+
+### Upgrading from 2.0
+
+The `connectionString` field of 2.0 still works, but it is deprecated and logs one warning that names the new form: `connectionString: "token@https://host/api/report"` becomes `token: "token", baseUrl: "https://host"`, and for Traceway Cloud just `token: "token"`. Every variation of the old string keeps working (with or without `/api` or `/api/report`, a trailing slash, a query string, without a scheme, a server under a sub-path), and `baseUrl` is read the same way. The `transport` option is deprecated and ignored: the SDK always sends OTLP.
 
 ### Render-time errors
 
@@ -83,15 +89,16 @@ Svelte does **not** have a global error-boundary primitive like React or Vue. Th
 
 ### SvelteKit
 
-In SvelteKit, set up Traceway in the root layout. Do **not** gate it on the `browser` import: `setupTraceway` is what puts the capture functions into Svelte's context, so if it is skipped during SSR, every child component that calls `getTraceway()` throws on the server. The call is safe there: without `window` the SDK does not start, so it installs nothing and sends nothing, and the capture functions do nothing. Errors thrown on the server are not reported by this package.
+In SvelteKit, set up Traceway in the root layout. Do **not** gate it on the `browser` import: `setupTraceway` is what puts the capture functions into Svelte's context, so if it is skipped during SSR, `getTraceway()` falls back to the module's own capture functions, which do nothing on the server. The call is safe there: without `window` the SDK does not start, so it installs nothing and sends nothing, and the capture functions do nothing. Errors thrown on the server are not reported by this package.
 
 ```svelte
 <!-- src/routes/+layout.svelte -->
 <script>
+  import { PUBLIC_TRACEWAY_TOKEN } from "$env/static/public";
   import { setupTraceway } from "@tracewayapp/svelte";
 
   setupTraceway({
-    connectionString: "your-token@https://traceway.example.com/api/report",
+    token: PUBLIC_TRACEWAY_TOKEN,
   });
 </script>
 
@@ -146,7 +153,7 @@ metric("checkout.duration", 840, { plan: "pro" });
 count("cart.item_added");
 ```
 
-The exports are `captureException`, `captureExceptionWithAttributes`, `captureMessage`, `log`, `recordAction`, `track`, `metric`, `count`, `setMetricDimension`, `setRoute`, `startInteraction`, `setAttribute`, `setAttributes`, `removeAttribute`, `clearAttributes`, `refreshConfig`, `flush`, `shutdown`, `getInstanceId`, `currentSessionId` and `DEFAULT_IGNORE_PATTERNS`, plus the `TracewayLogLevel` type. They do nothing until `setupTraceway` has run. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#api) for what each one does.
+The exports are `captureException`, `captureExceptionWithAttributes`, `captureMessage`, `log`, `recordAction`, `track`, `metric`, `count`, `setMetricDimension`, `setRoute`, `recordNavigation`, `tracer`, `routeFromParams`, `startInteraction`, `setAttribute`, `setAttributes`, `removeAttribute`, `clearAttributes`, `refreshConfig`, `flush`, `shutdown`, `getInstanceId`, `currentSessionId`, `getClient`, `DEFAULT_IGNORE_PATTERNS` and `SDK_VERSION`: every value of `@tracewayapp/frontend` except `init` (`setupTraceway` calls it), the `TracewayFrontendClient` class and `trackRouter`, which this package replaces with `trackRoute` (see [Route Names](#route-names)). Its types are all re-exported too: `TracewayFrontendOptions`, `StandaloneOptions`, `TelemetryOptions`, `TelemetryEndpoint`, `TracewayCapturedError` (`CapturedException` is its deprecated alias), `TracewayInteraction`, `TracewayLogLevel`, `ErrorLimits`, `CollectionLimits`, `Settings`, `CollectionSettings`, `Trigger`, `TriggerAction`, `Capture`, `Mode`, `SignalName`, `TracewayImagePolicy`, `RouteParams` and the event types `TracewayEvent`, `LogEvent`, `NetworkEvent`, `NavigationEvent` and `CustomEvent`. The functions do nothing until `setupTraceway` has run. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#api) for what each one does.
 
 ## Route Names
 
@@ -156,12 +163,13 @@ Performance metrics are grouped by page. Call `trackRoute` with the route id so 
 <!-- src/routes/+layout.svelte, Svelte 5 -->
 <script>
   import { page } from "$app/state";
+  import { PUBLIC_TRACEWAY_TOKEN } from "$env/static/public";
   import { setupTraceway, trackRoute } from "@tracewayapp/svelte";
 
   let { children } = $props();
 
   setupTraceway({
-    connectionString: "your-token@https://traceway.example.com/api/report",
+    token: PUBLIC_TRACEWAY_TOKEN,
   });
 
   $effect(() => {
@@ -233,7 +241,7 @@ Pass `recordAllSessions: true` to stream every replay segment and breadcrumb as 
   import { setupTraceway } from "@tracewayapp/svelte";
 
   setupTraceway({
-    connectionString: "your-token@https://traceway.example.com/api/report",
+    token: import.meta.env.VITE_TRACEWAY_TOKEN,
     options: { recordAllSessions: true },
   });
 </script>
@@ -245,6 +253,12 @@ See [Session Replay](https://docs.tracewayapp.com/client/js-sdk/session-replay) 
 
 Every `fetch` / `XHR` call is an OpenTelemetry CLIENT span, and same-origin requests carry the W3C `traceparent` header, so a backend instrumented with OpenTelemetry joins the same trace with no extra middleware. For an API on another origin, list it in `propagateTraceHeaderCorsUrls` (its CORS policy must allow the `traceparent` header). See [Distributed Tracing](https://docs.tracewayapp.com/client/js-sdk/distributed-tracing).
 
+To tie the steps of one user action together, `startInteraction(name, attributes?)` returns a `TracewayInteraction` with `run`, `bind`, `setAttribute`, `captureException` and `end(failed?)`; see the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#distributed-tracing).
+
+## Send telemetry to another OpenTelemetry provider
+
+The `telemetry` option sends logs, traces and metrics to any OTLP/HTTP endpoint, while errors, replay, captures and remote config stay on Traceway: `options: { telemetry: { url: "https://collector.example.com" } }`. Without a `token` the SDK runs standalone and sends only there. See [Send telemetry to another OpenTelemetry provider](https://www.npmjs.com/package/@tracewayapp/frontend#send-telemetry-to-another-opentelemetry-provider).
+
 ## Options
 
 The `options` field forwards directly to [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend). The most-used flags:
@@ -254,10 +268,12 @@ The `options` field forwards directly to [`@tracewayapp/frontend`](https://www.n
 | `version` | none | App version, reported as `service.version`. Groups releases, and remote rules can target it |
 | `environment` | none | `deployment.environment.name`, e.g. `"production"` |
 | `serviceName` | the page's host name | `service.name` of this app |
-| `debug` | `false` | Log the problems the SDK would otherwise swallow: a rejected project token and a `beforeCapture` that throws. Captured events are not logged |
+| `debug` | `false` | Logs with the page's own `console.warn`, so Traceway never records the lines: the start (`Traceway: started (…/api/otel/v1/logs), session …`), remote config applied, rejected or unavailable, every dropped exception or message and why (`ignoreErrors`, `beforeCapture`, `errorLimits`, the session upload budget `collectionLimits`), a repeated `init()`, the Vue plugin's caught errors, and SDK failures it contained |
 | `ignoreErrors` | `DEFAULT_IGNORE_PATTERNS` | Patterns matched against `Type: message`; matching exceptions and messages are dropped. The defaults drop common network-failure, timeout and 4xx error messages. Pass `[]` to capture everything |
-| `beforeCapture` | none | Receives `{ type, message, stack, attributes }`; return `false` to drop |
+| `beforeCapture` | none | Receives `{ error, type, message, isMessage, stack, attributes }` (`TracewayCapturedError`); return `false` to drop. `error` is what was thrown or passed to `captureException`, undefined for a message |
 | `sessionRecording` | `true` | Allow rrweb session replay at all |
+| `replayImages` | `"always"` | The most the replay records of pictures (`"off"`, `"wifi"`, `"always"`): `replay.images`, from `collection` or a rule, applies only up to it |
+| `collection.replay.maskAllInputs` | `true` | Record input values as `*`. Set to `true` here, no rule can switch it off |
 | `recordAllSessions` | `false` | Stream every replay segment and breadcrumb instead of keeping them on the device for error clips |
 | `sessions` | `true` | Report session start and end |
 | `captureLogs` | `true` | Allow `console.*` output as breadcrumbs |
@@ -271,7 +287,7 @@ The `options` field forwards directly to [`@tracewayapp/frontend`](https://www.n
 | `collection.buffer.maxAgeSeconds` | `600` | Maximum age of buffered telemetry and replay in seconds |
 | `collection.buffer.maxBytes` | `2097152` | Byte limit for buffered telemetry (replay has its own, `collection.buffer.replayMaxBytes`) |
 
-The `capture*`, `sessionRecording` and `sessions` options are ceilings: remote settings can restrict a signal further, but never turn on what you turned off here. The 1.x options `debounceMs`, `retryDelayMs`, `eventsWindowMs` and `eventsMaxCount` no longer exist.
+The `capture*`, `sessionRecording`, `replayImages` and `sessions` options are ceilings: remote settings can restrict a signal further, but never turn on what you turned off here. The 1.x options `debounceMs`, `retryDelayMs`, `eventsWindowMs` and `eventsMaxCount` no longer exist.
 
 See [Initialization](https://docs.tracewayapp.com/client/js-sdk/initialization#options-reference) for the full options reference.
 
@@ -295,8 +311,9 @@ Initializes Traceway and stores the API in Svelte context. Must be called during
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `connectionString` | `string \| StandaloneOptions` | Traceway connection string (`token@url`). An options object with a `telemetry` destination instead runs the SDK [without a Traceway server](https://docs.tracewayapp.com/client/js-sdk/initialization#standalone-without-a-traceway-server) |
-| `options` | `TracewayFrontendOptions` | Forwarded to `init()` from `@tracewayapp/frontend` |
+| `token` | `string` | The project token. Without one, only a `telemetry` destination in `options` receives anything |
+| `baseUrl` | `string` | The Traceway server, only for a self-hosted one. Default `https://cloud.tracewayapp.com` |
+| `options` | `TracewayFrontendOptions` | Every other option, forwarded to `init()` from `@tracewayapp/frontend` |
 
 Returns `{ captureException, captureExceptionWithAttributes, captureMessage, recordAction }`.
 
@@ -313,7 +330,7 @@ Returns `{ captureException, captureExceptionWithAttributes, captureMessage, rec
 | `captureMessage(message, attributes?)` | Capture a message issue |
 | `recordAction(category, name, data?)` | Record a breadcrumb for the replay timeline |
 
-Throws if used outside a component tree where `setupTraceway` has been called. `useTraceway` is an alias of `getTraceway`, for parity with the React and Vue packages. The context key is exported as `TRACEWAY_KEY`.
+Outside a component tree where `setupTraceway` has been called it returns the same functions instead of throwing. `useTraceway` is an alias of `getTraceway`, for parity with the React and Vue packages. The context key is exported as `TRACEWAY_KEY`.
 
 ### `captureSvelteError(err)`
 

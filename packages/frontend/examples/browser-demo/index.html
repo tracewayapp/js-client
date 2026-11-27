@@ -130,6 +130,28 @@
         background: #e96b02;
       }
 
+      .btn-feature {
+        background: #6f42c1;
+        color: white;
+      }
+
+      .btn-feature:hover {
+        background: #59339d;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .mask-demo {
+        background: white;
+        padding: 1rem 1.5rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+
       .log-section {
         background: white;
         border-radius: 8px;
@@ -220,17 +242,15 @@
   </head>
   <body>
     <h1>Traceway Frontend Demo <span id="status" class="status status-not-ready">Not initialized</span></h1>
-    <p class="subtitle">Test the @tracewayapp/frontend SDK connection to your backend</p>
+    <p class="subtitle">Test the @tracewayapp/frontend SDK against Traceway</p>
 
     <div class="config-section">
-      <label for="connection-string">Connection String</label>
-      <input
-        type="text"
-        id="connection-string"
-        placeholder="your-token@https://your-traceway-server.com/api/report"
-        value=""
-      />
-      <p class="hint">Format: token@server (e.g., abc123@https://traceway.example.com/api/report)</p>
+      <label for="token">Project token</label>
+      <input type="text" id="token" placeholder="YOUR_TOKEN" value="" />
+      <p class="hint">From the project's settings in Traceway, or <code>VITE_TRACEWAY_TOKEN</code> when Vite starts.</p>
+      <label for="base-url" style="margin-top: 1rem">Server (only for a self-hosted one)</label>
+      <input type="text" id="base-url" placeholder="https://cloud.tracewayapp.com" value="" />
+      <p class="hint">Leave it empty for Traceway Cloud, or set <code>VITE_TRACEWAY_URL</code>.</p>
     </div>
 
     <div class="actions">
@@ -239,6 +259,18 @@
       <button id="btn-message" class="btn-message" disabled>Capture Message</button>
       <button id="btn-unhandled" class="btn-unhandled" disabled>Throw Unhandled Error</button>
       <button id="btn-flush" class="btn-flush" disabled>Flush</button>
+    </div>
+
+    <div class="actions">
+      <button id="btn-log" class="btn-feature" disabled>log()</button>
+      <button id="btn-navigation" class="btn-feature" disabled>recordNavigation()</button>
+      <button id="btn-span" class="btn-feature" disabled>tracer() span</button>
+      <button id="btn-interaction" class="btn-feature" disabled>startInteraction()</button>
+    </div>
+
+    <div class="mask-demo">
+      <p class="traceway-mask">Card ending 4242, Alice Smith</p>
+      <p class="hint">The line above has <code>class="traceway-mask"</code>: the replay shows it as <code>****</code>.</p>
     </div>
 
     <div class="log-section">

@@ -97,7 +97,7 @@ Upload your build output with [`@tracewayapp/sourcemap-upload`](https://www.npmj
 
 ```bash
 npx @tracewayapp/sourcemap-upload \
-  --url https://traceway.example.com \
+  --url https://cloud.tracewayapp.com \
   --token YOUR_SOURCE_MAP_TOKEN \
   --directory dist/assets
 ```

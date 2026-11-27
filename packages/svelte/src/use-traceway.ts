@@ -1,15 +1,14 @@
 import { getContext } from "svelte";
-import { TRACEWAY_KEY } from "./context.js";
+import { TRACEWAY_KEY, tracewayContext } from "./context.js";
 import type { TracewayContextValue } from "./types.js";
 
+/**
+ * The capture functions of the SDK. Without `setupTraceway` (an app that calls `init()` itself, or a server render
+ * that skipped it) they are the same functions: they work once the SDK runs and do nothing before, so this never
+ * throws.
+ */
 export function getTraceway(): TracewayContextValue {
-  const context = getContext<TracewayContextValue>(TRACEWAY_KEY);
-  if (!context) {
-    throw new Error(
-      "getTraceway must be used within a Svelte component tree that has called setupTraceway"
-    );
-  }
-  return context;
+  return getContext<TracewayContextValue>(TRACEWAY_KEY) ?? tracewayContext;
 }
 
 /**

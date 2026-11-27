@@ -12,6 +12,8 @@
  * `markActivity()`, so it does not depend on the replay recorder running.
  */
 
+import { guarded } from "./guarded.js";
+
 export const DEFAULT_INACTIVITY_MS = 15 * 60_000;
 export const DEFAULT_MAX_DURATION_MS = 60 * 60_000;
 
@@ -149,11 +151,7 @@ export class SessionLifecycle {
 
   private handlePagehide(): void {
     this.unloaded = true;
-    try {
-      this.onUnloading();
-    } catch {
-      // ignore
-    }
+    guarded("session", this.onUnloading);
     this.endSession(Date.now());
   }
 
@@ -171,38 +169,25 @@ export class SessionLifecycle {
   private handleVisibility(): void {
     if (typeof document === "undefined") return;
     if (document.visibilityState === "hidden") {
-      this.onSoftFlush();
+      guarded("session", this.onSoftFlush);
       return;
     }
     // A background tab's timers are throttled or frozen, so the inactivity
     // check may not have run while it was hidden. Settle it before anything
     // the page does on becoming visible counts as fresh activity.
     this.tick();
-    if (!this.ended) {
-      try {
-        this.onResume();
-      } catch {
-        // ignore
-      }
-    }
+    if (!this.ended) guarded("session", this.onResume);
   }
 
   private restart(): void {
     this.reset();
-    try {
-      this.onSessionRestart();
-    } catch {
-      // ignore
-    }
+    guarded("session", this.onSessionRestart);
   }
 
   private endSession(endedAtMs: number): void {
     if (this.ended) return;
     this.ended = true;
-    try {
-      this.onSessionEnd(endedAtMs);
-    } catch {
-      // Caller errors must not bubble into a unload handler.
-    }
+    // Caller errors must not bubble into a unload handler.
+    guarded("session", () => this.onSessionEnd(endedAtMs));
   }
 }

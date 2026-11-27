@@ -1,3 +1,4 @@
+import { guarded } from "../guarded.js";
 import { interactionTargets } from "./interaction-targets.js";
 import { supportsEntryType } from "./performance-instrumentation.js";
 import { selectorOf } from "./selector.js";
@@ -169,9 +170,11 @@ export class ViewVitalsObserver {
   }
 
   private observe(options: PerformanceObserverInit): void {
-    const observer = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) this.handle(entry);
-    });
+    const observer = new PerformanceObserver((list) =>
+      guarded("view vitals", () => {
+        for (const entry of list.getEntries()) this.handle(entry);
+      }),
+    );
     observer.observe(options);
     this.observers.push(observer);
   }

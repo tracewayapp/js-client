@@ -36,6 +36,7 @@ vi.mock("@rrweb/record", () => {
 import { record } from "@rrweb/record";
 import {
   BLOCK_SELECTOR,
+  IMAGE_SELECTOR,
   MASK_TEXT_SELECTOR,
   SessionRecorder,
 } from "./session-recorder.js";
@@ -162,6 +163,21 @@ describe("SessionRecorder privacy options", () => {
     expect(options.blockClass).toBeUndefined();
     expect(options.maskTextClass).toBeUndefined();
     expect(options.ignoreClass).toBeUndefined();
+    rec.stop();
+  });
+
+  it("starts rrweb with the policy and masking asked for last, also when they change while rrweb loads (§14.5)", async () => {
+    const rec = new SessionRecorder();
+    // A rule arrives while rrweb is still being loaded: the replay restarts with images off and inputs masked.
+    const first = rec.start({ maskAllInputs: false, images: "wifi" });
+    rec.stop();
+    const second = rec.start({ maskAllInputs: true, images: "off" });
+    await Promise.all([first, second]);
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(record).mock.calls[0]![0]).toMatchObject({
+      maskAllInputs: true,
+      blockSelector: `${BLOCK_SELECTOR}, ${IMAGE_SELECTOR}`,
+    });
     rec.stop();
   });
 

@@ -16,6 +16,8 @@ interface Batch {
 }
 
 const MAX_SEGMENTS_PER_REQUEST = 100;
+/** Batches kept while uploads fail (offline, an outage): the oldest go first, counted as failed. */
+const MAX_QUEUED_BATCHES = 20;
 /**
  * Browsers cap all in-flight keepalive bodies of a page at 64 KiB. Replay takes what is left after the room
  * kept for the session's closing event, which must not be the request that is refused.
@@ -55,6 +57,8 @@ export class RecordingsTransport {
         attempts: 0,
       });
     }
+    while (this.queue.length > MAX_QUEUED_BATCHES)
+      this.recordFailure(this.queue.shift()!.segments.length);
     if (options.unloading) {
       this.drainKeepalive();
     } else {
@@ -85,10 +89,14 @@ export class RecordingsTransport {
 
   private schedule(delayMs: number): void {
     if (this.timer !== null) return;
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      void this.drain();
-    }, delayMs);
+    this.timer = setTimeout(
+      () => {
+        this.timer = null;
+        void this.drain();
+      },
+      // A longer Retry-After would run at once: browsers wrap delays over 2^31 - 1 ms.
+      Math.min(delayMs, 2 ** 31 - 1),
+    );
   }
 
   private drain(): Promise<void> {

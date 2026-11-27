@@ -206,7 +206,9 @@ describe("client persistence", () => {
       forceFlush: async () => {},
       shutdown: async () => {},
     };
-    const client = new TracewayFrontendClient("tok@https://traceway.test", {
+    const client = new TracewayFrontendClient({
+      token: "tok",
+      baseUrl: "https://traceway.test",
       logExporter: failing,
       spanExporter: new InMemorySpanExporter(),
       remoteConfig: false,
@@ -258,7 +260,9 @@ describe("persistence transitions", () => {
       return new Response(null, { status: 200 });
     });
     const make = () => {
-      const client = new TracewayFrontendClient("pages@https://traceway.test", {
+      const client = new TracewayFrontendClient({
+        token: "pages",
+        baseUrl: "https://traceway.test",
         remoteConfig: false,
         sessionRecording: false,
         captureNetwork: false,

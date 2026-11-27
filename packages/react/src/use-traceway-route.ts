@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { guarded } from "@tracewayapp/core";
 import { routeFromParams, setRoute } from "@tracewayapp/frontend";
 import type { RouteParams } from "@tracewayapp/frontend";
 
@@ -30,8 +31,13 @@ export function useTracewayRoute(
   path: string | null,
   ...rest: [params?: RouteParams | null]
 ): void {
-  const template =
-    path !== null && rest.length ? routeFromParams(path, rest[0]) : path;
+  // In render, with whatever the router handed over.
+  const template = guarded(
+    "useTracewayRoute",
+    () =>
+      path !== null && rest.length ? routeFromParams(path, rest[0]) : path,
+    path,
+  );
   // The path too: called from one layout, two pages of one route give the same template, and the SDK starts an
   // unnamed view at every navigation.
   useEffect(() => {

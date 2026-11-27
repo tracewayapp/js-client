@@ -22,7 +22,7 @@ Error tracking and session replay for jQuery apps. Adds an `$.ajaxError` handler
 - One-line `init()` that registers a `$(document).ajaxError(...)` handler
 - Failed `$.ajax` calls captured as exceptions with `url`, `method`, `status` attributes
 - Inherits everything from [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend): `window.onerror`, `unhandledrejection`, rrweb session replay, breadcrumbs (console, `fetch` / XHR, navigation, clicks), performance metrics, W3C `traceparent` propagation
-- Binds to the global `jQuery`, or to the global `$` when it has `$.ajax`
+- Binds to the `jQuery` option for a bundled jQuery, else to the global `jQuery`, or to the global `$` when it has `$.ajax`
 - Collection settings you can change from the dashboard's **Data Collection** page; failed exports wait in IndexedDB and are retried
 
 Upgrading from 1.x? See the [migration guide](https://docs.tracewayapp.com/client/js-sdk/migration).
@@ -41,27 +41,36 @@ Or via CDN:
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@2/dist/traceway-jquery.iife.global.js"></script>
 <script>
-  TracewayJQuery.init("your-token@https://traceway.example.com/api/report");
+  TracewayJQuery.init({ token: "YOUR_TOKEN" });
 </script>
 ```
 
-The CDN build exposes every export on the `TracewayJQuery` global (`TracewayJQuery.captureException`, `TracewayJQuery.setAttribute`, `TracewayJQuery.flush`, and so on).
+The CDN build exposes every export on the `TracewayJQuery` global (`TracewayJQuery.captureException`, `TracewayJQuery.recordAction`, `TracewayJQuery.flush`, and so on). [`examples/jquery-cdn/`](examples/jquery-cdn/) is a page that uses it.
 
 ## Quick Start
 
+With a bundler, pass the jQuery you import as the `jQuery` option:
+
 ```ts
+import $ from "jquery";
 import { init } from "@tracewayapp/jquery";
 
-init("your-token@https://traceway.example.com/api/report");
+init({ token: import.meta.env.VITE_TRACEWAY_TOKEN, jQuery: $ });
 ```
+
+`token` is the project token, here from `VITE_TRACEWAY_TOKEN`. The SDK sends to Traceway Cloud; for a self-hosted server, add its address as `baseUrl` (`baseUrl: import.meta.env.VITE_TRACEWAY_URL`). Every other option goes in the same object: `init({ token: import.meta.env.VITE_TRACEWAY_TOKEN, jQuery: $, version: "1.4.2", debug: true })`.
 
 That's it. `init()` runs the underlying `@tracewayapp/frontend` `init(...)` (so you also get the `window.onerror` and `unhandledrejection` handlers, `console.*`, `fetch` / `XHR`, History API and click instrumentation, and rrweb recording), then attaches a global `$(document).ajaxError(...)` handler that captures failed `$.ajax` calls.
 
-The handler binds to the global `jQuery` (or `$`). If jQuery is only a bundled module and never lands on `window`, set `window.jQuery = window.$ = $` before `init()`; otherwise the rest of the SDK works but AJAX errors are silently skipped.
+The handler binds to the `jQuery` option. Without it, it binds to `window.jQuery`, or to `window.$` when that has `$.ajax`, which is where a `<script>` tag puts jQuery. A bundled jQuery never lands on `window`, so pass it. When there is neither, `init()` warns once: `Traceway: jQuery was not found on window, so failed $.ajax calls are not reported. Pass it as the jQuery option: init(…, { jQuery: $ })`. The rest of the SDK works either way.
 
 Call `init()` once, after jQuery is on the page. The SDK itself starts once per page (a second `init()` does not restart it until `await shutdown()`), and the `ajaxError` handler is bound once per page. `shutdown()` does not unbind it; it reports nothing while the SDK is stopped.
 
 By default errors and messages are sent as they happen, and session start and end are reported for every visit. Console output, requests, navigation, clicks and the replay stay on the device: a captured error uploads up to 10 minutes of those breadcrumbs and a 30-second replay clip.
+
+### Upgrading from 2.0
+
+2.0 started with a connection string, `init("token@https://host/api/report", options)`. It still works, but it is deprecated and logs one warning that names the new form: `init({ ...options, token, baseUrl: "https://host" })`, and for Traceway Cloud just `init({ ...options, token })`. Every variation of the old string keeps working (with or without `/api` or `/api/report`, a trailing slash, a query string, without a scheme, a server under a sub-path), and `baseUrl` is read the same way. The `transport` option is deprecated and ignored: the SDK always sends OTLP.
 
 ## Manual Capture
 
@@ -88,7 +97,7 @@ await flush();
 
 `captureException(error, attributes?)` and `captureMessage(message, attributes?)` take optional string attributes (`Record<string, string>`); `captureExceptionWithAttributes` is the same as `captureException`. `flush()` sends what is queued for sending; buffered breadcrumbs stay on the device.
 
-The package also re-exports `track`, `metric`, `count`, `setMetricDimension`, `setRoute`, `startInteraction`, `refreshConfig`, `shutdown`, `getInstanceId` and the attribute functions below. `recordAction` and `DEFAULT_IGNORE_PATTERNS` are not exported by this package: use `track()` for app events, and import the pattern list from `@tracewayapp/frontend` if you need it. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#api) for what each function does.
+The package also re-exports `log`, `recordAction`, `track`, `metric`, `count`, `setMetricDimension`, `setRoute`, `recordNavigation`, `tracer`, `trackRouter`, `routeFromParams`, `startInteraction`, `setAttribute`, `setAttributes`, `removeAttribute`, `clearAttributes`, `refreshConfig`, `shutdown`, `getInstanceId`, `currentSessionId`, `getClient`, `DEFAULT_IGNORE_PATTERNS` and `SDK_VERSION`: every value of `@tracewayapp/frontend` except its `init` (this package's `init` replaces it) and the `TracewayFrontendClient` class. The CDN build has them all on `TracewayJQuery`. Its types are all re-exported too: `TracewayFrontendOptions`, `StandaloneOptions`, `TelemetryOptions`, `TelemetryEndpoint`, `TracewayCapturedError` (`CapturedException` is its deprecated alias), `TracewayInteraction`, `TracewayLogLevel`, `ErrorLimits`, `CollectionLimits`, `Settings`, `CollectionSettings`, `Trigger`, `TriggerAction`, `Capture`, `Mode`, `SignalName`, `TracewayImagePolicy`, `RouteParams` and the event types `TracewayEvent`, `LogEvent`, `NetworkEvent`, `NavigationEvent` and `CustomEvent`, plus this package's `TracewayJQueryOptions`. The package declares no global `$` or `jQuery` types, so it works next to `@types/jquery`. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#api) for what each function does.
 
 ## Custom Attributes (global scope)
 
@@ -120,7 +129,9 @@ Remote rules and captures can target these attributes; `user.id` is the key to u
 By default the replay stays on the device and an error uploads a 30-second clip. Pass `recordAllSessions: true` to stream every replay segment and breadcrumb as it is recorded — see [Session Replay](https://docs.tracewayapp.com/client/js-sdk/session-replay) for the full description.
 
 ```ts
-init("your-token@https://traceway.example.com/api/report", {
+init({
+  token: import.meta.env.VITE_TRACEWAY_TOKEN,
+  jQuery: $,
   recordAllSessions: true,
 });
 ```
@@ -145,11 +156,14 @@ The handler builds the message `<METHOD> <url> failed: <status> <text>`, for exa
 - **Timeouts are dropped** (`/timeout/i` matches jQuery's `timeout` status text).
 - **5xx responses are reported.**
 - **A request that fails without a response** (status `0`, for instance when the network is down) is not matched by a default pattern and is reported, as `<METHOD> <url> failed: 0 error`.
+- **An aborted request is not reported**: the app cancelled it (`jqXHR.abort()`, a typeahead dropping the previous request).
 
 To capture every AJAX error, pass `ignoreErrors: []`. To filter by status, use `beforeCapture`, which receives the `status` attribute as a string:
 
 ```ts
-init("your-token@https://traceway.example.com/api/report", {
+init({
+  token: import.meta.env.VITE_TRACEWAY_TOKEN,
+  jQuery: $,
   ignoreErrors: [],
   beforeCapture: (exception) => {
     const status = Number(exception.attributes?.status);
@@ -164,19 +178,30 @@ With `captureHttpServerErrors: true` the base SDK reports every `fetch` / `XHR` 
 
 `$.ajax()` goes through `XMLHttpRequest`, which the SDK records as an OpenTelemetry CLIENT span, and same-origin requests carry the W3C `traceparent` header, so a backend instrumented with OpenTelemetry joins the same trace with no extra middleware. For an API on another origin, list it in `propagateTraceHeaderCorsUrls` (its CORS policy must allow the `traceparent` header). See [Distributed Tracing](https://docs.tracewayapp.com/client/js-sdk/distributed-tracing).
 
+To tie the steps of one user action together, `startInteraction(name, attributes?)` returns a `TracewayInteraction` with `run`, `bind`, `setAttribute`, `captureException` and `end(failed?)`; see the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#distributed-tracing).
+
+## Send telemetry to another OpenTelemetry provider
+
+The `telemetry` option sends logs, traces and metrics to any OTLP/HTTP endpoint, while errors, replay, captures and remote config stay on Traceway: `init({ token: "YOUR_TOKEN", telemetry: { url: "https://collector.example.com" } })`. Without a `token` the SDK runs standalone and sends only there. See [Send telemetry to another OpenTelemetry provider](https://www.npmjs.com/package/@tracewayapp/frontend#send-telemetry-to-another-opentelemetry-provider).
+
 ## Options
 
-`init(connectionString, options?)` forwards its arguments directly to [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend) (`TracewayJQueryOptions` adds nothing to `TracewayFrontendOptions`). `connectionString` is the `token@url` string, or an options object with a `telemetry` destination to run the SDK [without a Traceway server](https://docs.tracewayapp.com/client/js-sdk/initialization#standalone-without-a-traceway-server). The most-used flags:
+`init(options)` forwards its options directly to [`@tracewayapp/frontend`](https://www.npmjs.com/package/@tracewayapp/frontend); `TracewayJQueryOptions` adds the `jQuery` option to `TracewayFrontendOptions`. The most-used flags:
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `token` | none | The project token. Without one, only a `telemetry` destination receives anything |
+| `baseUrl` | `https://cloud.tracewayapp.com` | The Traceway server; set it only for a self-hosted one |
+| `jQuery` | `window.jQuery`, else `window.$` | The jQuery whose failed `$.ajax` calls are reported; pass it when jQuery is bundled (`import $ from "jquery"`) |
 | `version` | none | App version, reported as `service.version`. Groups releases, and remote rules can target it |
 | `environment` | none | `deployment.environment.name`, e.g. `"production"` |
 | `serviceName` | the page's host name | `service.name` of this app |
-| `debug` | `false` | Log the problems the SDK would otherwise swallow: a rejected project token and a `beforeCapture` that throws. Captured events are not logged |
+| `debug` | `false` | Logs with the page's own `console.warn`, so Traceway never records the lines: the start (`Traceway: started (…/api/otel/v1/logs), session …`), remote config applied, rejected or unavailable, every dropped exception or message and why (`ignoreErrors`, `beforeCapture`, `errorLimits`, the session upload budget `collectionLimits`), a repeated `init()`, the Vue plugin's caught errors, and SDK failures it contained |
 | `ignoreErrors` | the built-in patterns | Patterns matched against `Type: message`; matching exceptions and messages are dropped. See [Which AJAX errors are reported](#which-ajax-errors-are-reported). Pass `[]` to capture everything |
-| `beforeCapture` | none | Receives `{ type, message, stack, attributes }`; return `false` to drop |
+| `beforeCapture` | none | Receives `{ error, type, message, isMessage, stack, attributes }` (`TracewayCapturedError`); return `false` to drop. `error` is what was thrown or passed to `captureException`, undefined for a message |
 | `sessionRecording` | `true` | Allow rrweb session replay at all |
+| `replayImages` | `"always"` | The most the replay records of pictures (`"off"`, `"wifi"`, `"always"`): `replay.images`, from `collection` or a rule, applies only up to it |
+| `collection.replay.maskAllInputs` | `true` | Record input values as `*`. Set to `true` here, no rule can switch it off |
 | `recordAllSessions` | `false` | Stream every replay segment and breadcrumb instead of keeping them on the device for error clips |
 | `sessions` | `true` | Report session start and end |
 | `captureLogs` | `true` | Allow `console.*` output as breadcrumbs |
@@ -188,7 +213,7 @@ With `captureHttpServerErrors: true` the base SDK reports every `fetch` / `XHR` 
 | `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that also get the `traceparent` header (same-origin requests always do) |
 | `remoteConfig` | `true` | Fetch collection settings from Traceway, so the **Data Collection** page can change what the app sends without a release |
 
-The `capture*`, `sessionRecording` and `sessions` options are ceilings: remote settings can restrict a signal further, but never turn on what you turned off here. The 1.x options `debounceMs`, `retryDelayMs`, `eventsWindowMs` and `eventsMaxCount` no longer exist.
+The `capture*`, `sessionRecording`, `replayImages` and `sessions` options are ceilings: remote settings can restrict a signal further, but never turn on what you turned off here. The 1.x options `debounceMs`, `retryDelayMs`, `eventsWindowMs` and `eventsMaxCount` no longer exist.
 
 See [Initialization](https://docs.tracewayapp.com/client/js-sdk/initialization#options-reference) for the full options reference.
 

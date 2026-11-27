@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { guarded } from "@tracewayapp/core";
 import {
   setAttributes as setAttrs,
   removeAttribute,
@@ -26,27 +27,17 @@ export function useTracewayAttributes(
 
   // Stable string repr — re-runs the diff only when key/value content
   // changes, not when the parent re-renders with a new object reference.
-  const fingerprint = stableFingerprint(attributes);
+  // During render: a value it cannot write (a Symbol) must not unmount the app (CONTRACT §13.1).
+  const fingerprint = guarded(
+    "useTracewayAttributes",
+    () => stableFingerprint(attributes),
+    "",
+  );
 
   useEffect(() => {
-    const next = attributes ?? {};
-    const prev = prevRef.current;
-
-    const toSet: Record<string, string> = {};
-    for (const k of Object.keys(next)) {
-      if (prev[k] !== next[k]) toSet[k] = next[k]!;
-    }
-    if (Object.keys(toSet).length > 0) {
-      setAttrs(toSet);
-    }
-
-    for (const k of Object.keys(prev)) {
-      if (!(k in next)) {
-        removeAttribute(k);
-      }
-    }
-
-    prevRef.current = { ...next };
+    guarded("useTracewayAttributes", () => {
+      prevRef.current = syncAttributes(prevRef.current, attributes);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fingerprint]);
 
@@ -59,6 +50,31 @@ export function useTracewayAttributes(
       prevRef.current = {};
     };
   }, []);
+}
+
+/** Pushes the deltas from `prev` to `attributes` and returns what is set now. */
+function syncAttributes(
+  prev: Record<string, string>,
+  attributes: Record<string, string> | null | undefined,
+): Record<string, string> {
+  // Untyped JS may pass a string or a number: it holds no attributes.
+  const next = attributes && typeof attributes === "object" ? attributes : {};
+
+  const toSet: Record<string, string> = {};
+  for (const k of Object.keys(next)) {
+    if (prev[k] !== next[k]) toSet[k] = next[k]!;
+  }
+  if (Object.keys(toSet).length > 0) {
+    setAttrs(toSet);
+  }
+
+  for (const k of Object.keys(prev)) {
+    if (!(k in next)) {
+      removeAttribute(k);
+    }
+  }
+
+  return { ...next };
 }
 
 function stableFingerprint(

@@ -64,7 +64,9 @@ afterEach(async () => {
 
 function start(): TracewayFrontendClient {
   logExporter = new InMemoryLogRecordExporter();
-  client = new TracewayFrontendClient("tok@https://traceway.test", {
+  client = new TracewayFrontendClient({
+    token: "tok",
+    baseUrl: "https://traceway.test",
     logExporter,
     spanExporter: new InMemorySpanExporter(),
     sessionRecording: false,
@@ -99,9 +101,7 @@ describe("remote config over OpAMP", () => {
     expect(opampBodies[0]).toContain(client.instanceId);
 
     await client.shutdown();
-    const nextPage = new TracewayFrontendClient("tok@https://traceway.test", {
-      remoteConfig: true,
-    });
+    const nextPage = new TracewayFrontendClient({ token: "tok", baseUrl: "https://traceway.test", remoteConfig: true });
     expect(nextPage.control.settings().signals.custom.mode).toBe("stream");
   });
 

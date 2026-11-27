@@ -1,6 +1,6 @@
 {
   "name": "@tracewayapp/vue",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Traceway Vue.js integration with plugin and composable",
   "license": "MIT",
   "main": "./dist/index.js",
@@ -24,7 +24,8 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@tracewayapp/frontend": "2.0.1"
+    "@tracewayapp/core": "2.1.0",
+    "@tracewayapp/frontend": "2.1.0"
   },
   "peerDependencies": {
     "vue": ">=3.3.0"

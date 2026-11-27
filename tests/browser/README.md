@@ -2,8 +2,8 @@
 
 Run `npm ci`, `npx playwright install chromium`, then `npm run test:e2e`.
 Playwright builds real vanilla, React 18, Svelte 5 and Vue 3 fixtures against the workspace packages.
-The HTTP fixtures cover OpAMP settings, legacy capability responses, issue/replay linkage, input masking,
-local opt-outs, full-session recording, reloads, pagehide, and recovery after an initial network failure.
+The HTTP fixtures cover OpAMP settings, servers without OpAMP (local settings apply, telemetry still goes out as OTLP),
+issue/replay linkage, input masking, local opt-outs, full-session recording, reloads and pagehide.
 Failures retain Playwright traces in `test-results/`. `npm run test:browser` runs the additional v2 regression suite.
 
 For real server/database/storage validation, provide two Traceway source checkouts:

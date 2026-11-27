@@ -1,50 +1,55 @@
+/// <reference types="vite/client" />
+import { mount } from "svelte";
 import App from "./App.svelte";
 import "./app.css";
 
-// Connection string state
-let connectionString = "";
+// The token and, for a self-hosted server, its address, from the environment Vite started with:
+// VITE_TRACEWAY_TOKEN=... VITE_TRACEWAY_URL=... npm run dev
+const ENV_TOKEN: string = import.meta.env.VITE_TRACEWAY_TOKEN ?? "";
+const ENV_URL: string = import.meta.env.VITE_TRACEWAY_URL ?? "";
 
-function initializeApp() {
-  if (!connectionString.trim()) return;
+function initializeApp(token: string, baseUrl: string) {
+  if (!token.trim()) return;
 
   const target = document.getElementById("app")!;
   target.innerHTML = "";
 
-  new App({
+  mount(App, {
     target,
     props: {
-      connectionString,
+      token: token.trim(),
+      // Traceway Cloud unless a self-hosted server is given.
+      baseUrl: baseUrl.trim() || undefined,
     },
   });
 }
 
-// Initial setup UI
-const setupHtml = `
-  <div>
-    <h1>Traceway Svelte Demo</h1>
-    <p class="subtitle">Enter your connection string to initialize</p>
-    <div class="config-section">
-      <label for="connection-string">Connection String</label>
-      <input
-        type="text"
-        id="connection-string"
-        placeholder="your-token@https://your-traceway-server.com/api/report"
-      />
-      <p class="hint">Format: token@endpoint</p>
-      <button class="btn-init" id="init-btn" style="margin-top: 1rem">
-        Initialize SDK
-      </button>
+if (ENV_TOKEN) {
+  initializeApp(ENV_TOKEN, ENV_URL);
+} else {
+  // Initial setup UI
+  document.getElementById("app")!.innerHTML = `
+    <div>
+      <h1>Traceway Svelte Demo</h1>
+      <p class="subtitle">Enter your project token to initialize, or start Vite with VITE_TRACEWAY_TOKEN</p>
+      <div class="config-section">
+        <label for="token">Project token</label>
+        <input type="text" id="token" placeholder="YOUR_TOKEN" />
+        <label for="base-url" style="margin-top: 1rem">Server (only for a self-hosted one)</label>
+        <input type="text" id="base-url" placeholder="https://cloud.tracewayapp.com" />
+        <p class="hint">Leave the server empty for Traceway Cloud.</p>
+        <button class="btn-init" id="init-btn" style="margin-top: 1rem">
+          Initialize SDK
+        </button>
+      </div>
     </div>
-  </div>
-`;
+  `;
 
-document.getElementById("app")!.innerHTML = setupHtml;
+  const tokenInput = document.getElementById("token") as HTMLInputElement;
+  const baseUrlInput = document.getElementById("base-url") as HTMLInputElement;
+  const button = document.getElementById("init-btn") as HTMLButtonElement;
 
-const input = document.getElementById("connection-string") as HTMLInputElement;
-const button = document.getElementById("init-btn") as HTMLButtonElement;
-
-input.addEventListener("input", (e) => {
-  connectionString = (e.target as HTMLInputElement).value;
-});
-
-button.addEventListener("click", initializeApp);
+  button.addEventListener("click", () =>
+    initializeApp(tokenInput.value, baseUrlInput.value)
+  );
+}

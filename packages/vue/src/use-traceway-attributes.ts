@@ -1,5 +1,6 @@
 import { watchEffect, onUnmounted, toValue } from "vue";
 import type { MaybeRefOrGetter } from "vue";
+import { guarded } from "@tracewayapp/core";
 import {
   setAttributes as setAttrs,
   removeAttribute,
@@ -30,23 +31,29 @@ export function useTracewayAttributes(
   let prev: Record<string, string> = {};
 
   watchEffect(() => {
-    const next = toValue(attributes) ?? {};
+    // The app's own getter: what it throws is the app's, and Vue reports it as usual.
+    const value = toValue(attributes);
+    // An SDK failure must not break the app's effect (CONTRACT §13.1).
+    guarded("useTracewayAttributes", () => {
+      // Untyped JS may pass a string or a number: it holds no attributes.
+      const next = value && typeof value === "object" ? value : {};
 
-    const toSet: Record<string, string> = {};
-    for (const k of Object.keys(next)) {
-      if (prev[k] !== next[k]) toSet[k] = next[k]!;
-    }
-    if (Object.keys(toSet).length > 0) {
-      setAttrs(toSet);
-    }
-
-    for (const k of Object.keys(prev)) {
-      if (!(k in next)) {
-        removeAttribute(k);
+      const toSet: Record<string, string> = {};
+      for (const k of Object.keys(next)) {
+        if (prev[k] !== next[k]) toSet[k] = next[k]!;
       }
-    }
+      if (Object.keys(toSet).length > 0) {
+        setAttrs(toSet);
+      }
 
-    prev = { ...next };
+      for (const k of Object.keys(prev)) {
+        if (!(k in next)) {
+          removeAttribute(k);
+        }
+      }
+
+      prev = { ...next };
+    });
   });
 
   onUnmounted(() => {

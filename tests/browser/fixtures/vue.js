@@ -1,6 +1,6 @@
 import { createApp, h, onMounted } from "vue";
 import { createTracewayPlugin, useTraceway } from "@tracewayapp/vue";
-import { connectionString, options, mountActions } from "./shared";
+import { token, baseUrl, options, mountActions } from "./shared";
 const app = createApp({
   setup() {
     const api = useTraceway();
@@ -24,5 +24,5 @@ const app = createApp({
     ];
   },
 });
-app.use(createTracewayPlugin({ connectionString, options }));
+app.use(createTracewayPlugin({ token, baseUrl, options }));
 app.mount("#app");

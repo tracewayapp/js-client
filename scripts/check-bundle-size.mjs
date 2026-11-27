@@ -5,12 +5,16 @@ import { gzipSync } from "node:zlib";
 const budgets = [
   // The IIFE inlines rrweb (~60 KB gzipped); ESM consumers load it lazily, only when replay is on.
   { file: "packages/frontend/dist/traceway.iife.global.js", maxKb: 145 },
-  // Includes the pre-OpAMP /api/report compatibility adapter, the long task and route timing instrumentations,
+  // Includes the long task and route timing instrumentations,
   // the metrics recorder, sequence listeners with per-tab navigation recovery, reading route templates from
   // the app's router, the web vitals instrumentation with its stable element selector (the Browser SIG one it
-  // replaces was a dependency, outside this file), `log()`, and the replay's traceway-mask / traceway-blank selectors.
+  // replaces was a dependency, outside this file), `log()`, the replay's traceway-mask / traceway-blank selectors and
+  // the masking of what rrweb misses inside them, the screen keys with `recordNavigation`, `tracer()`, and the
+  // `replay.images` policy with its image inliner. The build strips comments (scripts/strip-comments.mjs).
   { file: "packages/frontend/dist/index.mjs", maxKb: 46 },
   { file: "packages/opamp/dist/index.mjs", maxKb: 6 },
+  // The jQuery CDN build carries the whole browser SDK, rrweb included, like the frontend IIFE.
+  { file: "packages/jquery/dist/traceway-jquery.iife.global.js", maxKb: 146 },
 ];
 
 let failed = false;

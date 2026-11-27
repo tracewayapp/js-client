@@ -7,11 +7,12 @@ import type {
   Mode,
   Settings,
   SignalSelector,
+  TracewayImagePolicy,
   Trigger,
   TriggerAction,
   TriggerStep,
 } from "./types.js";
-import { MODES, SEVERITIES, SIGNALS } from "./types.js";
+import { IMAGE_POLICIES, MODES, SEVERITIES, SIGNALS } from "./types.js";
 
 export class SettingsError extends Error {}
 
@@ -352,6 +353,8 @@ export function applyOverlay(base: Settings, overlay: Json): Settings {
     if (sampleRate !== undefined) out.replay.sessionSampleRate = sampleRate;
     if (typeof overlay.replay.maskAllInputs === "boolean")
       out.replay.maskAllInputs = overlay.replay.maskAllInputs;
+    if ((IMAGE_POLICIES as readonly unknown[]).includes(overlay.replay.images))
+      out.replay.images = overlay.replay.images as TracewayImagePolicy;
   }
 
   if (isObject(overlay.metrics)) {
@@ -414,6 +417,14 @@ export function modeRank(mode: Mode): number {
   return MODE_RANK[mode];
 }
 
+/** The lower of two picture policies: `off` < `wifi` < `always`. */
+export function lowerImagePolicy(
+  a: TracewayImagePolicy,
+  b: TracewayImagePolicy,
+): TracewayImagePolicy {
+  return IMAGE_POLICIES.indexOf(a) <= IMAGE_POLICIES.indexOf(b) ? a : b;
+}
+
 /**
  * Lowers the page's ceilings to the `limits` a remote document carries: what the organization's plan accepts at
  * ingest. Rules cannot set them, and no trigger or capture can exceed them, the same as the `init()` ceilings.
@@ -451,6 +462,13 @@ export function clampToCeilings(
     );
   }
   out.replay.mode = lowerMode(out.replay.mode, ceilings.replay);
+  // No replay, no pictures in it; otherwise `replayImages` caps `replay.images`, as on the mobile SDKs.
+  out.replay.images =
+    ceilings.replay === "off"
+      ? "off"
+      : lowerImagePolicy(out.replay.images, ceilings.replayImages ?? "always");
+  // The page's own `maskAllInputs: true` is a floor: a rule can mask inputs, never unmask them.
+  if (ceilings.maskAllInputs) out.replay.maskAllInputs = true;
   out.sessions.enabled = out.sessions.enabled && ceilings.sessions;
   out.metrics.enabled = out.metrics.enabled && ceilings.metrics;
   return out;

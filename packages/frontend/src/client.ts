@@ -4,26 +4,17 @@ import {
   hasSequenceEvent,
 } from "./sequence-listener.js";
 import { RoutingLogExporter } from "./transport/routing-logs.js";
-import { LegacyTransport } from "./transport/legacy.js";
 import { forgetJson, recordJson } from "./persistence/otlp-json.js";
-import {
-  trace,
-  SpanStatusCode,
-  context,
-  propagation,
-} from "@opentelemetry/api";
+import { trace, SpanStatusCode, context } from "@opentelemetry/api";
+import type { Span, Tracer } from "@opentelemetry/api";
 import type { Logger } from "@opentelemetry/api-logs";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { ErrorsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/errors";
-import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
-import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
 import { NavigationTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
-import { UserActionInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/user-action";
 import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import type { Instrumentation } from "@opentelemetry/instrumentation";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import {
@@ -36,11 +27,7 @@ import {
   LoggerProvider,
 } from "@opentelemetry/sdk-logs";
 import type { SpanExporter } from "@opentelemetry/sdk-trace";
-import {
-  BatchSpanProcessor,
-  StackContextManager,
-  TracerProvider,
-} from "@opentelemetry/sdk-trace";
+import { BatchSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import type {
   CollectionSettings,
   FieldLookup,
@@ -49,19 +36,25 @@ import type {
   SignalName,
   SignalSelector,
   TracewayEndpoints,
+  TracewayImagePolicy,
   TriggerAction,
 } from "@tracewayapp/core";
 import {
   applyOverlay,
   ceilingsFrom,
+  consoleText,
   ControlState,
   defaultSettings,
   generateUUID,
-  parseConnectionString,
+  IMAGE_POLICIES,
   parseSettingsDocument,
   resolveEndpoints,
   RingBuffer,
+  safeJson,
+  setGuardedDebug,
+  setupWarning,
   SEVERITIES,
+  startOptions,
   TriggerEngine,
   unitHash,
   uuidToBytes,
@@ -74,9 +67,17 @@ import {
   type CollectionLimits,
 } from "./collection-budget.js";
 import { ErrorLimiter, type ErrorLimits } from "./error-limiter.js";
+import { debugLog, guarded } from "./guarded.js";
 import { debugIdsForStackTrace } from "./debug-ids.js";
-import { collectDefaultAttributes } from "./default-attributes.js";
+import { collectDefaultAttributes, viewport } from "./default-attributes.js";
+import { routeTemplate, ScreenState } from "./screen-state.js";
 import { browserResourceAttributes } from "./otel/browser-resource.js";
+import {
+  ClickInstrumentation,
+  SafeFetchInstrumentation,
+  SafeNavigationInstrumentation,
+  standInForGlobals,
+} from "./otel/instrumentations.js";
 import { LongTaskInstrumentation } from "./otel/long-tasks.js";
 import { RouteTimingInstrumentation } from "./otel/route-timing.js";
 import { WebVitalsInstrumentation } from "./otel/web-vitals.js";
@@ -151,12 +152,84 @@ export type TracewayLogLevel =
   | "error"
   | "fatal";
 
-/** What `beforeCapture` sees of an exception before it is recorded. */
-export interface CapturedException {
+/** What `beforeCapture` sees of an exception or a message before it is recorded. */
+export interface TracewayCapturedError {
+  /** What was thrown, or passed to `captureException`; undefined for a message. */
+  error?: unknown;
+  /** The exception's type (`TypeError`); undefined for a message. */
   type?: string;
   message?: string;
+  /** A message from `captureMessage`, not an exception. */
+  isMessage: boolean;
   stack?: string;
+  /** The attributes it will carry: the app's own, the page's and the screen it happened on. */
   attributes: Record<string, unknown>;
+}
+
+/** @deprecated Renamed `TracewayCapturedError`, the name the mobile SDKs use. */
+export type CapturedException = TracewayCapturedError;
+
+/**
+ * One user action traced from start to end, e.g. a checkout: a span named after it (`traceway.interaction: true`)
+ * that the requests made inside `run()` are children of. Before `init()` and after `shutdown()` it records nothing
+ * and only runs the work.
+ */
+export interface TracewayInteraction {
+  /** The trace this interaction starts (32 hex digits), or null when it records nothing. */
+  readonly traceId: string | null;
+  /** The interaction's own span id (16 hex digits), or null. */
+  readonly spanId: string | null;
+  /** Whether `end()` was called. */
+  readonly isEnded: boolean;
+  /** Runs `callback` as part of the interaction and returns what it returns; what it throws reaches the caller. */
+  run<T>(callback: () => T): T;
+  /** `callback`, wrapped to run as part of the interaction whenever it is called. */
+  bind<Args extends unknown[], Result>(
+    callback: (...args: Args) => Result,
+  ): (...args: Args) => Result;
+  /** Sets an attribute on the interaction's span, e.g. `setAttribute("cart.size", 3)`. */
+  setAttribute(key: string, value: string | number | boolean): void;
+  /** Reports `error` as an exception of this interaction and marks the interaction failed. */
+  captureException(error: unknown, attributes?: Record<string, string>): void;
+  /** Ends the interaction; only the first call counts. `failed` marks it failed without an exception. */
+  end(failed?: boolean): void;
+}
+
+/** An interaction of `span`; without one it only runs the work. */
+export function interactionOf(
+  span?: Span,
+  capture?: (error: unknown, attributes?: Record<string, string>) => void,
+): TracewayInteraction {
+  const active = span && trace.setSpan(context.active(), span);
+  const within = <T>(callback: () => T): T =>
+    active ? context.with(active, callback) : callback();
+  const ids = span?.spanContext();
+  let ended = false;
+  return {
+    traceId: ids?.traceId ?? null,
+    spanId: ids?.spanId ?? null,
+    get isEnded() {
+      return ended;
+    },
+    run: within,
+    bind:
+      (callback) =>
+      (...args) =>
+        within(() => callback(...args)),
+    setAttribute: (key, value) => {
+      if (!ended) guarded("interaction", () => span?.setAttribute(key, value));
+    },
+    captureException: (error, attributes) => {
+      span?.setStatus({ code: SpanStatusCode.ERROR });
+      within(() => capture?.(error, attributes));
+    },
+    end: (failed) => {
+      if (ended) return;
+      ended = true;
+      if (failed) span?.setStatus({ code: SpanStatusCode.ERROR });
+      span?.end();
+    },
+  };
 }
 
 export interface TelemetryEndpoint {
@@ -174,11 +247,16 @@ export interface TelemetryOptions {
   metrics?: TelemetryEndpoint;
 }
 
+/** @deprecated The options without a `token`: `telemetry` is then the only destination. */
 export interface StandaloneOptions extends TracewayFrontendOptions {
   telemetry: TelemetryOptions;
 }
 
 export interface TracewayFrontendOptions {
+  /** The project token, from the project's settings in Traceway. Without one only `telemetry` receives anything. */
+  token?: string;
+  /** The Traceway server, for a self-hosted one. Default `https://cloud.tracewayapp.com`. */
+  baseUrl?: string;
   /** Local defaults, with the same collection schema as OpAMP. Remote policy overlays these when enabled. */
   collection?: CollectionSettings;
   debug?: boolean;
@@ -192,10 +270,16 @@ export interface TracewayFrontendOptions {
   attributes?: Record<string, string>;
   ignoreErrors?: Array<string | RegExp>;
   /** Return false to drop an exception. */
-  beforeCapture?: (exception: CapturedException) => boolean;
+  beforeCapture?: (exception: TracewayCapturedError) => boolean;
 
   /** Allow session replay at all. Remote config decides between buffering and streaming it. Default true. */
   sessionRecording?: boolean;
+  /**
+   * The most the replay records of pictures: `"off"` empty boxes, `"wifi"` their URLs, `"always"` (the default)
+   * also small copies. A ceiling of `replay.images`, local or remote: the lower of the two applies
+   * (`off` < `wifi` < `always`), as with the mobile SDKs' `replayImages`. Another value counts as `"off"`.
+   */
+  replayImages?: TracewayImagePolicy;
   sessionRecordingSegmentDuration?: number;
   /** Stream every replay segment and every breadcrumb by default instead of keeping them for error clips. Default false. */
   recordAllSessions?: boolean;
@@ -249,14 +333,15 @@ export interface TracewayFrontendOptions {
    * release. The options above stay the ceiling: remote settings can only restrict them. Default true.
    */
   remoteConfig?: boolean;
-  /** Auto detects pre-OpAMP servers; legacy forces /api/report without a probe. */
+  /** @deprecated Ignored: telemetry is always sent as OTLP. */
   transport?: "auto" | "legacy" | "otlp";
   /** Delay between OTLP exports, in milliseconds. Default 1000. */
   exportDelayMs?: number;
 
   /**
-   * OTLP/HTTP base URL and/or per-signal endpoints for logs, traces and metrics.
-   * OpAMP and replay stay on Traceway. Traceway credentials are never forwarded.
+   * Sends logs, traces and metrics to another OpenTelemetry provider: an OTLP/HTTP base URL and/or per-signal
+   * endpoints. With a `token`, errors, replay, captures and remote config stay on Traceway; without one the SDK runs
+   * standalone. Traceway credentials are never forwarded.
    */
   telemetry?: TelemetryOptions;
 
@@ -370,54 +455,42 @@ export class TracewayFrontendClient {
   private deregisterInstrumentations: (() => void) | null = null;
   private routeTiming: RouteTimingInstrumentation | null = null;
   private readonly metrics: MetricsRecorder;
-  private ownsPropagator = false;
-  private ownsContextManager = false;
+  private restoreGlobals: (() => void) | null = null;
   private unloading = false;
   private started = false;
-  private readonly legacy: LegacyTransport;
   private opamp: OpampHttpClient | null = null;
   private resourceAttributes: Record<string, unknown> = {};
   private appliedConfigHash: Uint8Array | undefined;
   private describeTimer: ReturnType<typeof setTimeout> | null = null;
   private overrideTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly persistence: TelemetryPersistence;
+  private readonly screen = new ScreenState();
+  /** The path of the page's address when it was last looked at: a new one is a new screen. */
+  private addressPath: string | null = null;
+  /** The navigation record of the screen shown, while that screen has no route template yet. */
+  private arrival: SdkLogRecord | null = null;
+  /** What the exception being recorded was made of, for `beforeCapture`: set right before it is emitted. */
+  private thrown: unknown;
 
+  /** `options`, or the deprecated `init("token@https://host", options)`: see `startOptions`. */
   constructor(
-    connectionString: string | StandaloneOptions,
-    options: TracewayFrontendOptions = {},
+    start: TracewayFrontendOptions | string,
+    options?: TracewayFrontendOptions,
   ) {
-    const standalone = typeof connectionString !== "string";
-    if (standalone) {
+    options = startOptions(start, options);
+    setGuardedDebug(options.debug === true);
+    // Without a token only the telemetry destination receives anything.
+    const standalone = !options.token;
+    if (standalone)
       options = {
-        ...connectionString,
+        ...options,
         remoteConfig: false,
-        transport: "otlp",
         sessionRecording: false,
         sessions: false,
       };
-      if (
-        !options.telemetry?.url &&
-        !(
-          options.telemetry?.logs &&
-          options.telemetry?.traces &&
-          options.telemetry?.metrics
-        )
-      ) {
-        throw new Error(
-          "Standalone telemetry requires a base URL or all three signal endpoints",
-        );
-      }
-    }
-    if (options.telemetry && options.transport === "legacy") {
-      throw new Error("External telemetry requires OTLP transport");
-    }
-    const { token, apiUrl } =
-      typeof connectionString === "string"
-        ? parseConnectionString(connectionString)
-        : {
-            token: `otel:${JSON.stringify([options.telemetry?.url, options.telemetry?.logs?.url, options.telemetry?.traces?.url, options.telemetry?.metrics?.url])}`,
-            apiUrl: "",
-          };
+    const token =
+      options.token ||
+      `otel:${JSON.stringify([options.telemetry?.url, options.telemetry?.logs?.url, options.telemetry?.traces?.url, options.telemetry?.metrics?.url])}`;
     this.token = token;
     this.options = options;
     this.errorLimiter = new ErrorLimiter(options.errorLimits);
@@ -425,13 +498,8 @@ export class TracewayFrontendClient {
       token,
       options.collectionLimits,
     );
-    this.endpoints = resolveEndpoints(apiUrl);
-    this.legacy = new LegacyTransport(
-      this.endpoints.base,
-      token,
-      options.version ?? "",
-    );
-    this.legacy.enabled = options.transport === "legacy";
+    const traceway = resolveEndpoints(options.baseUrl);
+    this.endpoints = { ...traceway };
     for (const kind of ["logs", "traces", "metrics"] as const) {
       const destination = options.telemetry?.[kind];
       const base = options.telemetry?.url;
@@ -463,16 +531,28 @@ export class TracewayFrontendClient {
         : uuidv7();
     if (this.instanceId !== storedInstanceId)
       storageSet(instanceKey, this.instanceId);
-    this.ignoreErrors = options.ignoreErrors ?? DEFAULT_IGNORE_PATTERNS;
+    this.ignoreErrors = Array.isArray(options.ignoreErrors)
+      ? options.ignoreErrors
+      : DEFAULT_IGNORE_PATTERNS;
     this.globalAttributes = { ...options.attributes };
 
+    const local = parseSettingsDocument(
+      JSON.stringify(options.collection ?? {}),
+    );
+    if (
+      options.replayImages != null &&
+      !IMAGE_POLICIES.includes(options.replayImages)
+    )
+      setupWarning(
+        'replayImages must be "off", "wifi" or "always"; the replay records no pictures',
+      );
     this.control = new ControlState(
       applyOverlay(
         defaultSettings({
           recordAllSessions: options.recordAllSessions,
           baselineSampleRate: options.baselineSampleRate,
         }),
-        parseSettingsDocument(JSON.stringify(options.collection ?? {})),
+        local,
       ),
       ceilingsFrom({
         sessionRecording: options.sessionRecording,
@@ -486,6 +566,11 @@ export class TracewayFrontendClient {
         captureRouteTiming: options.captureRouteTiming,
         captureMetrics: options.captureMetrics,
         sessions: options.sessions,
+        replayImages: options.replayImages,
+        // The page's own `maskAllInputs: true` is a floor no rule lowers; left unset, a rule may unmask inputs.
+        maskAllInputs:
+          (local.replay as { maskAllInputs?: unknown } | null | undefined)
+            ?.maskAllInputs === true,
       }),
     );
     const settings = this.control.settings();
@@ -496,7 +581,7 @@ export class TracewayFrontendClient {
     this.recordings = new RecordingsTransport(
       this.endpoints.recordings,
       token,
-      (url, init) => this.legacy.recordings(String(url), init),
+      undefined,
       (segment) => {
         const accepted = this.collectionBudget.admit(
           segment.sessionId ?? null,
@@ -535,12 +620,10 @@ export class TracewayFrontendClient {
       exporter: new RoutingLogExporter(
         new PersistingLogExporter(
           options.logExporter ??
-            this.legacy.wrapLogs(
-              new OTLPLogExporter({
-                url: this.endpoints.logs,
-                headers: this.telemetryHeaders("logs"),
-              }),
-            ),
+            new OTLPLogExporter({
+              url: this.endpoints.logs,
+              headers: this.telemetryHeaders("logs"),
+            }),
           () => this.persistence.exporterOutbox(),
           (eventName) => this.canExportLog(eventName),
         ),
@@ -557,12 +640,10 @@ export class TracewayFrontendClient {
     this.spanSink = new BatchSpanProcessor({
       exporter: new PersistingSpanExporter(
         options.spanExporter ??
-          this.legacy.wrapSpans(
-            new OTLPTraceExporter({
-              url: this.endpoints.traces,
-              headers: this.telemetryHeaders("traces"),
-            }),
-          ),
+          new OTLPTraceExporter({
+            url: this.endpoints.traces,
+            headers: this.telemetryHeaders("traces"),
+          }),
         () => this.persistence.exporterOutbox(),
         () => this.control.canExport("network"),
       ),
@@ -571,11 +652,7 @@ export class TracewayFrontendClient {
     });
     if (!standalone && (options.telemetry?.url || options.telemetry?.logs)) {
       this.tracewayPersistence = new TelemetryPersistence(
-        JSON.stringify([
-          token,
-          resolveEndpoints(apiUrl).logs,
-          "session-metadata",
-        ]),
+        JSON.stringify([token, traceway.logs, "session-metadata"]),
         this.control,
         new RingBuffer<BufferedItem>({ maxBytes: 0, maxAgeMs: 0 }),
         (kind, body) => this.sendOtlpJson(kind, body, false, true),
@@ -583,7 +660,7 @@ export class TracewayFrontendClient {
       this.tracewaySink = new BatchLogRecordProcessor({
         exporter: new PersistingLogExporter(
           new OTLPLogExporter({
-            url: resolveEndpoints(apiUrl).logs,
+            url: traceway.logs,
             headers: { Authorization: `Bearer ${token}` },
           }),
           () => this.tracewayPersistence?.exporterOutbox() ?? null,
@@ -614,8 +691,7 @@ export class TracewayFrontendClient {
       detectRoute: options.detectRoutes === false ? undefined : findRoute,
     });
     this.control.onChange(() => this.applySettings());
-    if (options.remoteConfig !== false && options.transport !== "legacy")
-      this.applyCachedConfig();
+    if (options.remoteConfig !== false) this.applyCachedConfig();
   }
 
   start(): void {
@@ -642,7 +718,8 @@ export class TracewayFrontendClient {
             item.kind === "stored" ? item.batch.body : recordJson(item);
           let events = 1;
           if (item.kind === "stored") {
-            const request = JSON.parse(body);
+            // A stored body that is not JSON (a corrupt checkpoint) counts as one event, so the flush goes on.
+            const request = guarded("stored", () => JSON.parse(body), {});
             events =
               item.batch.kind === "logs"
                 ? (request.resourceLogs ?? []).reduce(
@@ -680,8 +757,8 @@ export class TracewayFrontendClient {
     );
 
     // Providers are this SDK's own and the instrumentations are bound to them, so an app that runs its own
-    // OpenTelemetry keeps its globals and never receives Traceway's records. Only W3C propagation and the context
-    // manager are global by nature; they are set when the page has none.
+    // OpenTelemetry keeps its globals and never receives Traceway's records. W3C propagation and the context manager
+    // are global by nature; see standInForGlobals.
     const attributes: Record<string, string | boolean | string[]> = {
       ...browserResourceAttributes(),
       "service.name":
@@ -698,7 +775,7 @@ export class TracewayFrontendClient {
       attributes["deployment.environment.name"] = this.options.environment;
     // Tells the server the numbers of the performance events below arrive as aggregates, so it does not count
     // an uploaded event a second time.
-    if (this.options.captureMetrics !== false && !this.legacy.enabled)
+    if (this.options.captureMetrics !== false)
       attributes["traceway.metrics"] = "aggregated";
     const resource = defaultResource().merge(
       resourceFromAttributes(attributes),
@@ -721,12 +798,7 @@ export class TracewayFrontendClient {
       ],
     });
     this.logger = this.loggerProvider.getLogger(SCOPE_NAME, SDK_VERSION);
-    this.ownsPropagator = propagation.setGlobalPropagator(
-      new W3CTraceContextPropagator(),
-    );
-    const contextManager = new StackContextManager();
-    contextManager.enable();
-    this.ownsContextManager = context.setGlobalContextManager(contextManager);
+    this.restoreGlobals = standInForGlobals();
 
     this.sessions.start();
     this.persistence.start(this.sessions.currentId());
@@ -739,28 +811,36 @@ export class TracewayFrontendClient {
       this.endpoints.metrics,
       this.endpoints.opamp,
       this.endpoints.recordings,
-      `${this.endpoints.base}/api/report`,
     ];
     const ownUrls = new RegExp(
       `^(?:${telemetryUrls.map(escapeRegExp).join("|")})(?:[?#]|$)`,
     );
-    const instrumentations: Instrumentation[] = [new ErrorsInstrumentation()];
+    const instrumentations: Instrumentation[] = [
+      new ErrorsInstrumentation({
+        // Called with what was thrown right before the record is emitted.
+        applyCustomAttributes: (error) => ((this.thrown = error), {}),
+      }),
+    ];
     if (this.options.captureNetwork !== false) {
       const networkConfig = {
         ignoreUrls: [ownUrls],
         propagateTraceHeaderCorsUrls: this.options.propagateTraceHeaderCorsUrls,
       };
       instrumentations.push(
-        new FetchInstrumentation(networkConfig),
+        new SafeFetchInstrumentation(networkConfig),
         new XhrInstrumentation(networkConfig),
       );
     }
+    // The serializer runs inside the app's console call, before the native method: it never throws, never runs the
+    // app's getters and stops at a size.
     if (this.options.captureLogs !== false)
-      instrumentations.push(new ConsoleInstrumentation());
+      instrumentations.push(
+        new ConsoleInstrumentation({ messageSerializer: consoleText }),
+      );
     if (this.options.captureNavigation !== false)
-      instrumentations.push(new NavigationInstrumentation());
+      instrumentations.push(new SafeNavigationInstrumentation());
     if (this.options.captureUserActions !== false)
-      instrumentations.push(new UserActionInstrumentation());
+      instrumentations.push(new ClickInstrumentation());
     // web-vitals 6 calls Array.prototype.at, which browsers before Chrome 92 and Safari 15.4 lack: there every
     // reported metric would throw a TypeError and arrive as an issue.
     if (
@@ -792,19 +872,13 @@ export class TracewayFrontendClient {
     if (this.options.captureResourceTiming !== false)
       this.startResourceTiming(ownUrls);
     this.metrics.start();
+    guarded("screen", () => this.screenNow());
     const sessionId = this.sessions.currentId();
     if (sessionId) this.metrics.sessionStarted(sessionId);
 
     this.applySettings();
-    if (
-      this.options.remoteConfig !== false &&
-      this.options.transport !== "legacy"
-    )
-      this.startOpamp();
-    if (!this.opamp) {
-      this.legacy.possible = this.legacy.enabled;
-      this.confirmCaptures();
-    }
+    if (this.options.remoteConfig !== false) this.startOpamp();
+    if (!this.opamp) this.confirmCaptures();
     for (const capture of this.readLocalCaptures()) {
       this.streamFor(
         capture.signals,
@@ -814,42 +888,95 @@ export class TracewayFrontendClient {
         `local:${capture.triggerId}`,
       );
     }
+    debugLog(`started (${this.endpoints.logs}), session ${sessionId}`);
   }
 
-  startInteraction(name: string) {
-    const span = this.tracerProvider
-      ?.getTracer(SCOPE_NAME, SDK_VERSION)
-      .startSpan(name, {
-        attributes: { "traceway.interaction": true },
-      });
-    const interactionContext = span
-      ? trace.setSpan(context.active(), span)
-      : context.active();
-    let ended = false;
-    return {
-      traceId: span?.spanContext().traceId ?? null,
-      run: <T>(callback: () => T): T =>
-        context.with(interactionContext, callback),
-      bind:
-        <Args extends unknown[], Result>(callback: (...args: Args) => Result) =>
-        (...args: Args): Result =>
-          context.with(interactionContext, () => callback(...args)),
-      captureException: (
-        error: unknown,
-        attributes?: Record<string, string>,
-      ) => {
-        span?.setStatus({ code: SpanStatusCode.ERROR });
-        context.with(interactionContext, () =>
-          this.captureException(error, attributes),
-        );
-      },
-      end: () => {
-        if (!ended) {
-          ended = true;
-          span?.end();
-        }
-      },
+  startInteraction(
+    name: string,
+    attributes?: Record<string, string | number | boolean>,
+  ): TracewayInteraction {
+    return interactionOf(
+      this.tracerProvider
+        ?.getTracer(SCOPE_NAME, SDK_VERSION)
+        .startSpan(name, {
+          attributes: { ...attributes, "traceway.interaction": true },
+        }),
+      (error, attributes) => this.captureException(error, attributes),
+    );
+  }
+
+  /** The tracer the SDK's own spans come from; see the top-level `tracer()`. */
+  tracer(): Tracer | undefined {
+    return this.tracerProvider?.getTracer(SCOPE_NAME, SDK_VERSION);
+  }
+
+  /**
+   * The screen shown now. The address is followed: a new path is a new screen, named by the template of the route
+   * the app's router shows there when it can be read. A screen `recordNavigation` reported stays until the address
+   * changes.
+   */
+  private screenNow(): ScreenState {
+    const path = location.pathname;
+    const screen = this.screen;
+    if (path !== this.addressPath) {
+      this.addressPath = path;
+      screen.navigated(path, Date.now());
+    }
+    if (
+      !screen.route &&
+      screen.path === path &&
+      this.options.detectRoutes !== false
+    ) {
+      const found = findRoute(path);
+      if (found?.settled) screen.route = routeTemplate(found.template);
+    }
+    return screen;
+  }
+
+  /** The mobile SDKs' screen keys: all of them, or only the name and route on a navigation. */
+  private stampScreen(record: SdkLogRecord, navigation: boolean): void {
+    const screen = this.screenNow();
+    const attributes = navigation
+      ? { "app.screen.name": screen.name(), "app.screen.route": screen.route }
+      : { ...screen.context(Date.now()), viewport: viewport() };
+    for (const [key, value] of Object.entries(attributes))
+      if (value != null && record.attributes[key] === undefined)
+        record.setAttribute(key, value);
+    if (navigation && !screen.route) this.arrival = record;
+  }
+
+  /** A navigation the app reports itself; see the top-level `recordNavigation()`. */
+  recordNavigation(
+    path: string,
+    action = "push",
+    from?: string,
+    route?: string,
+  ): void {
+    if (typeof path !== "string") return;
+    action = String(action);
+    const screen = this.screenNow();
+    // A removal takes a screen away without the user arriving anywhere, as on the mobile SDKs: the screen stays.
+    const arrived = action !== "remove";
+    const attributes: Record<string, string> = {
+      "url.full": arrived ? path : "",
+      "navigation.action": action,
+      // The session timeline labels a navigation by this.
+      "browser.navigation.type": action,
     };
+    if (arrived) {
+      screen.navigated(path, Date.now(), route);
+      this.metrics.navigated(path, action, screen.route);
+      attributes["navigation.to"] = path;
+    }
+    if (from != null) attributes["navigation.from"] = String(from);
+    const name = screen.name();
+    if (name) attributes["app.screen.name"] = name;
+    if (screen.route) attributes["app.screen.route"] = screen.route;
+    this.logger?.emit({
+      eventName: "browser.navigation",
+      severityNumber: SeverityNumber.INFO,
+      attributes,
+    });
   }
 
   captureException(error: unknown, attributes?: Record<string, string>): void {
@@ -867,6 +994,7 @@ export class TracewayFrontendClient {
       }
       err = new Error(message);
     }
+    this.thrown = error;
     this.logger?.emit({
       eventName: EVENT_EXCEPTION,
       severityNumber: SeverityNumber.ERROR,
@@ -919,8 +1047,7 @@ export class TracewayFrontendClient {
       "traceway.action.category": category,
       "traceway.action.name": name,
     };
-    if (data !== undefined)
-      attributes["traceway.action.data"] = JSON.stringify(data);
+    if (data !== undefined) attributes["traceway.action.data"] = safeJson(data);
     this.logger?.emit({
       eventName: EVENT_ACTION,
       severityNumber: SeverityNumber.INFO,
@@ -1049,26 +1176,31 @@ export class TracewayFrontendClient {
     this.healthTimer = null;
     if (this.overrideTimer !== null) clearTimeout(this.overrideTimer);
     this.overrideTimer = null;
-    this.stopSequenceActions?.();
-    this.stopSequenceActions = null;
-    this.opamp?.stop();
-    this.opamp = null;
     if (this.describeTimer !== null) clearTimeout(this.describeTimer);
-    this.sessions.close();
-    this.deregisterInstrumentations?.();
-    this.deregisterInstrumentations = null;
+    const stop = (steps: Array<() => void>) => {
+      // One by one: a step that fails must not leave the listeners, wrappers or timers of the others running.
+      for (const step of steps) guarded("shutdown", step);
+    };
+    // Released before anything is awaited: a client started while this one is still flushing installs its own,
+    // and undoing them afterwards would take that client's `traceparent` propagation away.
+    stop([
+      () => this.stopSequenceActions?.(),
+      () => this.opamp?.stop(),
+      () => this.sessions.close(),
+      () => this.deregisterInstrumentations?.(),
+      () => this.restoreGlobals?.(),
+    ]);
+    this.stopSequenceActions = this.opamp = null;
+    this.deregisterInstrumentations = this.restoreGlobals = null;
     this.routeTiming = null;
-    // Released before anything is awaited: a client started while this one is still flushing registers its own,
-    // and disabling them afterwards would take that client's `traceparent` propagation away.
-    if (this.ownsPropagator) propagation.disable();
-    if (this.ownsContextManager) context.disable();
-    this.ownsPropagator = this.ownsContextManager = false;
     await this.flush().catch(() => undefined);
-    this.metrics.stop();
-    this.persistence.stop();
-    this.tracewayPersistence?.stop();
-    this.replay.stop();
-    this.sessions.stop();
+    stop([
+      () => this.metrics.stop(),
+      () => this.persistence.stop(),
+      () => this.tracewayPersistence?.stop(),
+      () => this.replay.stop(),
+      () => this.sessions.stop(),
+    ]);
     await Promise.all([
       this.tracewaySink?.shutdown().catch(() => undefined),
       this.loggerProvider?.shutdown().catch(() => undefined),
@@ -1196,9 +1328,7 @@ export class TracewayFrontendClient {
 
   /** One attempt; the recorder decides what a failure means. Resolves with the status, 0 without an answer. */
   private sendMetrics(body: string, keepalive: boolean): Promise<number> {
-    // Nothing a retry could fix: this transport has no metrics endpoint.
-    if (this.legacy.enabled || typeof fetch === "undefined")
-      return Promise.resolve(400);
+    if (typeof fetch === "undefined") return Promise.resolve(400);
     return fetch(this.endpoints.metrics, {
       method: "POST",
       headers: {
@@ -1219,6 +1349,19 @@ export class TracewayFrontendClient {
 
   setRoute(template: string | null): void {
     this.metrics.setRoute(template);
+    const screen = this.screenNow();
+    const route = (screen.route = routeTemplate(template));
+    // A router names the route right after it changed the address: the navigation that arrived here gets it too,
+    // set on the object as it was emitted already.
+    const arrival = this.arrival;
+    this.arrival = null;
+    if (route && arrival?.attributes["app.screen.name"] === screen.path) {
+      Object.assign(arrival.attributes, {
+        "app.screen.name": route,
+        "app.screen.route": route,
+      });
+      forgetJson(arrival);
+    }
   }
 
   metric(
@@ -1281,16 +1424,6 @@ export class TracewayFrontendClient {
     );
     if (!body) return "drop";
     try {
-      await this.legacy.ready;
-      if (this.legacy.enabled) {
-        if (kind === "traces") return "sent";
-        const response = await this.legacy.sendLogs(body, keepalive);
-        return response.ok
-          ? "sent"
-          : response.status === 429 || response.status >= 500
-            ? "retry"
-            : "drop";
-      }
       const response = await fetch(
         tracewayOnly
           ? `${this.endpoints.base}/api/otel/v1/logs`
@@ -1343,9 +1476,6 @@ export class TracewayFrontendClient {
   private startOpamp(): void {
     const instanceUid = uuidToBytes(this.instanceId);
     if (!instanceUid || typeof fetch === "undefined") return;
-    let connected = false;
-    const canUseLegacy =
-      this.options.transport !== "otlp" && !this.options.telemetry;
     this.opamp = new OpampHttpClient({
       endpoint: this.endpoints.opamp,
       headers: { Authorization: `Bearer ${this.token}` },
@@ -1363,30 +1493,18 @@ export class TracewayFrontendClient {
       appliedConfigHash: this.appliedConfigHash,
       describe: () => this.describe(),
       onRemoteConfig: (config) => this.applyRemoteConfig(config),
-      onUnavailable: () => {
-        if (!connected && canUseLegacy) this.legacy.enabled = true;
-      },
-      onConnected: () => {
-        connected = true;
-        this.legacy.enabled = false;
-        this.legacy.possible = false;
-      },
+      onUnavailable: () =>
+        debugLog("remote config unavailable; local settings apply", undefined, true),
+      // A server without remote config: the cached settings came from elsewhere.
       onUnsupported: () => {
-        if (canUseLegacy) {
-          this.legacy.enabled = true;
-          this.control.applyRemote({});
-        }
+        debugLog("this server has no remote config; local settings apply");
+        this.control.applyRemote({});
       },
-      onUnauthorized: () => {
-        if (this.options.debug)
-          console.warn(
-            "Traceway: the project token was rejected; remote config is off",
-          );
-      },
+      onUnauthorized: () =>
+        debugLog("the project token was rejected; remote config is off"),
     });
-    this.legacy.possible = canUseLegacy;
     this.opamp.start();
-    this.legacy.ready = this.opamp.poll().then(
+    void this.opamp.poll().then(
       () => this.confirmCaptures(),
       () => this.confirmCaptures(),
     );
@@ -1420,7 +1538,13 @@ export class TracewayFrontendClient {
     let count = 0;
     for (const [key, value] of Object.entries(this.globalAttributes)) {
       if (count++ >= 64) break;
-      if (key.length <= 128 && value.length <= 1024)
+      // Set by the app without a type check, a value may be anything (`currentUser?.id` is undefined).
+      if (
+        key.length <= 128 &&
+        (typeof value === "string"
+          ? value.length <= 1024
+          : ["number", "boolean"].includes(typeof value))
+      )
         nonIdentifying[key] = value;
     }
     const sessionId = this.sessions.currentId();
@@ -1443,6 +1567,7 @@ export class TracewayFrontendClient {
     try {
       overlay = parseSettingsDocument(body);
     } catch (err) {
+      debugLog("remote config rejected", err);
       return {
         applied: false as const,
         errorMessage: err instanceof Error ? err.message : String(err),
@@ -1453,6 +1578,7 @@ export class TracewayFrontendClient {
       b.toString(16).padStart(2, "0"),
     ).join("");
     storageSet(this.configCacheKey(), JSON.stringify({ hash, body }));
+    debugLog(`remote config applied (${hash})`);
     this.logger?.emit({
       eventName: EVENT_CONFIG_APPLIED,
       severityNumber: SeverityNumber.INFO,
@@ -1536,6 +1662,7 @@ export class TracewayFrontendClient {
     const session = this.sessions.current();
     this.replay.apply(this.control.replayMode(), {
       maskAllInputs: settings.replay.maskAllInputs,
+      images: settings.replay.images,
       sessionSampled:
         session !== null &&
         unitHash(session.id) < settings.replay.sessionSampleRate,
@@ -1546,31 +1673,47 @@ export class TracewayFrontendClient {
 
   private scheduleHealth(): void {
     if (this.healthTimer !== null) return;
-    this.healthTimer = setTimeout(() => {
-      this.healthTimer = null;
-      this.logger?.emit({
-        eventName: "traceway.collection.health",
-        severityNumber: SeverityNumber.INFO,
-        attributes: {
-          ...this.collectionBudget.snapshot(),
-          "traceway.error.suppressed_total": this.errorLimiter.totalSuppressed,
-          "traceway.context.evicted": this.buffer.evictedCount,
-          "traceway.replay.failed_segments": this.recordings.failedSegments,
-        },
-      });
-      // The session row needs to learn once that data was dropped; its closing event carries the totals.
-      const session = this.sessions.current();
-      if (session && !this.healthReported)
-        this.emitSessionEvent(EVENT_SESSION_UPDATE, session);
-      this.healthReported = true;
-      this.healthDelayMs = Math.min(
-        this.healthDelayMs * 2,
-        MAX_HEALTH_DELAY_MS,
-      );
-    }, this.healthDelayMs);
+    this.healthTimer = setTimeout(
+      () =>
+        guarded("health", () => {
+          this.healthTimer = null;
+          this.logger?.emit({
+            eventName: "traceway.collection.health",
+            severityNumber: SeverityNumber.INFO,
+            attributes: {
+              ...this.collectionBudget.snapshot(),
+              "traceway.error.suppressed_total":
+                this.errorLimiter.totalSuppressed,
+              "traceway.context.evicted": this.buffer.evictedCount,
+              "traceway.replay.failed_segments": this.recordings.failedSegments,
+            },
+          });
+          // The session row needs to learn once that data was dropped; its closing event carries the totals.
+          const session = this.sessions.current();
+          if (session && !this.healthReported)
+            this.emitSessionEvent(EVENT_SESSION_UPDATE, session);
+          this.healthReported = true;
+          this.healthDelayMs = Math.min(
+            this.healthDelayMs * 2,
+            MAX_HEALTH_DELAY_MS,
+          );
+        }),
+      this.healthDelayMs,
+    );
   }
 
   private enrichLog(record: SdkLogRecord, signal: RecordSignal): boolean {
+    // Where the page was, with the keys of the mobile SDKs: on issues, log lines and actions, and the screen
+    // arrived at on a navigation.
+    if (
+      ["errors", "messages", "console", "userActions", "navigation"].includes(
+        signal,
+      ) ||
+      record.eventName === EVENT_ACTION
+    )
+      guarded("screen", () =>
+        this.stampScreen(record, signal === "navigation"),
+      );
     if (signal !== "errors" && signal !== "messages" && signal !== "custom")
       return true;
     const inheritedAttributes =
@@ -1582,6 +1725,8 @@ export class TracewayFrontendClient {
     }
     if (signal === "custom") return true;
 
+    const error = this.thrown;
+    this.thrown = undefined;
     const attrs = record.attributes;
     const type =
       attrs["exception.type"] === undefined
@@ -1601,27 +1746,24 @@ export class TracewayFrontendClient {
         : String(attrs["exception.stacktrace"]);
     // Patterns match the "Type: message" line only: matching stack frames would let a function named like a
     // pattern (any handleTimeout for the default /timeout/i) silence every error that passes through it.
-    if (
-      this.ignored(
-        type && message ? `${type}: ${message}` : (message ?? type ?? ""),
-      )
-    ) {
-      return false;
-    }
+    const line = type && message ? `${type}: ${message}` : (message ?? type ?? "");
+    const drop = (by: string) => (debugLog(`dropped by ${by}: ${line}`), false);
+    if (this.ignored(line)) return drop("ignoreErrors");
     if (this.options.beforeCapture) {
       try {
         if (
           this.options.beforeCapture({
+            error: signal === "errors" ? error : undefined,
             type,
             message,
+            isMessage: signal === "messages",
             stack,
             attributes: { ...attrs },
           }) === false
         )
-          return false;
+          return drop("beforeCapture");
       } catch (err) {
-        if (this.options.debug)
-          console.error("Traceway: beforeCapture callback threw:", err);
+        debugLog("beforeCapture threw", err);
       }
     }
     if (signal === "messages" && attrs[ATTR_EXCEPTION_ID] === undefined)
@@ -1632,7 +1774,7 @@ export class TracewayFrontendClient {
       );
       if (suppressed === null) {
         this.scheduleHealth();
-        return false;
+        return drop("errorLimits");
       }
       if (suppressed > 0)
         record.setAttribute("traceway.error.suppressed_count", suppressed);
@@ -1654,7 +1796,7 @@ export class TracewayFrontendClient {
     for (const pattern of this.ignoreErrors) {
       if (typeof pattern === "string") {
         if (text.includes(pattern)) return true;
-      } else {
+      } else if (pattern instanceof RegExp) {
         pattern.lastIndex = 0;
         if (pattern.test(text)) return true;
       }
@@ -1664,17 +1806,6 @@ export class TracewayFrontendClient {
 
   private observe(observed: ObservedRecord): void {
     if (observed.item.kind === "log") this.metrics.onLog(observed.item.record);
-    this.legacy.observe(observed);
-    if (
-      this.legacy.enabled &&
-      observed.signal === "messages" &&
-      observed.routed === "stream"
-    ) {
-      this.runAction(
-        { type: "flush", signals: ["*"], lookbackSeconds: 30, replay: true },
-        String(observed.lookup(`attributes.${ATTR_EXCEPTION_ID}`)),
-      );
-    }
     if (observed.signal === "control") return;
     if (this.options.captureHttpServerErrors && observed.item.kind === "span") {
       const status = observed.item.span.attributes["http.response.status_code"];
@@ -1973,10 +2104,11 @@ export class TracewayFrontendClient {
     this.overrideTimer = setTimeout(
       () => {
         this.overrideTimer = null;
-        this.applyReplay();
+        guarded("override", () => this.applyReplay());
         this.scheduleOverrideExpiry();
       },
-      Math.max(0, expiry - Date.now()) + 1,
+      // Browsers run a longer delay than 2^31 - 1 ms at once; a capture that far off is looked at again later.
+      Math.min(Math.max(0, expiry - Date.now()) + 1, 2 ** 31 - 1),
     );
   }
 
@@ -2000,6 +2132,8 @@ export class TracewayFrontendClient {
         "traceway.error.suppressed_total": this.errorLimiter.totalSuppressed,
         "traceway.context.evicted": this.buffer.evictedCount,
         "traceway.replay.failed_segments": this.recordings.failedSegments,
+        "traceway.replay.images": this.control.settings().replay.images,
+        "traceway.replay.image_bytes": this.replay.imageBytes(),
       },
     });
   }
@@ -2068,4 +2202,34 @@ export class TracewayFrontendClient {
       void this.opamp.poll();
     void this.persistence.exporterOutbox()?.drain();
   }
+}
+
+// The public methods run contained (CONTRACT §13.1): an argument the SDK cannot use (`setRoute(42)`) or a getter of
+// the app's that throws never reaches the caller. What they would return is then undefined.
+for (const name of [
+  "captureException",
+  "captureMessage",
+  "log",
+  "recordAction",
+  "track",
+  "setAttribute",
+  "setAttributes",
+  "removeAttribute",
+  "clearAttributes",
+  "currentSessionId",
+  "setMetricDimension",
+  "setRoute",
+  "metric",
+  "count",
+  "startInteraction",
+  "recordNavigation",
+  "tracer",
+] as const) {
+  const method = TracewayFrontendClient.prototype[name] as Function;
+  TracewayFrontendClient.prototype[name] = function (
+    this: TracewayFrontendClient,
+    ...args: unknown[]
+  ) {
+    return guarded(name, () => method.apply(this, args));
+  } as never;
 }

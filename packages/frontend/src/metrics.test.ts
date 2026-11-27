@@ -48,9 +48,9 @@ class FakePerformanceObserver {
 
 function start(options: TracewayFrontendOptions = {}): TracewayFrontendClient {
   logExporter = new InMemoryLogRecordExporter();
-  client = new TracewayFrontendClient(
-    "tok_123@https://traceway.test/api/report",
-    {
+  client = new TracewayFrontendClient({
+      token: "tok_123",
+      baseUrl: "https://traceway.test",
       logExporter,
       spanExporter: new InMemorySpanExporter(),
       captureWebVitals: false,
@@ -63,8 +63,7 @@ function start(options: TracewayFrontendOptions = {}): TracewayFrontendClient {
       remoteConfig: false,
       version: "4.2.0",
       ...options,
-    },
-  );
+  });
   client.start();
   return client;
 }
@@ -386,6 +385,60 @@ describe("device metrics", () => {
     expect(
       views.map((p: any) => [dims(p)["url.path"], Number(p.asDouble ?? p.asInt)]),
     ).toEqual([["/orders/:id", 2]]);
+  });
+
+  // JS2-5: a memory router, a modal or a wizard step reported with recordNavigation is a view, as on Android.
+  function pageViews(): Array<[string, number]> {
+    return payloads()[0]!
+      .metrics["browser.page_view"].sum.dataPoints.map((p: any): [string, number] => [
+        dims(p)["url.path"]!,
+        Number(p.asDouble ?? p.asInt),
+      ])
+      .sort();
+  }
+
+  it("counts a view for every screen recordNavigation reports, named by its route (JS2-5)", async () => {
+    start();
+    // The first screen a memory router reports is the page's landing view.
+    client.recordNavigation("/orders/42", "push", undefined, "/orders/:id");
+    client.recordNavigation("/orders/42", "replace");
+    client.recordNavigation("/cart", "push", "/orders/42", "/cart");
+    // A removal is not an arrival.
+    client.recordNavigation("/cart", "remove");
+    client.recordNavigation("/checkout/1", "push", "/cart");
+    await client.flush();
+    expect(pageViews()).toEqual([
+      ["/cart", 1],
+      ["/orders/:id", 1],
+    ]);
+  });
+
+  it("counts a route change the SDK follows and the app also reports once: one view, not two", async () => {
+    start();
+    history.pushState(null, "", "/orders/42");
+    client.recordNavigation("/orders/42", "push", undefined, "/orders/:id");
+    history.pushState(null, "", "/cart");
+    client.recordNavigation("/cart", "push", "/orders/42", "/cart");
+    history.pushState(null, "", "/done");
+    await client.flush();
+    expect(pageViews()).toEqual([
+      ["/", 1],
+      ["/cart", 1],
+      ["/orders/:id", 1],
+    ]);
+  });
+
+  it("starts a new view for a screen reported a while after the address changed, e.g. a modal", async () => {
+    start();
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 5_000);
+    client.recordNavigation("/orders/modal", "push");
+    client.recordNavigation("/", "pop");
+    await client.flush();
+    expect(pageViews()).toEqual([
+      ["/", 1],
+      ["/orders/modal", 1],
+    ]);
   });
 
   it("retries a failed upload once, on the next page load, as the same batch", async () => {

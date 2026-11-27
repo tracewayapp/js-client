@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { TracewayProvider, useTraceway } from "@tracewayapp/react";
-import { connectionString, options, mountActions } from "./shared";
+import { token, baseUrl, options, mountActions } from "./shared";
 function App() {
   const api = useTraceway();
   React.useEffect(() => {
@@ -24,7 +24,7 @@ function App() {
   );
 }
 createRoot(document.querySelector("#app")).render(
-  <TracewayProvider connectionString={connectionString} options={options}>
+  <TracewayProvider token={token} baseUrl={baseUrl} options={options}>
     <App />
   </TracewayProvider>,
 );

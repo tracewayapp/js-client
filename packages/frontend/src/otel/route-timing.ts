@@ -1,4 +1,5 @@
 import { SeverityNumber } from "@opentelemetry/api-logs";
+import { guarded } from "../guarded.js";
 import { EVENT_ROUTE_TIMING } from "./events.js";
 import {
   LogInstrumentation,
@@ -45,7 +46,8 @@ export class RouteTimingInstrumentation extends LogInstrumentation {
   private originals: Partial<Record<HistoryMethod, History[HistoryMethod]>> =
     {};
   private wrappers: Partial<Record<HistoryMethod, History[HistoryMethod]>> = {};
-  private readonly onPopState = () => this.routeChanged("traverse");
+  private readonly onPopState = () =>
+    guarded("routes", () => this.routeChanged("traverse"));
   private readonly onVisibility = () => {
     // Timers and rendering are throttled in a hidden tab, so the measurement would be of the throttling.
     if (document.visibilityState === "hidden") this.discard();
@@ -79,13 +81,12 @@ export class RouteTimingInstrumentation extends LogInstrumentation {
         ...args: Parameters<History[HistoryMethod]>
       ) {
         const result = original.apply(this, args);
-        try {
+        // Measuring must never break navigation.
+        guarded("routes", () =>
           instrumentation.routeChanged(
             method === "pushState" ? "push" : "replace",
-          );
-        } catch {
-          // Measuring must never break navigation.
-        }
+          ),
+        );
         return result;
       };
       this.originals[method] = original;
@@ -158,7 +159,10 @@ export class RouteTimingInstrumentation extends LogInstrumentation {
 
   private schedule(delayMs: number): void {
     if (this.timer !== null) clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.check(), delayMs);
+    this.timer = setTimeout(
+      () => guarded("routes", () => this.check()),
+      delayMs,
+    );
   }
 
   private check(): void {

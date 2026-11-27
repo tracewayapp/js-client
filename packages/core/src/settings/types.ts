@@ -43,11 +43,26 @@ export interface SignalSettings {
   minSeverity?: Severity;
 }
 
+/**
+ * Pictures in the replay. Browser: `off` records every image as an empty box of its size, `wifi` (the default)
+ * records image URLs, which the replay loads, and `always` also puts small copies of the page's own images into the
+ * recording. Mobile: `wifi` uploads pictures on an unmetered network only. The `replayImages` option caps the
+ * setting: the lower of the two applies (`off` < `wifi` < `always`).
+ */
+export type TracewayImagePolicy = "off" | "wifi" | "always";
+
+export const IMAGE_POLICIES: readonly TracewayImagePolicy[] = [
+  "off",
+  "wifi",
+  "always",
+];
+
 export interface ReplaySettings {
   mode: Mode;
   /** Share of sessions whose replay may stream; the rest keep replay buffered. Decided per session id. */
   sessionSampleRate: number;
   maskAllInputs: boolean;
+  images: TracewayImagePolicy;
 }
 
 export interface BufferSettings {
@@ -189,6 +204,10 @@ export interface Ceilings {
   replay: Mode;
   sessions: boolean;
   metrics: boolean;
+  /** The most `replay.images` may allow (the `replayImages` option): the lower of the two applies. Absent: `always`. */
+  replayImages?: TracewayImagePolicy;
+  /** The page set `replay.maskAllInputs: true` itself: no remote setting unmasks inputs. */
+  maskAllInputs?: boolean;
 }
 
 /** Local collection policy; omitted fields retain the SDK defaults. */

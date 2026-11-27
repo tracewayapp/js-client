@@ -17,6 +17,12 @@ Official JavaScript / TypeScript client SDKs for [Traceway](https://tracewayapp.
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
+## Changes in 2.1.0
+
+The browser SDK starts with `init({ token: "YOUR_TOKEN" })`. It sends to Traceway Cloud unless `baseUrl` names a self-hosted server, every other option goes in the same object, and the React, Vue, Svelte and jQuery packages take the same `token` and `baseUrl`. Upgrading from 2.0: the connection string still works, with one deprecation warning that names the new form. `token@https://host/api/report` becomes `{ token, baseUrl: "https://host" }`, and for Traceway Cloud just `{ token }`; every variation of the old string (with or without `/api` or `/api/report`, a trailing slash, no scheme) keeps working.
+
+Exceptions, messages, log lines and actions now say which screen the page showed, with the keys of the mobile SDKs (`app.screen.name`, `app.screen.route`, …), and `recordNavigation` reports navigation the address does not show. `tracer()` returns the SDK's OpenTelemetry tracer for spans of your own. `replay.images` decides what the replay shows of pictures, and the `traceway-mask` and `traceway-blank` classes hide parts of the page from it. The SDK never takes the page down: a failure of its own code is contained, and `debug: true` logs it, along with every dropped event and why. `startInteraction` returns a `TracewayInteraction` and `beforeCapture` gets a `TracewayCapturedError`, with the names the mobile SDKs use. The legacy `/api/report` transport and its auto-probe are removed: the SDK always sends OTLP, and the `transport` option is ignored. All packages are released together as 2.1.0. See the [CHANGELOG](CHANGELOG.md) for every change.
+
 ## Changes in 2.0.1
 
 Browser metrics now use route templates from supported routers automatically. React data routers can be passed to `TracewayProvider` with `router={router}`; apps using React Router's declarative mode or the Next.js App Router can use `useTracewayRoute(pathname, params)`. See [route setup by framework](packages/frontend/README.md#route-names).
@@ -38,15 +44,15 @@ With a CDN script, change the pinned major from `@1` to `@2`: `https://cdn.jsdel
 
 | If your v1 app uses… | What to do in v2 |
 | --- | --- |
-| `init(connectionString, options)` or a framework provider | Keep the existing project token and URL, including a URL ending in `/api/report`. Initialize once per page: a second `init()` is ignored. To reinitialize with different options, call `await shutdown()` first. |
+| `init(connectionString, options)` or a framework provider | Start with `init({ token, ...options })`, or the `token` prop or field of the provider or plugin, with the project token you already have. Add `baseUrl` only for a self-hosted server (see [Changes in 2.1.0](#changes-in-210) for how the old string maps). Initialize once per page: a second `init()` is ignored. To reinitialize with different options, call `await shutdown()` first. |
 | `captureException`, `captureMessage`, `recordAction`, or session attributes (`setAttribute`, `setAttributes`, `removeAttribute`, `clearAttributes`) | Keep these calls. Pass per-error string attributes as the second argument to `captureException(error, attributes)` or `captureExceptionWithAttributes(error, attributes)`. Remove the old `distributedTraceId` option from both calls. For explicit correlation across a user action, use `startInteraction(name)` and its `run`, `captureException`, and `end` methods. |
 | `traceway-trace-id`, `DISTRIBUTED_TRACE_HEADER`, `getActiveDistributedTraceId()`, or `createAxiosInterceptor()` | Remove the custom header and interceptor. The SDK instruments browser fetch and XHR (including Axios) and propagates W3C `traceparent` on same-origin requests. For a cross-origin API, add its URL pattern to `propagateTraceHeaderCorsUrls` and allow `traceparent` in the API's CORS policy. |
 | `installGlobalHandlers`, `installConsoleInstrumentation`, `installNavigationInstrumentation`, or `formatBrowserStackTrace` | Let `init()` install the handlers and pass the original error to `captureException()`. Import legacy report types such as `CollectionFrame` from `@tracewayapp/core` if you still consume that format. |
-| A `beforeCapture` callback that reads `stackTrace` | Read `type`, `message`, `stack`, and `attributes` from the callback argument. Return `false` to drop the event. `ignoreErrors` matches the error type and message. |
+| A `beforeCapture` callback that reads `stackTrace` | Read `error`, `type`, `message`, `isMessage`, `stack`, and `attributes` from the callback argument (`TracewayCapturedError`). Return `false` to drop the event. `ignoreErrors` matches the error type and message. |
 | `eventsWindowMs`, `eventsMaxCount`, `debounceMs`, or `retryDelayMs` | Set retention with `collection.buffer.maxAgeSeconds` (seconds) and `collection.buffer.maxBytes` (bytes). Use `exportDelayMs` for log and span batching. The SDK manages retries for failed exports. |
 | `recordAllSessions` or error-triggered replay | Keep `recordAllSessions: true` to stream every session's replay and breadcrumbs. Without it, errors and messages stream, most breadcrumbs and replay are buffered, and the built-in exception trigger can upload up to ten minutes of breadcrumbs and a 30-second clip. |
 | `flush()` before a redirect or after an error | Keep it. In v2 `flush()` only sends what is queued. It no longer stops the recorder or ends the session, and it does not release buffered breadcrumbs. |
-| A self-hosted server that only accepts v1 reports | Nothing by default: the connected setup probes OpAMP and falls back to `/api/report` when the server has no such endpoint. For a known older server, set `transport: 'legacy'` to skip the probe. Use an OpAMP- and OTLP-capable Traceway server for remote rules, request spans, performance metrics, and the Grafana split below. |
+| A self-hosted server that only accepts v1 reports | Upgrade the server first: the SDK sends OTLP only, so a server without the OTLP endpoints receives nothing. A server without OpAMP (it answers 404, 405 or 501) still receives everything; remote config is then off and the local settings apply. |
 
 **Collection and metrics.** Each signal can stream, stay buffered on the device, or be switched off. `flush()` sends queued exports and pending metrics. A trigger or capture can release buffered history. Performance metrics aggregate on the device and export every five minutes by default, even when individual performance events are buffered. Use `track()` for a named event, `count()` for a counter, and `metric()` for a distribution.
 
@@ -58,27 +64,31 @@ With a CDN script, change the pinned major from `@1` to `@2`: `https://cdn.jsdel
 
 ## Browser setups
 
-Choose one initialization below. Replace the example hosts with your own. For the first two, use the connection string from your Traceway browser project. In a framework wrapper, pass the same Traceway connection string and options to its provider or plugin. For standalone mode, pass the whole options object in the wrapper's `connectionString` field or argument.
+Choose one initialization below. For the first two, use the token of your Traceway browser project, here from the `VITE_TRACEWAY_TOKEN` environment variable (`NEXT_PUBLIC_TRACEWAY_TOKEN` in Next.js, `PUBLIC_TRACEWAY_TOKEN` in SvelteKit). The SDK sends to Traceway Cloud; for a self-hosted server, add `baseUrl: import.meta.env.VITE_TRACEWAY_URL`. The collector hosts are examples: replace them with your own. In a framework wrapper, pass `token` (and `baseUrl`) to its provider or plugin and the other options in `options`. For standalone mode, leave out the token.
 
 ### 1. OpAMP, RUM, and telemetry on one Traceway server
 
 ```ts
 import { init } from '@tracewayapp/frontend';
 
-init('PROJECT_TOKEN@https://traceway.example.com', {
+init({
+  token: import.meta.env.VITE_TRACEWAY_TOKEN,
   serviceName: 'shop-web',
   environment: 'production',
 });
 ```
 
-The browser polls `/api/otel/v1/opamp` for collection rules, exports to `/api/otel/v1/logs`, `/api/otel/v1/traces`, and `/api/otel/v1/metrics`, and uploads rrweb replay clips to `/api/recordings` on that same host. To change what browsers collect, open the **Data Collection** page in the project's sidebar in Traceway. To check the installation in a test project, capture an exception after interacting with the page and open its replay from the issue.
+The browser polls `/api/otel/v1/opamp` for collection rules, exports to `/api/otel/v1/logs`, `/api/otel/v1/traces`, and `/api/otel/v1/metrics`, and uploads rrweb replay clips to `/api/recordings` on Traceway Cloud (`https://cloud.tracewayapp.com`), or on the `baseUrl` server. To change what browsers collect, open the **Data Collection** page in the project's sidebar in Traceway. To check the installation in a test project, capture an exception after interacting with the page and open its replay from the issue.
 
 ### 2. OpAMP, issues, and session replay on Traceway, telemetry on Grafana
+
+This uses the `telemetry` option, which sends logs, traces and metrics to any OTLP/HTTP endpoint; see [Send telemetry to another OpenTelemetry provider](packages/frontend/README.md#send-telemetry-to-another-opentelemetry-provider).
 
 ```ts
 import { init } from '@tracewayapp/frontend';
 
-init('PROJECT_TOKEN@https://traceway.example.com', {
+init({
+  token: import.meta.env.VITE_TRACEWAY_TOKEN,
   serviceName: 'shop-web',
   environment: 'production',
   telemetry: { url: 'https://collector.example.com' },
@@ -144,14 +154,15 @@ count('checkout.completed');
 metric('checkout.duration', 840, { plan: 'pro' });
 ```
 
-Passing a single options object selects standalone mode. Errors go to the collector as OTLP logs. A local session ID supports correlation. All SDK exports go to the configured telemetry receivers and the browser skips OpAMP, Traceway session reporting, and replay uploads. Supply a shared OTLP base URL or complete URLs for all three signals. To check this setup, run the two metric calls above and look for a POST to `/v1/metrics` after the configured interval.
+Leaving out the `token` selects standalone mode. Errors go to the collector as OTLP logs. A local session ID supports correlation. All SDK exports go to the configured telemetry receivers and the browser skips OpAMP, Traceway session reporting, and replay uploads. Supply a shared OTLP base URL or complete URLs for all three signals. To check this setup, run the two metric calls above and look for a POST to `/v1/metrics` after the configured interval.
 
-To keep Traceway issues and replay with a **local** policy, pass the connection string and turn off OpAMP explicitly. On an OTLP-capable Traceway server, this configuration streams custom events and skips both the OpAMP poll and the cached remote policy.
+To keep Traceway issues and replay with a **local** policy, pass the token and turn off OpAMP explicitly. This configuration streams custom events and skips both the OpAMP poll and the cached remote policy.
 
 ```ts
 import { init } from '@tracewayapp/frontend';
 
-init('PROJECT_TOKEN@https://traceway.example.com', {
+init({
+  token: import.meta.env.VITE_TRACEWAY_TOKEN,
   serviceName: 'shop-web',
   remoteConfig: false,
   collection: { signals: { custom: { mode: 'stream' } } },
@@ -167,7 +178,8 @@ v2 reports every session by default, so finding a user's sessions needs no recor
 ```ts
 import { init, setAttribute, setAttributes, clearAttributes } from "@tracewayapp/frontend";
 
-init("your-token@https://traceway.example.com", {
+init({
+  token: import.meta.env.VITE_TRACEWAY_TOKEN,
   attributes: { "user.id": "u_42" },
 });
 

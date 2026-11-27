@@ -18,7 +18,7 @@ import {
 } from "@tracewayapp/react-native";
 
 const RAW_DSN = Constants.expoConfig?.extra?.tracewayDsn as string | undefined;
-const DSN = RAW_DSN ?? "PLACEHOLDER_TOKEN@http://localhost:8082/api/report";
+const DSN = RAW_DSN ?? "PLACEHOLDER_TOKEN@https://cloud.tracewayapp.com/api/report";
 
 function parseDsn(dsn: string): { token: string; apiUrl: string } | null {
   const at = dsn.lastIndexOf("@");
