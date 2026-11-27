@@ -81,6 +81,14 @@ const server = createServer(async (req, res) => {
     return res.end("{}");
   }
   res.setHeader("Content-Type", "text/html");
+  if (req.url === "/masking")
+    return res.end(
+      '<!doctype html><title>Traceway mask fixture</title>' +
+        '<p class="traceway-mask">masked-paragraph-secret</p>' +
+        '<div class="traceway-mask"><img src="/masked-image-secret.png" width="40" height="30"></div>' +
+        '<div class="traceway-blank" style="width:120px;height:60px">blank-box-secret</div>' +
+        '<p class="rr-mask">rr-mask-secret</p><p>visible-mask-fixture</p><script src="/sdk.js"></script>',
+    );
   res.end(
     '<!doctype html><title>Traceway SDK regression fixture</title><h1>SDK regression fixture</h1><input id="secret"><button id="action">Action</button><script src="/sdk.js"></script>',
   );
@@ -252,6 +260,64 @@ try {
       const body = JSON.stringify(recordings.slice(start));
       assert(!body.includes("after-mask-secret"));
       assert(!body.includes("before-mask-secret"));
+    },
+  );
+  await check(
+    "real rrweb masks traceway-mask text and images and blanks traceway-blank",
+    async () => {
+      const maskContext = await browser.newContext();
+      const maskPage = await maskContext.newPage();
+      maskPage.on("pageerror", (error) => errors.push(error.message));
+      try {
+        await maskPage.goto(`${origin}/masking`);
+        await maskPage.evaluate(() =>
+          Traceway.init(`browser@${location.origin}`, {
+            captureResourceTiming: false,
+            captureWebVitals: false,
+            exportDelayMs: 60_000,
+          }),
+        );
+        await maskPage.evaluate(() => Traceway.refreshConfig());
+        const session = await maskPage.evaluate(() =>
+          Traceway.currentSessionId(),
+        );
+        await maskPage.evaluate(() =>
+          Traceway.captureException(new Error("mask class check")),
+        );
+        await maskPage.evaluate(() => Traceway.flush());
+        const clip = recordings.filter((r) => r.sessionId === session);
+        assert(clip.length > 0, "expected a real rrweb clip");
+        const body = JSON.stringify(clip);
+        assert(body.includes("visible-mask-fixture"));
+        for (const secret of [
+          "masked-paragraph-secret",
+          "masked-image-secret",
+          "blank-box-secret",
+          "rr-mask-secret",
+        ])
+          assert(!body.includes(secret), secret);
+        assert(body.includes("*".repeat("masked-paragraph-secret".length)));
+        const elements = [];
+        const walk = (node) => {
+          if (node.type === 2) elements.push(node);
+          for (const child of node.childNodes ?? []) walk(child);
+        };
+        for (const event of clip.flatMap((segment) => segment.events))
+          if (event.type === 2) walk(event.data.node);
+        const box = (tag, width, height) =>
+          elements.some(
+            (node) =>
+              node.tagName === tag &&
+              node.attributes.rr_width === width &&
+              node.attributes.rr_height === height &&
+              node.attributes.src === undefined &&
+              node.childNodes.length === 0,
+          );
+        assert(box("div", "120px", "60px"), "traceway-blank is not a blocked box");
+        assert(box("img", "40px", "30px"), "a masked image is not a blocked box");
+      } finally {
+        await maskContext.close();
+      }
     },
   );
   await check(

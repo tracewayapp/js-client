@@ -24,7 +24,8 @@ This is the framework-agnostic browser SDK. Use it directly in vanilla JS / TS, 
 - Automatic capture of `window.onerror` and `unhandledrejection`
 - Built on OpenTelemetry: OTLP/HTTP logs, spans and metrics, with the Browser SIG's instrumentations
 - **rrweb session replay** — an error clip by default; stream whole sessions with `recordAllSessions` or a remote rule
-- **Breadcrumbs** — console, `fetch` / XHR, navigation, clicks and custom events, kept on the device and uploaded with an error
+- **Privacy masks** — `class="traceway-mask"` replays text as `*` and images as empty boxes, `class="traceway-blank"` replays an empty box; input values are masked by default
+- **Breadcrumbs** — console and `log()` lines, `fetch` / XHR, navigation, clicks and custom events, kept on the device and uploaded with an error
 - **Sessions** — the start, end and attributes of every session, reported by default
 - **Performance metrics** — web vitals, route changes, requests, page views and errors aggregated on the device and uploaded as one small payload, plus your own `metric()` and `count()`
 - **Web vital events**, kept on the device like the other breadcrumbs
@@ -120,6 +121,26 @@ captureMessage("User completed checkout", { plan: "pro" });
 await flush();
 ```
 
+### Logs
+
+`log(message, level?, attributes?)` records a log line of your own. The level is a `TracewayLogLevel`: `"trace"`,
+`"debug"`, `"info"` (the default), `"warn"`, `"error"` or `"fatal"`. Attribute values are strings, numbers or booleans.
+
+```ts
+import { log } from "@tracewayapp/frontend";
+
+log("cart synced", "debug", { items: 3 });
+log("payment provider slow", "warn", { provider: "stripe" });
+```
+
+A `log()` line is handled like a `console.*` line. It belongs to the console signal, so it is kept on the device by
+default and uploaded with an error, the console `minSeverity` applies (default `info`: the `debug` line above is
+dropped), remote rules can stream it or switch it off, and `captureLogs: false` turns it off. On the wire it is an
+OpenTelemetry log record without an event name: the body is the message, the severity number and text come from the
+level (trace 1 `TRACE`, debug 5 `DEBUG`, info 9 `INFO`, warn 13 `WARN`, error 17 `ERROR`, fatal 21 `FATAL`), and the
+attributes are the global ones, then yours, then `log.source = "api"`. Use `captureMessage` for a line that should
+open an issue.
+
 ## Options
 
 | Option | Default | Description |
@@ -143,7 +164,7 @@ await flush();
 | `recordAllSessions` | `false` | Stream every replay segment and every breadcrumb by default instead of keeping them for error clips |
 | `baselineSampleRate` | `0` | Stable healthy-session breadcrumb/request sample, from 0 to 1; does not stream replay |
 | `collectionLimits` | `{ maxBytes: 52428800, maxEvents: 10000 }` | Shared per-session diagnostic upload ceiling; can only be lowered |
-| `captureLogs`, `captureNetwork`, `captureNavigation`, `captureUserActions`, `captureWebVitals`, `captureResourceTiming`, `captureLongTasks`, `captureRouteTiming` | `true` | Allow a signal at all: console output, `fetch` / XHR, navigation, clicks, web vital events, resource and navigation timing, long tasks, route change timing |
+| `captureLogs`, `captureNetwork`, `captureNavigation`, `captureUserActions`, `captureWebVitals`, `captureResourceTiming`, `captureLongTasks`, `captureRouteTiming` | `true` | Allow a signal at all: console output and `log()` lines, `fetch` / XHR, navigation, clicks, web vital events, resource and navigation timing, long tasks, route change timing |
 | `captureMetrics` | `true` | Performance metrics: histograms and counters aggregated on the device, one small upload per flush |
 | `metricDimensions` | none | Up to two dimensions of your own on every performance metric, e.g. `{ plan: "pro" }`; never a user id |
 | `captureHttpServerErrors` | `false` | Report fetch / XHR responses with status >= 500 as message issues |
@@ -179,7 +200,7 @@ to record events triggers can match.
 
 ## Breadcrumbs & Replay
 
-Console calls, `fetch` / XHR, route changes, clicks and `recordAction` / `track` events are recorded as OpenTelemetry
+Console calls, `log()` lines, `fetch` / XHR, route changes, clicks and `recordAction` / `track` events are recorded as OpenTelemetry
 log records and spans, tagged with the session. By default they are **buffered** on the device: an error uploads the
 last 10 minutes of breadcrumbs and a 30-second replay clip with the exception, and the replay player shows them next to the recording. With
 `recordAllSessions`, or when remote settings say so, they stream; remote settings can also switch them off. Replay
@@ -188,6 +209,31 @@ segments carry only the recording, so each breadcrumb is uploaded once.
 rrweb session replay runs only when replay is not off (it is loaded lazily, so a page with replay off never downloads
 it). Each segment replays on its own; buffered segments upload with an error clip, streamed segments upload as they
 complete. Replay goes to Traceway's recordings endpoint, not OTLP.
+
+### Privacy masks
+
+Mark the parts of the page the replay must not show with a class in your markup; no code is needed. Masking happens
+in the browser, before anything is uploaded.
+
+| Class | What the replay shows |
+|-------|-----------------------|
+| `traceway-mask` | The element and its layout. Text inside it is recorded with every character except whitespace replaced by `*`. `img`, `picture`, `video`, `canvas` and `svg` elements inside it, or carrying the class themselves, are recorded as empty boxes of their size, without their source URL or content |
+| `traceway-blank` | An empty box of the element's size. Nothing inside it is recorded: no text, no images, no input values or input events |
+
+```html
+<p class="traceway-mask">Card ending 4242, Alice Smith</p>
+<!-- replays as: **** ****** ***** ***** ***** -->
+<div class="traceway-mask"><img src="/avatars/42.jpg"> Alice Smith</div>
+<div class="traceway-blank"><canvas id="signature"></canvas></div>
+```
+
+rrweb's own classes keep working next to them: `rr-mask` masks text like `traceway-mask` but leaves images as they
+are, `rr-block` records an empty box like `traceway-blank`, and `rr-ignore` stops recording an input's events.
+
+Input values follow `maskAllInputs` (on by default; set it in `collection.replay` or with a remote rule): with it on,
+the value of every `input`, `textarea` and `select` is recorded as `*`; with it off, only passwords are. A field that
+must stay hidden even then belongs inside `traceway-blank`. Images outside a mask are not uploaded: the replay loads
+them from their URLs when it plays.
 
 ## Custom Attributes (global scope)
 
@@ -403,6 +449,7 @@ For exact build-to-map matching, add [`@tracewayapp/bundler-plugin`](https://www
 | `captureException(error, attributes?)` | Capture an error, optionally with string attributes |
 | `captureExceptionWithAttributes(error, attributes?)` | Same as `captureException` |
 | `captureMessage(message, attributes?)` | Capture a message issue |
+| `log(message, level?, attributes?)` | Record a log line; `level` is `"trace"`, `"debug"`, `"info"` (default), `"warn"`, `"error"` or `"fatal"`. See [Logs](#logs) |
 | `recordAction(category, name, data?)` | Record a breadcrumb triggers can match |
 | `track(eventName, attributes?)` | Record a named app event triggers can match |
 | `metric(name, value, dims?)` | Record one observation of a custom distribution; at most two dimensions |
@@ -418,11 +465,12 @@ For exact build-to-map matching, add [`@tracewayapp/bundler-plugin`](https://www
 | `flush(timeoutMs?)` | Send what is queued, including pending metrics; buffered telemetry stays on the device |
 | `shutdown()` | Flush, remove all instrumentation and stop recording; `init()` may be called again afterwards |
 | `getInstanceId()` | This browser profile's id (`service.instance.id`), which the dashboard can capture |
+| `currentSessionId()` | The current session's id (`session.id`), or `null` before `init()` and between sessions |
 | `getClient()` | The running `TracewayFrontendClient`, or `null` before `init()` |
 
 Also exported: `DEFAULT_IGNORE_PATTERNS`, `SDK_VERSION`, the `TracewayFrontendClient` class, and the types
 `TracewayFrontendOptions`, `StandaloneOptions`, `TelemetryOptions`, `TelemetryEndpoint`, `CapturedException`,
-`CollectionSettings`, `Settings`, `Trigger`, `TriggerAction`, `Capture`, `Mode` and `SignalName`.
+`TracewayLogLevel`, `CollectionSettings`, `Settings`, `Trigger`, `TriggerAction`, `Capture`, `Mode` and `SignalName`.
 
 ## Browser support and persistence
 
@@ -438,6 +486,29 @@ under storage quotas, browser termination, and permanent server rejection.
 Remote capture cancellation takes effect at the next successful poll. Input-masking changes restart rrweb and discard
 incompatible buffered replay. Collection limits are checked again before queued and restored telemetry is exported.
 See the [remote settings reference](https://docs.tracewayapp.com/learn/remote-config/reference) for limits and timing.
+
+## Platform differences
+
+The browser SDK and the Traceway app SDKs (Flutter, Android, iOS) use the same names and send the same records.
+What differs:
+
+- **Only in the browser**: replay is an rrweb recording of the page's DOM, where the apps record wireframes of
+  their views (Flutter can also record video). Masks are classes in the markup (`traceway-mask`, `traceway-blank`,
+  rrweb's `rr-*`), not a mask API with `TracewayMaskMode`. Navigation is recorded from the History API and route
+  templates are read from the app's router (`trackRouter`, `routeFromParams`), so there is no `recordNavigation`.
+  `console.*` is captured automatically. Web vital, resource timing, long task and route change timing events,
+  `captureHttpServerErrors`, `startInteraction(name).bind`, and `transport` with its `/api/report` fallback for
+  older servers exist only here.
+- **Only in the apps**: process-ending crash capture with native symbolication, `recordNavigation`,
+  `reportFullyDisplayed()` and the `app.*` performance metrics (app start, slow and frozen frames, hangs; Android and
+  Flutter today), the mask API (`TracewayMask`, `View.tracewayMask`, `UIView.tracewayMask`, `.tracewayMask(_:)`)
+  with its blur and blank modes, the replay image policy (`replayImages`, `replay.images`, which the browser
+  ignores), the frame options (`screenCapture`, `fps`, `maxBufferFrames`), and `legacyConnectionString`, which
+  delivers reports a 1.x app left on the device.
+- **Same feature, browser idiom**: the start call is `init` (Flutter `Traceway.run`, iOS `Traceway.initialize`);
+  `getInstanceId()` and `currentSessionId()` are functions (iOS has the properties `instanceId` and
+  `currentSessionId`); `flush(timeoutMs?)` takes milliseconds (Swift `flush(timeout:)` takes seconds);
+  cross-origin trace headers are set with `propagateTraceHeaderCorsUrls` (apps: `propagateTraceHeaderUrls`).
 
 For React Native and Expo apps, use [`@tracewayapp/react-native`](https://www.npmjs.com/package/@tracewayapp/react-native) instead. It shares the version number but not this SDK: it keeps its own API and the native reporting transport, captures exceptions with console logs and network and navigation actions, and has no session replay, remote config or OTLP export.
 

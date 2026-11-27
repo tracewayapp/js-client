@@ -17,6 +17,8 @@ export const ATTR_SESSION_ID = "session.id";
 export const ATTR_SESSION_STARTED_AT = "traceway.session.started_at";
 export const ATTR_EXCEPTION_ID = "traceway.exception.id";
 export const ATTR_DEBUG_IDS = "traceway.debug_ids";
+/** Where a console-signal record came from: `"api"` for `log()`. */
+export const ATTR_LOG_SOURCE = "log.source";
 
 const CONTROL_EVENTS = new Set([
   EVENT_SESSION_START,

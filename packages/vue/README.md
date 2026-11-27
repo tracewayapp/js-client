@@ -104,7 +104,7 @@ metric("checkout.duration", 840, { plan: "pro" });
 count("cart.item_added");
 ```
 
-The exports are `captureException`, `captureExceptionWithAttributes`, `captureMessage`, `recordAction`, `track`, `metric`, `count`, `setMetricDimension`, `setRoute`, `startInteraction`, `setAttribute`, `setAttributes`, `removeAttribute`, `clearAttributes`, `refreshConfig`, `flush`, `shutdown`, `getInstanceId` and `DEFAULT_IGNORE_PATTERNS`. They do nothing until the plugin is installed. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#api) for what each one does.
+The exports are `captureException`, `captureExceptionWithAttributes`, `captureMessage`, `log`, `recordAction`, `track`, `metric`, `count`, `setMetricDimension`, `setRoute`, `startInteraction`, `setAttribute`, `setAttributes`, `removeAttribute`, `clearAttributes`, `refreshConfig`, `flush`, `shutdown`, `getInstanceId`, `currentSessionId` and `DEFAULT_IGNORE_PATTERNS`, plus the `TracewayLogLevel` type. They do nothing until the plugin is installed. See the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#api) for what each one does.
 
 ## Route Names
 

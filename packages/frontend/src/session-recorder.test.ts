@@ -33,7 +33,12 @@ vi.mock("@rrweb/record", () => {
   return { record };
 });
 
-import { SessionRecorder } from "./session-recorder.js";
+import { record } from "@rrweb/record";
+import {
+  BLOCK_SELECTOR,
+  MASK_TEXT_SELECTOR,
+  SessionRecorder,
+} from "./session-recorder.js";
 
 const SEGMENT_MS = 30_000;
 const T0 = 1_000_000_000_000;
@@ -134,5 +139,50 @@ describe("SessionRecorder full-session path is unchanged", () => {
 
     // The in-memory window still holds previous + current for the always-on path.
     expect(rec.getSegments().length).toBe(2);
+  });
+});
+
+describe("SessionRecorder privacy options", () => {
+  beforeEach(() => {
+    emitFn = null;
+    vi.clearAllMocks();
+    document.body.replaceChildren();
+  });
+
+  it("passes the traceway mask and blank selectors and leaves rrweb's own classes at their defaults", async () => {
+    const rec = new SessionRecorder();
+    await rec.start({ maskAllInputs: false });
+    expect(record).toHaveBeenCalledTimes(1);
+    const options = vi.mocked(record).mock.calls[0]![0]!;
+    expect(options).toMatchObject({
+      maskAllInputs: false,
+      maskTextSelector: ".traceway-mask",
+      blockSelector: BLOCK_SELECTOR,
+    });
+    expect(options.blockClass).toBeUndefined();
+    expect(options.maskTextClass).toBeUndefined();
+    expect(options.ignoreClass).toBeUndefined();
+    rec.stop();
+  });
+
+  it("blocks blank areas and the media of masked areas, and masks only the text of the rest", () => {
+    document.body.innerHTML = `
+      <div class="traceway-mask">
+        <p id="masked-text">secret</p>
+        <img id="img"><picture id="picture"></picture><video id="video"></video>
+        <canvas id="canvas"></canvas><svg id="svg"></svg>
+      </div>
+      <img id="self-masked" class="traceway-mask">
+      <div id="blank" class="traceway-blank"><p>secret</p></div>
+      <img id="plain-img"><p id="plain-text">visible</p>
+    `;
+    const matches = (id: string) =>
+      document.getElementById(id)!.matches(BLOCK_SELECTOR);
+    for (const id of ["img", "picture", "video", "canvas", "svg", "self-masked", "blank"])
+      expect(matches(id), id).toBe(true);
+    for (const id of ["masked-text", "plain-img", "plain-text"])
+      expect(matches(id), id).toBe(false);
+    expect(document.getElementById("masked-text")!.closest(MASK_TEXT_SELECTOR)).not.toBeNull();
+    expect(document.getElementById("plain-text")!.closest(MASK_TEXT_SELECTOR)).toBeNull();
   });
 });

@@ -1,8 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EventType, IncrementalSource } from "@rrweb/types";
+import { EventType, IncrementalSource, type eventWithTime } from "@rrweb/types";
 import { SessionRecorder } from "./session-recorder.js";
 
 let recorder: SessionRecorder | undefined;
+
+interface SerializedElement {
+  type: 2;
+  tagName: string;
+  attributes: Record<string, string | number | boolean | null>;
+  childNodes: SerializedNode[];
+}
+type SerializedNode = SerializedElement | { type: number; childNodes?: SerializedNode[] };
+
+/** Every element node of the full snapshots and of the nodes mutations add. */
+function serializedElements(events: eventWithTime[]): SerializedElement[] {
+  const found: SerializedElement[] = [];
+  const walk = (node: SerializedNode) => {
+    if (node.type === 2) found.push(node as SerializedElement);
+    for (const child of node.childNodes ?? []) walk(child);
+  };
+  for (const event of events) {
+    if (event.type === EventType.FullSnapshot) walk(event.data.node as unknown as SerializedNode);
+    if (event.type === EventType.IncrementalSnapshot && event.data.source === IncrementalSource.Mutation)
+      for (const add of event.data.adds) walk(add.node as unknown as SerializedNode);
+  }
+  return found;
+}
 
 afterEach(() => {
   recorder?.stop();
@@ -59,6 +82,60 @@ describe("SessionRecorder with the real recorder", () => {
         event.data.removes.length > 0,
       )).toBe(true);
     });
+  });
+
+  it("masks traceway-mask text and media and blanks traceway-blank, next to rrweb's own classes", async () => {
+    document.body.innerHTML = `
+      <p class="traceway-mask">Card 4242 owner Alice</p>
+      <div class="traceway-mask" id="gallery">
+        <span>Nested masked line</span>
+        <img src="https://img.test/masked-photo.png">
+        <svg><text>svg-label-secret</text></svg>
+      </div>
+      <img class="traceway-mask" src="https://img.test/self-masked.png">
+      <div class="traceway-blank"><b>Blank area secret</b><input value="blank-input-secret"></div>
+      <p class="rr-mask">rrweb masked line</p>
+      <div class="rr-block">rrweb blocked secret</div>
+      <p>Visible paragraph</p>
+    `;
+    recorder = new SessionRecorder();
+    await recorder.start({ maskAllInputs: false });
+
+    document.querySelector("p.traceway-mask")!.textContent = "Updated card 5555";
+    const late = document.createElement("img");
+    late.src = "https://img.test/late-photo.png";
+    document.querySelector("#gallery")!.append(late);
+
+    await vi.waitFor(() => {
+      const images = serializedElements(recorder!.getClipEvents()).filter((node) => node.tagName === "img");
+      expect(images).toHaveLength(3);
+    });
+
+    const events = recorder.getClipEvents();
+    const json = JSON.stringify(events);
+    expect(json).toContain("Visible paragraph");
+    for (const secret of [
+      "Alice", "4242", "5555", "Nested masked", "masked-photo", "svg-label-secret", "self-masked",
+      "Blank area secret", "blank-input-secret", "late-photo", "rrweb masked", "rrweb blocked secret",
+    ])
+      expect(json, secret).not.toContain(secret);
+    expect(json).toContain("**** **** ***** *****");
+    expect(json).toContain("****** ****** ****");
+
+    const elements = serializedElements(events);
+    const blocked = (tag: string, className?: string) =>
+      elements.filter((node) =>
+        node.tagName === tag &&
+        (className === undefined || node.attributes.class === className) &&
+        node.attributes.rr_width !== undefined &&
+        node.attributes.src === undefined &&
+        node.childNodes.length === 0,
+      );
+    expect(blocked("div", "traceway-blank")).toHaveLength(1);
+    expect(blocked("div", "rr-block")).toHaveLength(1);
+    expect(blocked("svg")).toHaveLength(1);
+    expect(blocked("img", "traceway-mask")).toHaveLength(1);
+    expect(blocked("img")).toHaveLength(3);
   });
 
   it("rotates into replayable segments, takes fresh snapshots and stops observing", async () => {

@@ -11,7 +11,7 @@ keeps exporting).
 
 | What | Endpoint | Format |
 |------|----------|--------|
-| Exceptions, messages, console, navigation, user actions, web vitals, resource timing, long tasks, route timing, custom events, session lifecycle | `POST /api/otel/v1/logs` | OTLP/HTTP JSON log records, told apart by `eventName` |
+| Exceptions, messages, console and `log()` lines, navigation, user actions, web vitals, resource timing, long tasks, route timing, custom events, session lifecycle | `POST /api/otel/v1/logs` | OTLP/HTTP JSON log records, told apart by `eventName` |
 | fetch / XHR | `POST /api/otel/v1/traces` | OTLP/HTTP JSON CLIENT spans; W3C `traceparent` to same-origin URLs and `propagateTraceHeaderCorsUrls` |
 | Session replay | `POST /api/recordings` | `{segments, debugIds?}`, gzipped JSON, not OTLP |
 | Remote config | `POST /api/otel/v1/opamp` | OpAMP over plain HTTP (protobuf) |
@@ -36,6 +36,13 @@ Every record passes `TelemetryRouter` (`frontend/src/otel/router.ts`): stamp `se
 debug ids, default and global attributes, `ignoreErrors` on the `Type: message` line, `beforeCapture`), classify the
 signal, then route by the effective mode: **stream** to the OTLP batch exporter, **buffer** into the in-memory
 `RingBuffer`, **off** dropped. After routing, the trigger engine sees the record, so a flush it causes includes it.
+
+`log(message, level?, attributes?)` emits a record without an event name, which `classifyLog` files under
+`console`, so the console mode, sample rate, `minSeverity` and the `captureLogs` ceiling apply to it exactly as to
+the patched `console.*` lines. Its severity number comes from the level through `severityNumberOf` (the numbers
+`minSeverity` compares against: trace 1, debug 5, info 9, warn 13, error 17, fatal 21) and its severity text is the
+level in upper case; its attributes are the global attributes, then the caller's, then `log.source = "api"`, the value
+the app SDKs' `log()` sets too.
 
 ### Performance signals
 
@@ -281,11 +288,20 @@ segments, or keeps them in a byte- and age-bounded buffer; a flush uploads the b
 plus the in-progress segment as the clip of the triggering exception (it keeps its segment index, so the full segment
 later overwrites it on the server).
 
+`SessionRecorder` passes rrweb `maskAllInputs` from settings, `maskTextSelector: ".traceway-mask"` and a
+`blockSelector` of `.traceway-blank` plus the `img`, `picture`, `video`, `canvas` and `svg` elements inside or
+carrying `.traceway-mask` (`BLOCK_SELECTOR` in `session-recorder.ts`). rrweb's `blockClass`, `maskTextClass` and
+`ignoreClass` keep their defaults, so `rr-block`, `rr-mask` and `rr-ignore` still work. A blocked element is
+serialized with only `class`, `rr_width` and `rr_height` and no children, and its input events are dropped; the
+player draws an empty box of that size. These are the browser's equivalents of the mobile `traceway-mask` /
+`traceway-blank` markers. Images outside a mask stay URL references (`inlineImages` is off); `replay.images` is
+ignored.
+
 ### Tests
 
 `npm run test:browser` builds the browser bundle and runs Chromium against a disposable local HTTP fixture. Install
 the browser once with `npx playwright install chromium`. It covers remote cancellation, hard limits, real rrweb
-masking changes, navigation across three pages, final replay on pagehide, and outbox recovery. No cloud service is used.
+masking changes, the `traceway-mask` / `traceway-blank` classes, navigation across three pages, final replay on pagehide, and outbox recovery. No cloud service is used.
 
 `npm test` covers the units. `packages/frontend/src/e2e.live.test.ts` runs against a live server when
 `TRACEWAY_E2E_CONNECTION`, `TRACEWAY_E2E_JWT` and `TRACEWAY_E2E_PROJECT` are set (the project needs a rule streaming

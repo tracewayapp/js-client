@@ -140,7 +140,7 @@ The parts of the 2.x browser SDK that do not need a browser. `@tracewayapp/front
 |--------|-------------|
 | `Settings`, `CollectionSettings`, `SignalSettings`, `ReplaySettings`, `MetricsSettings`, `BufferSettings`, `Mode`, `SignalName`, `Severity`, `Ceilings` | The collection settings document; `CollectionSettings` is the partial form `init()` and remote rules use |
 | `Trigger`, `TriggerStep`, `TriggerAction`, `Matcher`, `Condition`, `ConditionOp`, `SignalSelector`, `Capture` | Triggers, their matchers and actions, and dashboard captures |
-| `MODES`, `SIGNALS`, `SEVERITIES` | The allowed modes (`off`, `buffer`, `stream`), signal names and console severities |
+| `MODES`, `SIGNALS`, `SEVERITIES` | The allowed modes (`off`, `buffer`, `stream`), signal names and console severities (`trace` to `fatal`, also the levels of the browser SDK's `log()`) |
 | `defaultSettings(options?)` (`DefaultSettingsOptions`) | The built-in settings; `recordAllSessions` and `baselineSampleRate` change them |
 | `defaultExceptionTrigger()`, `DEFAULT_EXCEPTION_TRIGGER_ID` | The built-in `default-exception` trigger: 10 minutes of breadcrumbs and a 30-second replay clip with an error |
 | `ceilingsFrom(options?)` (`CeilingOptions`) | Ceilings from the `capture*`, `sessions` and `sessionRecording` options |

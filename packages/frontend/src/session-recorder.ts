@@ -2,6 +2,25 @@ import type { eventWithTime } from "@rrweb/types";
 
 type RecordFn = typeof import("@rrweb/record").record;
 
+/**
+ * Text inside an element with class `traceway-mask` is recorded with every character but whitespace replaced by
+ * `*`, the same as rrweb's own `rr-mask` class.
+ */
+export const MASK_TEXT_SELECTOR = ".traceway-mask";
+
+/**
+ * Elements rrweb records as an empty box of their size, without attributes or children: anything with class
+ * `traceway-blank` (like rrweb's own `rr-block`), and the media inside or carrying `traceway-mask`, which hides
+ * pictures the way it hides text. rrweb's `rr-block` class is still honoured through its default `blockClass`.
+ */
+export const BLOCK_SELECTOR = [
+  ".traceway-blank",
+  ...["img", "picture", "video", "canvas", "svg"].flatMap((tag) => [
+    `.traceway-mask ${tag}`,
+    `${tag}.traceway-mask`,
+  ]),
+].join(", ");
+
 export interface SessionRecorderOptions {
   segmentDuration?: number;
   /**
@@ -70,6 +89,8 @@ export class SessionRecorder {
               this.onEvent(event);
             },
             maskAllInputs: this.maskAllInputs,
+            maskTextSelector: MASK_TEXT_SELECTOR,
+            blockSelector: BLOCK_SELECTOR,
           }) ?? null;
       })
       .finally(() => {

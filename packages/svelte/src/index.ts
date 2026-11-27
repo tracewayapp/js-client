@@ -6,6 +6,7 @@ export {
   captureException,
   captureExceptionWithAttributes,
   captureMessage,
+  log,
   recordAction,
   flush,
   setAttribute,
@@ -22,6 +23,7 @@ export {
   refreshConfig,
   shutdown,
   getInstanceId,
+  currentSessionId,
   DEFAULT_IGNORE_PATTERNS,
 } from "@tracewayapp/frontend";
 export type {
@@ -31,5 +33,6 @@ export type {
   TelemetryOptions,
   TelemetryEndpoint,
   RouteParams,
+  TracewayLogLevel,
 } from "@tracewayapp/frontend";
 export type { TracewayOptions, TracewayContextValue } from "./types.js";

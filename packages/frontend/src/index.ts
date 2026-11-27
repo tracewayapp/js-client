@@ -2,6 +2,7 @@ import {
   TracewayFrontendClient,
   type TracewayFrontendOptions,
   type StandaloneOptions,
+  type TracewayLogLevel,
 } from "./client.js";
 
 let client: TracewayFrontendClient | null = null;
@@ -42,6 +43,21 @@ export function captureMessage(
   attributes?: Record<string, string>,
 ): void {
   client?.captureMessage(message, attributes);
+}
+
+/**
+ * Records a log line, e.g. `log("cart synced", "debug", { items: 3 })`; the level defaults to `"info"`, and an
+ * unknown level counts as `"info"`. It is a console-signal record without an event name, so it is handled like a
+ * `console.*` line: kept on the device by default and uploaded with an error, subject to the console mode, sample
+ * rate and `minSeverity`, and off with `captureLogs: false`. It carries the global attributes, then `attributes`,
+ * then `log.source = "api"`.
+ */
+export function log(
+  message: string,
+  level?: TracewayLogLevel,
+  attributes?: Record<string, string | number | boolean>,
+): void {
+  client?.log(message, level, attributes);
 }
 
 /**
@@ -164,6 +180,11 @@ export function getInstanceId(): string | null {
   return client?.instanceId ?? null;
 }
 
+/** The current session's id (`session.id` on every record), or `null` before `init()` and between sessions. */
+export function currentSessionId(): string | null {
+  return client?.currentSessionId() ?? null;
+}
+
 export {
   TracewayFrontendClient,
   DEFAULT_IGNORE_PATTERNS,
@@ -175,6 +196,7 @@ export type {
   TelemetryOptions,
   TelemetryEndpoint,
   CapturedException,
+  TracewayLogLevel,
 } from "./client.js";
 
 export type {

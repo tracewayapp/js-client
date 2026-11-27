@@ -12,7 +12,7 @@ vi.mock("@rrweb/record", () => {
   return { record };
 });
 
-import type { TracewayFrontendOptions } from "./client.js";
+import type { TracewayFrontendOptions, TracewayLogLevel } from "./client.js";
 import { TracewayFrontendClient } from "./client.js";
 
 let client: TracewayFrontendClient;
@@ -46,6 +46,10 @@ function events(
   name: string,
 ): ReadableLogRecord[] {
   return records.filter((r) => r.eventName === name);
+}
+
+function apiLogs(records: ReadableLogRecord[]): ReadableLogRecord[] {
+  return records.filter((r) => r.attributes["log.source"] === "api");
 }
 
 afterEach(async () => {
@@ -500,6 +504,72 @@ describe("TracewayFrontendClient", () => {
     const [message] = events(await exported(), "traceway.message");
     expect(message!.body).toBe("payment provider slow");
     expect(message!.attributes.provider).toBe("stripe");
+  });
+
+  it("records log() lines as console records with the level's severity, log.source and attributes", async () => {
+    start({ attributes: { tenant: "acme" } });
+    client.control.applyRemote({
+      signals: { console: { mode: "stream", minSeverity: "trace" } },
+    });
+    client.setAttribute("user.id", "u-1");
+    client.log("cart synced", undefined, {
+      items: 3,
+      tenant: "beta",
+      "log.source": "app",
+    });
+    for (const level of ["trace", "debug", "info", "warn", "error", "fatal"] as const)
+      client.log(`at ${level}`, level);
+    client.log("unknown level", "verbose" as TracewayLogLevel);
+
+    const lines = apiLogs(await exported());
+    expect(lines.map((r) => [r.body, r.severityNumber, r.severityText])).toEqual([
+      ["cart synced", 9, "INFO"],
+      ["at trace", 1, "TRACE"],
+      ["at debug", 5, "DEBUG"],
+      ["at info", 9, "INFO"],
+      ["at warn", 13, "WARN"],
+      ["at error", 17, "ERROR"],
+      ["at fatal", 21, "FATAL"],
+      ["unknown level", 9, "INFO"],
+    ]);
+    expect(lines.every((r) => r.eventName === undefined)).toBe(true);
+    expect(lines[0]!.attributes).toEqual({
+      tenant: "beta",
+      "user.id": "u-1",
+      items: 3,
+      "log.source": "api",
+      "session.id": client.currentSessionId(),
+    });
+  });
+
+  it("buffers log() lines like console lines and drops those below minSeverity", async () => {
+    start();
+    client.log("detail", "debug");
+    client.log("slow checkout", "warn");
+    expect(apiLogs(await exported())).toHaveLength(0);
+
+    client.captureException(new Error("checkout broke"));
+    expect(apiLogs(await exported()).map((r) => r.body)).toEqual(["slow checkout"]);
+
+    client.control.applyRemote({
+      signals: { console: { mode: "stream", minSeverity: "error" } },
+    });
+    client.log("still slow", "warn");
+    client.log("payment failed", "error");
+    expect(apiLogs(await exported()).map((r) => r.body)).toEqual([
+      "slow checkout",
+      "payment failed",
+    ]);
+  });
+
+  it("drops log() lines when captureLogs is off, whatever the settings say", async () => {
+    start({ captureLogs: false });
+    client.control.applyRemote({ signals: { console: { mode: "stream" } } });
+    client.log("not collected", "fatal");
+    client.captureException(new Error("flush"));
+    const records = await exported();
+    expect(events(records, "exception")).toHaveLength(1);
+    expect(apiLogs(records)).toHaveLength(0);
   });
   it("drops buffered and queued telemetry when collection is restricted", async () => {
     start();

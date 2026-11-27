@@ -61,6 +61,7 @@ import {
   parseSettingsDocument,
   resolveEndpoints,
   RingBuffer,
+  SEVERITIES,
   TriggerEngine,
   unitHash,
   uuidToBytes,
@@ -83,6 +84,7 @@ import type { RecordSignal } from "./otel/events.js";
 import {
   ATTR_DEBUG_IDS,
   ATTR_EXCEPTION_ID,
+  ATTR_LOG_SOURCE,
   ATTR_SESSION_ID,
   ATTR_SESSION_STARTED_AT,
   EVENT_ACTION,
@@ -95,6 +97,7 @@ import {
   EVENT_SESSION_UPDATE,
   EVENT_TRIGGER_FIRED,
   classifyLog,
+  severityNumberOf,
 } from "./otel/events.js";
 import type { BufferedItem, ObservedRecord } from "./otel/router.js";
 import {
@@ -135,6 +138,18 @@ export const DEFAULT_IGNORE_PATTERNS: Array<string | RegExp> = [
   /status code 4\d{2}/,
   /failed: 4\d{2}/,
 ];
+
+/**
+ * The level of a `log()` line. It sets the OpenTelemetry severity number (trace 1, debug 5, info 9, warn 13,
+ * error 17, fatal 21), the numbers the console signal's `minSeverity` compares against.
+ */
+export type TracewayLogLevel =
+  | "trace"
+  | "debug"
+  | "info"
+  | "warn"
+  | "error"
+  | "fatal";
 
 /** What `beforeCapture` sees of an exception before it is recorded. */
 export interface CapturedException {
@@ -872,6 +887,25 @@ export class TracewayFrontendClient {
       severityText: "INFO",
       body: message,
       attributes: { ...attributes },
+    });
+  }
+
+  /** A console-signal record with `log.source = "api"`; see the top-level `log()`. */
+  log(
+    message: string,
+    level: TracewayLogLevel = "info",
+    attributes?: Record<string, string | number | boolean>,
+  ): void {
+    const severity = SEVERITIES.includes(level) ? level : "info";
+    this.logger?.emit({
+      severityNumber: severityNumberOf(severity),
+      severityText: severity.toUpperCase(),
+      body: message,
+      attributes: {
+        ...this.globalAttributes,
+        ...attributes,
+        [ATTR_LOG_SOURCE]: "api",
+      },
     });
   }
 
