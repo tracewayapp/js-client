@@ -991,16 +991,20 @@ describe("the hooks of §14: screen context, pictures in the replay, the app's s
       await recorder.start({ images: "always" });
       expect(recorder.getClipEvents().some((event) => event.type === 2)).toBe(true);
       expect(JSON.stringify(recorder.getClipEvents())).not.toContain("rr_dataURL");
-      // A bug in the inliner itself: the event is still recorded as rrweb wrote it.
+      // A bug in the encoder must still allow safe text through and remove original inline pixels.
       vi.spyOn(ImageInliner.prototype, "inline").mockImplementation(() => {
         throw new Error("sdk");
       });
       const added = document.createElement("p");
       added.textContent = "added later";
+      const inline = document.createElement("img");
+      inline.src = "data:image/png;base64,b3JpZ2luYWxwaXhlbHM=";
+      added.append(inline);
       document.body.append(added);
       await vi.waitFor(() =>
         expect(JSON.stringify(recorder.getClipEvents())).toContain("added later"),
       );
+      expect(JSON.stringify(recorder.getClipEvents())).not.toContain("b3JpZ2luYWxwaXhlbHM=");
       expect(img.hasAttribute("crossorigin")).toBe(false);
       expect(img.getAttribute("src")).toBe("https://app.test/photo.jpg");
       expect(pageErrors).toEqual([]);

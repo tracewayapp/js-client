@@ -127,7 +127,12 @@ export class ReplayController {
       if (segment.sessionId || segment.exceptionId) out.push(segment);
     }
     if (out.length > 0)
-      this.lastFlushSegments = this.transport.send(out, { unloading });
+      this.lastFlushSegments = this.transport.send(out, {
+        unloading,
+        onAdmitted: segment => {
+          if (partial && segment.events === partial.events) partial.markExposed();
+        },
+      });
   }
 
   /** The session ended: the in-progress segment is closed out under it. */
@@ -144,6 +149,9 @@ export class ReplayController {
 
   onSessionStart(): void {
     const id = this.session.current()?.id;
+    this.buffered = this.buffered.filter(entry => entry.segment.sessionId === id);
+    this.bufferedBytes = this.buffered.reduce((sum, entry) => sum + entry.bytes, 0);
+    this.recorder.images.clearCache();
     this.recorder.images.bytes = guarded(
       "images",
       () => {

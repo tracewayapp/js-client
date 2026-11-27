@@ -399,7 +399,7 @@ describe("device metrics", () => {
 
   it("counts a view for every screen recordNavigation reports, named by its route (JS2-5)", async () => {
     start();
-    // The first screen a memory router reports is the page's landing view.
+    // A different reported screen closes the landing view.
     client.recordNavigation("/orders/42", "push", undefined, "/orders/:id");
     client.recordNavigation("/orders/42", "replace");
     client.recordNavigation("/cart", "push", "/orders/42", "/cart");
@@ -408,6 +408,7 @@ describe("device metrics", () => {
     client.recordNavigation("/checkout/1", "push", "/cart");
     await client.flush();
     expect(pageViews()).toEqual([
+      ["/", 1],
       ["/cart", 1],
       ["/orders/:id", 1],
     ]);
@@ -426,6 +427,16 @@ describe("device metrics", () => {
       ["/cart", 1],
       ["/orders/:id", 1],
     ]);
+  });
+
+  it("closes an immediately replaced view and keeps its route template on that view", async () => {
+    start();
+    history.pushState(null, "", "/orders/41");
+    client.setRoute("/first-order");
+    client.recordNavigation("/orders/42", "push");
+    client.recordNavigation("/done", "push");
+    await client.flush();
+    expect(pageViews()).toEqual([["/", 1], ["/first-order", 1], ["/orders/:id", 1]]);
   });
 
   it("starts a new view for a screen reported a while after the address changed, e.g. a modal", async () => {

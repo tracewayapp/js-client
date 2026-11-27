@@ -1,7 +1,7 @@
 /** CONTRACT §14.5: `replay.images = "always"` on the web, the encoding rules of every platform that inlines. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { eventWithTime } from "@rrweb/types";
-import { ImageInliner, MAX_SESSION_IMAGE_BYTES } from "./inline-images.js";
+import { ImageInliner, MAX_SESSION_IMAGE_BYTES, ReplaySegmentImages } from "./inline-images.js";
 
 interface Drawn {
   width: number;
@@ -203,6 +203,70 @@ describe("ImageInliner", () => {
     // The first one was used longest ago and made room for the 129th.
     inliner.inline(snapshot([pictures[128]!, pictures[0]!]));
     expect(drawn).toHaveLength(130);
+  });
+
+  it("strips inline pixels from CSS mutations, stylesheet replacements and adopted stylesheets", () => {
+    const css = '.preview { color: red; background: url("data:image/png;base64,cHJldmlldw=="); }';
+    const inliner = new ImageInliner(() => null);
+    inliner.inline({type: 2, timestamp: 0, data: {node: {
+      id: 3, type: 3, isStyle: true, textContent: "p { color: red; }",
+    }}} as unknown as eventWithTime, false);
+    const changes = [
+      {source: 0, attributes:[{id:2, attributes: {style:{background:[css,"important"]},_cssText:css}}], texts:[{id:3,value:css}]},
+      {source: 8, adds:[{rule:css}], replace:css, replaceSync:css},
+      {source: 13, set:{property:"background",value:css}},
+      {source: 15, styles:[{rules:[{rule:css}]}]},
+    ];
+    for (const data of changes) {
+      inliner.inline({type:3, timestamp:0, data} as unknown as eventWithTime, false);
+      expect(JSON.stringify(data)).toContain("color: red");
+      expect(JSON.stringify(data)).not.toContain("cHJldmlldw==");
+    }
+  });
+
+  it("preserves a literal data URL in public text and strips it from a live style text change", () => {
+    const cssText = document.createTextNode("");
+    document.createElement("style").append(cssText);
+    const publicText = document.createTextNode("");
+    document.createElement("code").append(publicText);
+    const inliner = new ImageInliner(id => id === 2 ? cssText : publicText);
+    const value = 'background: url("data:image/png;base64,cGl4ZWxz")';
+    const changes = [{id: 2, value}, {id: 3, value}];
+    inliner.inline({type: 3, timestamp: 0, data: {source: 0, texts: changes}} as unknown as eventWithTime, false);
+    expect(changes[0]!.value).toBe("background: none");
+    expect(changes[1]!.value).toBe(value);
+  });
+
+  it("encodes each loaded resource even when a URL and size are reused", () => {
+    const first = picture([50,50], [50,50], "/avatar");
+    const second = picture([50,50], [50,50], "/avatar");
+    const inliner = setup([first,second]);
+    toDataURL.mockReturnValueOnce("data:image/png,first").mockReturnValueOnce("data:image/png,second").mockReturnValueOnce("data:image/png,reloaded");
+    inliner.inline(snapshot([first,second]));
+    expect(second.node.attributes.rr_dataURL).toBe("data:image/png,second");
+    first.img.dispatchEvent(new Event("load"));
+    inliner.inline(snapshot([first]));
+    expect(first.node.attributes.rr_dataURL).toBe("data:image/png,reloaded");
+    inliner.clearCache();
+    toDataURL.mockReturnValueOnce("data:image/png,new-session");
+    inliner.inline(snapshot([first]));
+    expect(first.node.attributes.rr_dataURL).toBe("data:image/png,new-session");
+  });
+
+  it("keeps previously exposed bytes charged when a later update drops the segment's pictures", () => {
+    const segment = new ReplaySegmentImages();
+    const image = {src: "/avatar", rr_dataURL: ""};
+    const encoded = "data:image/jpeg;base64,".padEnd(64 * 1024, "A");
+    segment.track(image, "img", null, false);
+    expect(segment.add(image, encoded)).toBe(encoded.length);
+    segment.expose();
+    expect(segment.add(image, encoded)).toBe(encoded.length);
+    expect(segment.add(image, encoded)).toBe(-encoded.length);
+    expect(image).toEqual({});
+    const changed = { src: "/new-avatar" };
+    segment.track(changed, "img", null, true);
+    expect(changed.src).toBeNull();
+    expect(segment.add(changed, encoded)).toBe(0);
   });
 
   it("stops adding pictures at 4 MiB a session; the images keep their URLs", () => {

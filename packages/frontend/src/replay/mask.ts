@@ -3,7 +3,7 @@ import type { eventWithTime } from "@rrweb/types";
 /** Attributes that carry text or a value of the page: inside a mask every character but whitespace becomes `*`. */
 const TEXT_ATTRIBUTE = /^(?:title|alt|placeholder|value|label|href|aria-.+|data-.+)$/;
 /** Attributes that make the replay load a picture: inside a mask they are left out. */
-const URL_ATTRIBUTE = /^(?:src|srcset|poster|background)$/;
+const URL_ATTRIBUTE = /^(?:src|srcset|srcdoc|rr_dataURL|poster|background)$/;
 
 const stars = (text: string): string => text.replace(/\S/g, "*");
 

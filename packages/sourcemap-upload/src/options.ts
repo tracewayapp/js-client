@@ -62,7 +62,9 @@ export function uploadEndpoint(url: string): string {
     base = `${LOCAL_HOSTS.has(host.toLowerCase()) ? "http" : "https"}://${base}`;
   }
   base = base.replace(/[?#].*$/, "").replace(/\/+$/, "");
-  if (base.endsWith("/api/sourcemaps/upload")) return base;
-  base = base.replace(/\/api(\/report)?$/, "").replace(/\/+$/, "");
-  return `${base}/api/sourcemaps/upload`;
+  const pathStart = base.indexOf("/", base.indexOf("://") + 3);
+  const path = pathStart === -1 ? "" : base.slice(pathStart);
+  if (path.endsWith("/api/sourcemaps/upload")) return base;
+  const authority = pathStart === -1 ? base : base.slice(0, pathStart);
+  return authority + path.replace(/\/api(?:\/report)?$/, "").replace(/\/+$/, "") + "/api/sourcemaps/upload";
 }

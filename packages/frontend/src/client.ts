@@ -582,10 +582,10 @@ export class TracewayFrontendClient {
       this.endpoints.recordings,
       token,
       undefined,
-      (segment) => {
+      (segment, serialized) => {
         const accepted = this.collectionBudget.admit(
           segment.sessionId ?? null,
-          new TextEncoder().encode(JSON.stringify(segment)).byteLength,
+          new TextEncoder().encode(serialized).byteLength,
           segment.events.length,
         );
         if (!accepted) this.scheduleHealth();

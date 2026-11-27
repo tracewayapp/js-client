@@ -1,7 +1,7 @@
 import type { eventWithTime } from "@rrweb/types";
 import type { TracewayImagePolicy } from "@tracewayapp/core";
 import { guarded } from "./guarded.js";
-import { ImageInliner } from "./replay/inline-images.js";
+import { ImageInliner, ReplaySegmentImages } from "./replay/inline-images.js";
 import { maskEvent } from "./replay/mask.js";
 
 type RecordFn = typeof import("@rrweb/record").record;
@@ -51,6 +51,7 @@ export interface SessionRecorderOptions {
 }
 
 interface Segment {
+  images: ReplaySegmentImages;
   events: eventWithTime[];
   startedAt: string;
   startedAtMs: number;
@@ -124,6 +125,7 @@ export class SessionRecorder {
   }
 
   stop(): void {
+    this.images.clearCache();
     this.wanted = false;
     this.current = this.newSegment();
     this.previous = null;
@@ -142,14 +144,18 @@ export class SessionRecorder {
     events: eventWithTime[];
     startedAt: string;
     endedAt: string;
+    markExposed: () => void;
   } | null {
     if (this.current.events.length === 0) return null;
+    const images = this.current.images;
+    this.current.images.completeLayout();
     const lastTs =
       this.current.events[this.current.events.length - 1]!.timestamp;
     return {
       events: this.current.events.slice(),
       startedAt: this.current.startedAt,
       endedAt: new Date(lastTs).toISOString(),
+      markExposed: () => images.expose(),
     };
   }
 
@@ -166,6 +172,7 @@ export class SessionRecorder {
       event.timestamp - this.current.startedAtMs >= this.segmentDuration
     ) {
       const completed = this.current;
+      completed.images.completeLayout();
       const tooStale =
         event.timestamp - this.current.startedAtMs >= 2 * this.segmentDuration;
       this.previous = tooStale ? null : this.current;
@@ -190,8 +197,11 @@ export class SessionRecorder {
     // what the page masks.
     if (!guarded("mask", () => (maskEvent(event, this.node), true), false))
       return;
-    // A picture that cannot be added leaves the event as rrweb wrote it.
-    if (this.inlineImages) guarded("images", () => this.images.inline(event));
+    const segmentImages = this.inlineImages ? this.current.images : undefined;
+    const encoded = segmentImages && !segmentImages.layoutOnly &&
+      guarded("images", () => (this.images.inline(event, true, segmentImages), true), false);
+    // An encoding failure can leave an event only partially processed. Scrub it in full before retention.
+    if (!encoded && !guarded("images", () => (this.images.sanitize(event, undefined, segmentImages), true), false)) return;
     if (this.current.events.length === 0) {
       this.current.startedAtMs = event.timestamp;
       this.current.startedAt = new Date(event.timestamp).toISOString();
@@ -211,6 +221,7 @@ export class SessionRecorder {
   } | null {
     if (this.current.events.length === 0) return null;
     const completed = this.current;
+    completed.images.completeLayout();
     this.current = this.newSegment();
     const lastTs = completed.events[completed.events.length - 1]!.timestamp;
     return {
@@ -223,6 +234,7 @@ export class SessionRecorder {
   private newSegment(): Segment {
     const now = Date.now();
     return {
+      images: new ReplaySegmentImages(this.node),
       events: [],
       startedAt: new Date(now).toISOString(),
       startedAtMs: now,
@@ -230,6 +242,7 @@ export class SessionRecorder {
   }
 
   getSegments(): { events: eventWithTime[]; timestamp: string }[] {
+    this.current.images.completeLayout();
     const segments: { events: eventWithTime[]; timestamp: string }[] = [];
     if (this.previous && this.previous.events.length > 0) {
       segments.push({
@@ -256,6 +269,7 @@ export class SessionRecorder {
    * standalone without `previous`.
    */
   getClipEvents(): eventWithTime[] {
+    this.current.images.completeLayout();
     if (this.current.events.length > 0) return this.current.events;
     if (this.previous && this.previous.events.length > 0) {
       return this.previous.events;

@@ -11,7 +11,7 @@ export interface RecordingSegment {
 }
 
 interface Batch {
-  segments: RecordingSegment[];
+  segments: string[];
   attempts: number;
 }
 
@@ -42,18 +42,32 @@ export class RecordingsTransport {
     private readonly url: string,
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
-    private readonly admit: (segment: RecordingSegment) => boolean = () => true,
+    private readonly admit: (segment: RecordingSegment, serialized: string) => boolean = () => true,
     private readonly onFailure: () => void = () => {},
   ) {}
 
   send(
     segments: RecordingSegment[],
-    options: { unloading?: boolean } = {},
+    options: { unloading?: boolean; onAdmitted?: (segment: RecordingSegment) => void } = {},
   ): number {
-    segments = segments.filter(this.admit);
-    for (let i = 0; i < segments.length; i += MAX_SEGMENTS_PER_REQUEST) {
+    const accepted: string[] = [];
+    for (const segment of segments) {
+      // Later events can turn the live segment into a wireframe. Queue the exact snapshot admitted here.
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(segment);
+      } catch {
+        this.recordFailure(1);
+        continue;
+      }
+      if (this.admit(segment, serialized)) {
+        accepted.push(serialized);
+        options.onAdmitted?.(segment);
+      }
+    }
+    for (let i = 0; i < accepted.length; i += MAX_SEGMENTS_PER_REQUEST) {
       this.queue.push({
-        segments: segments.slice(i, i + MAX_SEGMENTS_PER_REQUEST),
+        segments: accepted.slice(i, i + MAX_SEGMENTS_PER_REQUEST),
         attempts: 0,
       });
     }
@@ -64,7 +78,7 @@ export class RecordingsTransport {
     } else {
       this.schedule(0);
     }
-    return segments.length;
+    return accepted.length;
   }
 
   discard(): void {
@@ -172,8 +186,8 @@ export class RecordingsTransport {
     this.onFailure();
   }
 
-  private encode(segments: RecordingSegment[]): Uint8Array {
-    return gzipSync(strToU8(JSON.stringify({ segments })));
+  private encode(segments: string[]): Uint8Array {
+    return gzipSync(strToU8('{"segments":[' + segments.join(",") + ']}'));
   }
 
   private request(body: Uint8Array, keepalive: boolean): Promise<Response> {

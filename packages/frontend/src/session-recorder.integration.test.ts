@@ -216,6 +216,65 @@ describe("replay.images with the real recorder (§14.5)", () => {
     expect(json).not.toContain("rr_dataURL");
   });
 
+  it.each(["wifi", "always"] as const)("strips original inline image bytes from snapshots and updates under %s", async (images) => {
+    const original = "data:image/png;base64,YXBwUGl4ZWxz";
+    document.body.innerHTML = `<picture><source srcset="${original} 1x"><img src="${original}"></picture>
+      <svg><image href="${original}"></image></svg><input type="image" src="${original}">
+      <a href="${original}">Open preview</a><object data="${original}"></object><img data-lazy-src="${original}">
+      <style>.preview { color: red; background-image: url("${original}"); }</style>
+      <div style="background-image: url('${original}')"></div><iframe srcdoc="&lt;img src='${original}'&gt;"></iframe><p>before update</p>`;
+    recorder = new SessionRecorder();
+    await recorder.start({ images });
+    document.querySelector("img")!.src = original + "QQ";
+    document.querySelector("source")!.srcset = original + "QQ 2x";
+    document.querySelector("img")!.dataset.lazyPreview = original + "QQ";
+    document.querySelector("p")!.textContent = "after update";
+    await vi.waitFor(() => expect(JSON.stringify(recorder!.getClipEvents())).toContain("after update"));
+    expect(JSON.stringify(recorder.getClipEvents())).not.toContain("YXBwUGl4ZWxz");
+  });
+
+  it("keeps exactly 128 KiB of images, then exports the full segment as a wireframe after an image mutation", async ({ onTestFinished }) => {
+    // Exercise the byte limit regardless of jsdom's first computed-style lookup.
+    // The encoder's per-event time limit has a separate regression.
+    vi.spyOn(performance, "now").mockReturnValue(0);
+    onTestFinished(() => { vi.restoreAllMocks(); });
+    const thumbnail = "data:image/jpeg;base64,".padEnd(64 * 1024, "A");
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage() {},
+      getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 255]) }),
+    } as any);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(thumbnail);
+
+    const photo = () => {
+      const img = loaded(document.createElement("img"), 120, 80);
+      img.src = "https://app.test/avatar.jpg";
+      return img;
+    };
+    document.body.innerHTML = "<p>Order details</p>";
+    document.body.append(photo());
+    recorder = new SessionRecorder();
+    await recorder.start({ images: "always" });
+    const images = () => serializedElements(recorder!.getClipEvents()).filter(n => n.tagName === "img");
+    document.body.append(photo());
+    await vi.waitFor(() => expect(images().filter(n => n.attributes.rr_dataURL)).toHaveLength(2));
+
+    document.body.append(photo());
+    await vi.waitFor(() => expect(images()).toHaveLength(3));
+    const exported = JSON.stringify(recorder.peekCurrent()?.events);
+    expect(exported).toContain("Order details");
+    expect(exported).not.toContain(thumbnail.slice(0, 80));
+    expect(exported).not.toContain("avatar.jpg");
+    expect(images()[0]!.attributes.rr_width).toBe("60px");
+    expect(images()[0]!.attributes.rr_height).toBe("40px");
+    for (const image of images())
+      expect(image.attributes.style).toContain("width:60px;height:40px");
+
+    document.body.replaceChildren(photo());
+    recorder.startFresh();
+    expect(images()).toHaveLength(1);
+    expect(images()[0]!.attributes.rr_dataURL).toBe(thumbnail);
+  });
+
   it("always: adds small copies of the page's pictures, never of masked ones, and leaves the page's images as they are", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       drawImage: vi.fn(),
@@ -257,6 +316,16 @@ describe("replay.images with the real recorder (§14.5)", () => {
 
 describe("traceway-mask beyond rrweb's own masking (JS-13, JS-16)", () => {
   const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("omits a masked iframe document from snapshots and attribute changes", async () => {
+    document.body.innerHTML = '<div class="traceway-mask"><iframe srcdoc="private initial note"></iframe></div><p>before</p>';
+    recorder = new SessionRecorder();
+    await recorder.start();
+    document.querySelector("iframe")!.srcdoc = "private changed note";
+    document.querySelector("p")!.textContent = "change observed";
+    await vi.waitFor(() => expect(JSON.stringify(recorder!.getClipEvents())).toContain("change observed"));
+    expect(JSON.stringify(recorder.getClipEvents())).not.toMatch(/private initial note|private changed note/);
+  });
 
   it("masks text that a shadow root inside traceway-mask renders or changes later (JS-13)", async () => {
     document.body.innerHTML = `<div class="traceway-mask"><span id="host"></span></div><p id="plain">Plain text</p>`;

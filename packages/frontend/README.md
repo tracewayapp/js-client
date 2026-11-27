@@ -300,7 +300,7 @@ in the browser, before anything is uploaded.
 <div class="traceway-blank"><canvas id="signature"></canvas></div>
 ```
 
-The mask reaches into shadow roots and same-origin iframes inside it, also for text they render or change after
+A masked iframe’s inline document (`srcdoc`) is omitted from snapshots and updates. The mask reaches into shadow roots and same-origin iframes inside it, also for text they render or change after
 recording started. What it does not hide, so keep it inside `traceway-blank` when it is private: pictures that a
 stylesheet sets (a class with `background-image`), which the replay loads by their URL, and the content an element
 had before it was given the class while recording, until the next full snapshot (every 30 seconds). Masked `data-*`
@@ -340,7 +340,7 @@ pictures in the replay, and with `"wifi"` no rule can add copies of them. Withou
 or the plan's limits) the policy is `"off"`. A `replayImages` value other than these three counts as `"off"`, with
 one warning.
 
-With `"always"` a loaded `<img>` is drawn at its displayed size: a picture with transparency as PNG at most 192 px
+The recorder removes page-supplied inline images from source attributes, source sets and stylesheets. With `"always"` a loaded `<img>` is drawn at its displayed size: a picture with transparency as PNG at most 192 px
 on the longest side (never JPEG, which would replay its transparent pixels as black), any other as JPEG at quality
 0.45 at most 384 px. One larger than 48 KiB is tried once at half the size and otherwise left as a URL. The SDK keeps up to 128 pictures for the next snapshots (the one used longest
 ago makes room), adds at most 4 MiB of them to a session's recording, and spends at most 16 ms on them per
@@ -349,6 +349,8 @@ let the page read stay URL references: the SDK never changes the page's own `<im
 `inlineImages` would set `crossOrigin` on them, which reloads them and breaks those without CORS headers). The
 browser has no network type check: `"wifi"` behaves like the mobile SDKs on a metered network. Session events
 carry `traceway.replay.images` (the policy that applies, ceiling included) and `traceway.replay.image_bytes`.
+
+A replay segment allows up to 128 KiB of embedded raster data, counting each occurrence of a base64 image URL in a snapshot or update. On overflow, the segment keeps the DOM, image dimensions and interactions and drops its embedded pictures. External background URLs stay in the page’s CSS. A partial clip already queued for an earlier exception keeps the pictures it held at the time. The next segment gets a fresh allowance.
 
 ## Custom Attributes (global scope)
 

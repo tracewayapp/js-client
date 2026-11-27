@@ -26,15 +26,13 @@ export function normalizeBaseUrl(url: string): string {
   let base = String(url).trim();
   if (!/^[a-z][a-z\d+.-]*:/i.test(base) || /^[^/]*:\d+(?:[/?#]|$)/.test(base))
     base = `${LOCAL_HOST.test(base) ? "http" : "https"}://${base}`;
-  base = base
-    .replace(/[?#].*$/, "")
-    .replace(/\/+$/, "")
-    .replace(/\/api(?:\/report)?$/, "")
-    .replace(/\/+$/, "");
+  base = base.replace(/[?#].*$/, "");
   const parsed = /^https?:\/\/(?:[^/?#@\s]*@)?([^/?#@\s]+)/i.exec(base);
   if (!parsed || /^:|:$/.test(parsed[1]!))
     throw new Error(`Invalid Traceway URL "${url}": it must be an HTTP(S) URL with a host`);
-  return base;
+  const authority = parsed[0];
+  const path = base.slice(authority.length).replace(/\/+$/, "").replace(/\/api(?:\/report)?$/, "").replace(/\/+$/, "");
+  return authority + path;
 }
 
 /**
@@ -42,7 +40,7 @@ export function normalizeBaseUrl(url: string): string {
  * Traceway Cloud when it is not given or empty (an environment variable left unset). Throws for a URL it cannot use.
  */
 export function resolveEndpoints(baseUrl?: string | null): TracewayEndpoints {
-  const base = normalizeBaseUrl(baseUrl || DEFAULT_BASE_URL);
+  const base = normalizeBaseUrl(baseUrl?.trim() || DEFAULT_BASE_URL);
   return {
     base,
     logs: `${base}/api/otel/v1/logs`,
@@ -115,6 +113,8 @@ export function startOptions<T extends StartFields>(
     );
     start = { ...options, token, baseUrl: base } as T;
   } else start = { ...given } as T;
+  if (typeof start.token === "string") start.token = start.token.trim();
+  if (typeof start.baseUrl === "string") start.baseUrl = start.baseUrl.trim();
   if (start.transport !== undefined)
     setupWarning(
       "the transport option is deprecated and ignored: telemetry is always sent as OTLP",

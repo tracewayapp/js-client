@@ -16,6 +16,10 @@ describe("resolveEndpoints", () => {
   it("defaults to Traceway Cloud", async () => {
     const { resolveEndpoints, DEFAULT_BASE_URL } = await load();
     expect(DEFAULT_BASE_URL).toBe("https://cloud.tracewayapp.com");
+    expect(resolveEndpoints("  ").base).toBe(DEFAULT_BASE_URL);
+    expect(resolveEndpoints(" http://api/api/report ").logs).toBe("http://api/api/otel/v1/logs");
+    expect(resolveEndpoints("http://api").base).toBe("http://api");
+    expect(resolveEndpoints("http://api/report").base).toBe("http://api/report");
     expect(resolveEndpoints().logs).toBe(
       "https://cloud.tracewayapp.com/api/otel/v1/logs",
     );
@@ -117,6 +121,8 @@ describe("startOptions", () => {
     const { startOptions, warn } = await load();
     const options = { token: "tok", baseUrl: "https://traceway.test", debug: true };
     expect(startOptions(options)).toEqual(options);
+    expect(startOptions({ token: "  tok  ", baseUrl: " http://api " })).toEqual({token:"tok",baseUrl:"http://api"});
+    expect(() => startOptions({token: "  "})).toThrow("needs a token");
     expect(startOptions(options)).not.toBe(options);
     expect(startOptions({ telemetry: { url: "https://collector.test" } })).toEqual({
       telemetry: { url: "https://collector.test" },
