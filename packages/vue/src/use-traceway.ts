@@ -1,11 +1,11 @@
 import { inject } from "vue";
-import { TracewayKey } from "./plugin.js";
+import { TracewayKey, tracewayContext } from "./plugin.js";
 import type { TracewayContextValue } from "./types.js";
 
+/**
+ * The capture functions of the SDK. Without the plugin (an app that calls `init()` itself) they are the same
+ * functions: they work once the SDK runs and do nothing before, so this never throws.
+ */
 export function useTraceway(): TracewayContextValue {
-  const context = inject(TracewayKey);
-  if (!context) {
-    throw new Error("useTraceway must be used within a Vue app that has installed the Traceway plugin");
-  }
-  return context;
+  return inject(TracewayKey, tracewayContext);
 }

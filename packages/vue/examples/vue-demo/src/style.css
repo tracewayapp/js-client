@@ -258,3 +258,19 @@ button:disabled {
 .error-boundary-fallback button {
   width: auto;
 }
+
+.btn-feature {
+  background: #6f42c1;
+  color: white;
+}
+
+.btn-feature:hover:not(:disabled) {
+  background: #59339d;
+}
+
+.mask-demo {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+}

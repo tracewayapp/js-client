@@ -40,9 +40,9 @@ class FakePerformanceObserver {
 
 function start(options: TracewayFrontendOptions = {}): TracewayFrontendClient {
   logExporter = new InMemoryLogRecordExporter();
-  client = new TracewayFrontendClient(
-    "tok_123@https://traceway.test/api/report",
-    {
+  client = new TracewayFrontendClient({
+      token: "tok_123",
+      baseUrl: "https://traceway.test",
       logExporter,
       spanExporter: new InMemorySpanExporter(),
       captureWebVitals: false,
@@ -54,8 +54,7 @@ function start(options: TracewayFrontendOptions = {}): TracewayFrontendClient {
       sessionRecording: false,
       remoteConfig: false,
       ...options,
-    },
-  );
+  });
   client.start();
   return client;
 }

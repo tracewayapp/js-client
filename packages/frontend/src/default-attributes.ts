@@ -7,6 +7,17 @@
  *
  * Returns an empty object on the server (no `window`).
  */
+/** The window's size in CSS pixels, `<width>x<height>`, as the mobile SDKs report theirs. */
+export function viewport(): string | undefined {
+  try {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (Number.isFinite(w) && Number.isFinite(h)) return `${w}x${h}`;
+  } catch {
+    // ignore
+  }
+}
+
 export function collectDefaultAttributes(): Record<string, string> {
   if (typeof window === "undefined") return {};
 
@@ -33,15 +44,8 @@ export function collectDefaultAttributes(): Record<string, string> {
     // ignore
   }
 
-  try {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    if (Number.isFinite(w) && Number.isFinite(h)) {
-      attrs.viewport = `${w}x${h}`;
-    }
-  } catch {
-    // ignore
-  }
+  const size = viewport();
+  if (size) attrs.viewport = size;
 
   try {
     if (window.screen) {

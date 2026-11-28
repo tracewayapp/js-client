@@ -26,7 +26,7 @@ export type ApplyResult =
   { applied: true } | { applied: false; errorMessage: string };
 
 export interface OpampClientOptions {
-  /** The server's OpAMP endpoint, e.g. https://traceway.example.com/api/otel/v1/opamp. */
+  /** The server's OpAMP endpoint, e.g. https://cloud.tracewayapp.com/api/otel/v1/opamp. */
   endpoint: string;
   headers?: Record<string, string>;
   instanceUid: Uint8Array;
@@ -41,7 +41,7 @@ export interface OpampClientOptions {
   onInstanceUidChange?: (uid: Uint8Array) => void;
   /** Called once when the server rejects the credentials; the client stops polling. */
   onUnauthorized?: () => void;
-  /** A pre-OpAMP server: stop polling and let the SDK use its legacy protocol. */
+  /** A server without OpAMP (404, 405, 501): the client stops polling. */
   onUnsupported?: () => void;
   /** Fetch failed, including a missing CORS preflight on older cross-origin servers. */
   onUnavailable?: () => void;
@@ -149,10 +149,14 @@ export class OpampHttpClient {
   private schedule(delayMs: number): void {
     if (this.stopped) return;
     if (this.timer !== null) clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      void this.poll();
-    }, delayMs);
+    this.timer = setTimeout(
+      () => {
+        this.timer = null;
+        void this.poll();
+      },
+      // Browsers run a delay over 2^31 - 1 ms at once (a huge Retry-After or heartbeat).
+      Math.min(delayMs, 2 ** 31 - 1),
+    );
   }
 
   private async exchange(): Promise<void> {
@@ -170,13 +174,21 @@ export class OpampHttpClient {
 
   private async exchangeWithSignal(signal: AbortSignal): Promise<void> {
     this.lastPollAt = Date.now();
+    let agentDescription: AgentToServer["agentDescription"];
+    try {
+      agentDescription = this.options.describe();
+    } catch {
+      // The app's description, not the server, failed: no reason to give up on the server.
+      this.backOff(null);
+      return;
+    }
     let response: Response;
     try {
       response = await this.send(
         {
           instanceUid: this.uid,
           sequenceNum: this.sequenceNum++,
-          agentDescription: this.options.describe(),
+          agentDescription,
           capabilities: this.options.capabilities,
           remoteConfigStatus: this.status,
           customCapabilities: this.options.customCapabilities,

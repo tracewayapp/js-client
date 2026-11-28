@@ -84,6 +84,8 @@ export class MetricAggregator {
     unit = "",
     exemplar?: ExemplarSource,
   ): void {
+    // Before the cell exists: a value the histogram rejects would leave an empty cell, uploaded with null min/max.
+    if (!Number.isFinite(value) || value < 0) return;
     const cell = this.cell(this.histograms, name, dims, (d) => ({
       name,
       unit,

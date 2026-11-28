@@ -22,16 +22,43 @@ describe("TracewayProvider", () => {
     vi.restoreAllMocks();
   });
 
-  it("should call init with connection string", () => {
+  it("calls init with the token, the baseUrl and the options in one object (CONTRACT §16)", () => {
     render(
-      <TracewayProvider connectionString="token@https://example.com/api/report">
+      <TracewayProvider token="token" baseUrl="https://example.com" options={{ debug: true }}>
+        <div>child</div>
+      </TracewayProvider>,
+    );
+    expect(traceway.init).toHaveBeenCalledWith({
+      token: "token",
+      baseUrl: "https://example.com",
+      debug: true,
+    });
+  });
+
+  it("passes the replay privacy limits through to init (§14.5)", () => {
+    render(
+      <TracewayProvider
+        token="token"
+        options={{ replayImages: "wifi", collection: { replay: { maskAllInputs: true } } }}
+      >
         <div>child</div>
       </TracewayProvider>,
     );
     expect(traceway.init).toHaveBeenCalledWith(
-      "token@https://example.com/api/report",
-      undefined,
+      expect.objectContaining({
+        replayImages: "wifi",
+        collection: { replay: { maskAllInputs: true } },
+      }),
     );
+  });
+
+  it("still takes the deprecated connectionString prop", () => {
+    render(
+      <TracewayProvider connectionString="token@https://example.com/api/report" options={{ debug: true }}>
+        <div>child</div>
+      </TracewayProvider>,
+    );
+    expect(traceway.init).toHaveBeenCalledWith("token@https://example.com/api/report", { debug: true });
   });
 
   it("calls init BEFORE rendering children (init runs in constructor, not componentDidMount)", () => {
@@ -46,7 +73,7 @@ describe("TracewayProvider", () => {
     }
 
     render(
-      <TracewayProvider connectionString="token@https://example.com/api/report">
+      <TracewayProvider token="token" baseUrl="https://example.com">
         <MarkerChild />
       </TracewayProvider>,
     );
@@ -64,7 +91,7 @@ describe("TracewayProvider", () => {
     }
 
     render(
-      <TracewayProvider connectionString="token@https://example.com/api/report">
+      <TracewayProvider token="token" baseUrl="https://example.com">
         <Consumer />
       </TracewayProvider>,
     );
@@ -92,7 +119,7 @@ describe("TracewayProvider render-error capture", () => {
   it("captures render errors thrown by children", () => {
     expect(() =>
       render(
-        <TracewayProvider connectionString="token@https://example.com/api/report">
+        <TracewayProvider token="token" baseUrl="https://example.com">
           <Throwing />
         </TracewayProvider>,
       ),
@@ -107,7 +134,7 @@ describe("TracewayProvider render-error capture", () => {
   it("re-throws so the error propagates as it would without Traceway", () => {
     expect(() =>
       render(
-        <TracewayProvider connectionString="token@https://example.com/api/report">
+        <TracewayProvider token="token" baseUrl="https://example.com">
           <Throwing />
         </TracewayProvider>,
       ),
@@ -116,7 +143,7 @@ describe("TracewayProvider render-error capture", () => {
 
   it("does not capture anything when children render normally", () => {
     render(
-      <TracewayProvider connectionString="token@https://example.com/api/report">
+      <TracewayProvider token="token" baseUrl="https://example.com">
         <div>ok</div>
       </TracewayProvider>,
     );
@@ -126,7 +153,7 @@ describe("TracewayProvider render-error capture", () => {
   it("lets an inner TracewayErrorBoundary catch first (closest boundary wins)", async () => {
     const { TracewayErrorBoundary } = await import("./error-boundary.js");
     const { getByText } = render(
-      <TracewayProvider connectionString="token@https://example.com/api/report">
+      <TracewayProvider token="token" baseUrl="https://example.com">
         <TracewayErrorBoundary fallback={<div>inner caught</div>}>
           <Throwing />
         </TracewayErrorBoundary>

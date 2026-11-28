@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Traceway jQuery CDN Demo</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 2rem;
+        background: #f5f5f5;
+        color: #333;
+      }
+
+      .subtitle,
+      .hint {
+        color: #666;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin: 1.5rem 0;
+      }
+
+      button {
+        padding: 0.75rem 1.25rem;
+        border: none;
+        border-radius: 6px;
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+        color: white;
+      }
+
+      .btn-ajax {
+        background: #dc3545;
+      }
+
+      .btn-action {
+        background: #6f42c1;
+      }
+
+      .btn-flush {
+        background: #6c757d;
+      }
+
+      .card {
+        background: white;
+        padding: 1rem 1.5rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+
+      #log {
+        font-family: monospace;
+        font-size: 0.8rem;
+      }
+
+      #log div {
+        padding: 0.4rem 0;
+        border-bottom: 1px solid #eee;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Traceway jQuery CDN Demo</h1>
+    <p class="subtitle">
+      jQuery and @tracewayapp/jquery from a CDN, no bundler. Replace YOUR_TOKEN
+      in this file with your project token.
+    </p>
+
+    <div class="actions">
+      <button id="btn-ajax" class="btn-ajax">Failing $.ajax (HTTP 500)</button>
+      <button id="btn-action" class="btn-action">recordAction()</button>
+      <button id="btn-flush" class="btn-flush">Flush</button>
+    </div>
+
+    <div class="card">
+      <p class="traceway-mask">Card ending 4242, Alice Smith</p>
+      <p class="hint">
+        The line above has <code>class="traceway-mask"</code>: the replay shows
+        it as <code>****</code>.
+      </p>
+    </div>
+
+    <div class="card">
+      <strong>Event Log</strong>
+      <div id="log"></div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@2/dist/traceway-jquery.iife.global.js"></script>
+    <script>
+      // Traceway Cloud; for a self-hosted server add baseUrl: "<its address>".
+      TracewayJQuery.init({ token: "YOUR_TOKEN", debug: true });
+
+      function show(message) {
+        $("<div>")
+          .text(new Date().toLocaleTimeString() + "  " + message)
+          .prependTo("#log");
+      }
+
+      // jQuery's error path: the package's ajaxError handler reports it as an exception
+      // ("GET https://httpbin.org/status/500 failed: 500 ...") with url, method and status attributes.
+      $("#btn-ajax").on("click", function () {
+        $.ajax({ url: "https://httpbin.org/status/500" }).fail(function (xhr) {
+          show("$.ajax failed with status " + xhr.status + ": reported to Traceway");
+        });
+      });
+
+      // A breadcrumb of the app's own: kept on the device and uploaded with the next error
+      $("#btn-action").on("click", function () {
+        TracewayJQuery.recordAction("demo", "button_clicked", { source: "jquery-cdn" });
+        show('recordAction("demo", "button_clicked"): uploaded with the next error');
+      });
+
+      $("#btn-flush").on("click", function () {
+        TracewayJQuery.flush().then(function () {
+          show("Flush completed");
+        });
+      });
+
+      show(TracewayJQuery.getClient() ? "SDK started" : "SDK not started: see the console warning");
+    </script>
+  </body>
+</html>

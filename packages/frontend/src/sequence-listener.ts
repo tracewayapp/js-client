@@ -1,42 +1,46 @@
+import { guarded } from "./guarded.js";
+
+/** Runs inside the page's click and pointerover dispatch, so nothing it does may throw there. */
 export function listenForSequenceActions(
   observe: (
     type: "click" | "hover",
     matches: (selector: string) => boolean,
   ) => void,
 ): () => void {
-  const onEvent = (event: Event) => {
-    if (
-      !event.isTrusted ||
-      (event.type === "pointerover" &&
-        event instanceof PointerEvent &&
-        event.pointerType === "touch")
-    )
-      return;
-    const elements = event
-      .composedPath()
-      .filter((node): node is Element => node instanceof Element)
-      .slice(0, 64);
-    const previous =
-      event instanceof MouseEvent && event.relatedTarget instanceof Element
-        ? event.relatedTarget
-        : null;
-    observe(event.type === "click" ? "click" : "hover", (selector) => {
-      try {
-        if (selector.length > 256 || /[:,\\]/.test(selector)) return false;
-        const target = elements.find((element) => element.matches(selector));
-        return (
-          !!target &&
-          !(
-            event.type === "pointerover" &&
-            previous &&
-            target.contains(previous)
-          )
-        );
-      } catch {
-        return false;
-      }
+  const onEvent = (event: Event) =>
+    guarded("triggers", () => {
+      if (
+        !event.isTrusted ||
+        (event.type === "pointerover" &&
+          event instanceof PointerEvent &&
+          event.pointerType === "touch")
+      )
+        return;
+      const elements = event
+        .composedPath()
+        .filter((node): node is Element => node instanceof Element)
+        .slice(0, 64);
+      const previous =
+        event instanceof MouseEvent && event.relatedTarget instanceof Element
+          ? event.relatedTarget
+          : null;
+      observe(event.type === "click" ? "click" : "hover", (selector) => {
+        try {
+          if (selector.length > 256 || /[:,\\]/.test(selector)) return false;
+          const target = elements.find((element) => element.matches(selector));
+          return (
+            !!target &&
+            !(
+              event.type === "pointerover" &&
+              previous &&
+              target.contains(previous)
+            )
+          );
+        } catch {
+          return false;
+        }
+      });
     });
-  };
   document.addEventListener("click", onEvent, true);
   document.addEventListener("pointerover", onEvent, true);
   return () => {

@@ -26,8 +26,12 @@ type Loose = any;
 
 const tracked: unknown[] = [];
 
-/** Names views from this router. For a router its framework does not leave on the page. */
+/**
+ * Names views from this router. For a router its framework does not leave on the page. Nothing is kept on the
+ * server, where an app has a router per rendered request and no view to name.
+ */
 export function trackRouter(router: unknown): void {
+  if (typeof window === "undefined") return;
   if (router && typeof router === "object" && !tracked.includes(router))
     tracked.push(router);
 }

@@ -1,4 +1,8 @@
 import type { eventWithTime } from "@rrweb/types";
+import type { TracewayImagePolicy } from "@tracewayapp/core";
+import { guarded } from "./guarded.js";
+import { ImageInliner, ReplaySegmentImages } from "./replay/inline-images.js";
+import { maskEvent } from "./replay/mask.js";
 
 type RecordFn = typeof import("@rrweb/record").record;
 
@@ -20,6 +24,19 @@ export const BLOCK_SELECTOR = [
     `${tag}.traceway-mask`,
   ]),
 ].join(", ");
+
+/**
+ * `maskAllInputs`: the fields whose value is recorded as `*`. rrweb's own switch of that name covers the first
+ * sixteen and leaves out hidden fields (tokens, state the page posts back) and the name of a chosen file.
+ */
+export const MASKED_INPUTS: Record<string, true> = Object.fromEntries(
+  "color date datetime-local email month number range search tel text time url week textarea select password hidden file"
+    .split(" ")
+    .map((type) => [type, true]),
+);
+
+/** With `replay.images = "off"`: every picture is recorded as an empty box of its size. */
+export const IMAGE_SELECTOR = "img, picture, image, input[type=image]";
 
 export interface SessionRecorderOptions {
   segmentDuration?: number;
@@ -44,6 +61,7 @@ export interface SessionRecorderOptions {
 }
 
 interface Segment {
+  images: ReplaySegmentImages;
   events: eventWithTime[];
   startedAt: string;
   startedAtMs: number;
@@ -58,6 +76,14 @@ export class SessionRecorder {
   private starting: Promise<void> | null = null;
   private wanted = false;
   private maskAllInputs = true;
+  /** The page's node rrweb recorded under `id`. */
+  private readonly node = (id: number): Node | null =>
+    this.recordFn?.mirror?.getNode(id) ?? null;
+  /** `replay.images = "always"`: small copies of the page's images go into the recording. */
+  readonly images = new ImageInliner(this.node);
+  private inlineImages = false;
+  /** `replay.images = "off"`; read when rrweb starts, so a change while it loads is not lost. */
+  private blockImages = false;
   private onSegmentReady: SessionRecorderOptions["onSegmentReady"];
   private onActivity: SessionRecorderOptions["onActivity"];
 
@@ -72,9 +98,14 @@ export class SessionRecorder {
    * Starts recording. rrweb is loaded on first use, so a page whose replay
    * is switched off never downloads or runs it.
    */
-  start(options: { maskAllInputs?: boolean } = {}): Promise<void> {
+  start(
+    options: { maskAllInputs?: boolean; images?: TracewayImagePolicy } = {},
+  ): Promise<void> {
     this.wanted = true;
     this.maskAllInputs = options.maskAllInputs ?? true;
+    const images = options.images ?? "wifi";
+    this.inlineImages = images === "always";
+    this.blockImages = images === "off";
     if (this.stopFn) return Promise.resolve();
     if (this.starting) return this.starting;
     this.starting = import("@rrweb/record")
@@ -85,12 +116,17 @@ export class SessionRecorder {
         this.previous = null;
         this.stopFn =
           record({
-            emit: (event) => {
-              this.onEvent(event);
-            },
-            maskAllInputs: this.maskAllInputs,
+            // rrweb calls it inside the page's own calls too (insertRule, setProperty, attachShadow), before the
+            // native method runs: a failure here would make the page's call throw.
+            // No rrweb `errorHandler`: its proxies run the page's own insertRule/setProperty inside the same try,
+            // so swallowing would also swallow the page's own errors (an invalid rule, a feature test).
+            emit: (event) => guarded("replay", () => this.onEvent(event)),
+            // Unset, rrweb masks passwords only.
+            maskInputOptions: this.maskAllInputs ? MASKED_INPUTS : undefined,
             maskTextSelector: MASK_TEXT_SELECTOR,
-            blockSelector: BLOCK_SELECTOR,
+            blockSelector: this.blockImages
+              ? `${BLOCK_SELECTOR}, ${IMAGE_SELECTOR}`
+              : BLOCK_SELECTOR,
           }) ?? null;
       })
       .finally(() => {
@@ -100,6 +136,7 @@ export class SessionRecorder {
   }
 
   stop(): void {
+    this.images.clearCache();
     this.wanted = false;
     this.current = this.newSegment();
     this.previous = null;
@@ -118,14 +155,18 @@ export class SessionRecorder {
     events: eventWithTime[];
     startedAt: string;
     endedAt: string;
+    markExposed: () => void;
   } | null {
     if (this.current.events.length === 0) return null;
+    const images = this.current.images;
+    this.current.images.completeLayout();
     const lastTs =
       this.current.events[this.current.events.length - 1]!.timestamp;
     return {
       events: this.current.events.slice(),
       startedAt: this.current.startedAt,
       endedAt: new Date(lastTs).toISOString(),
+      markExposed: () => images.expose(),
     };
   }
 
@@ -135,18 +176,14 @@ export class SessionRecorder {
   // sitting in `current` for tens of minutes and inflate the reported
   // recording duration.
   private onEvent(event: eventWithTime): void {
-    if (this.onActivity) {
-      try {
-        this.onActivity();
-      } catch {
-        // Subscriber errors must not break recording.
-      }
-    }
+    // Subscriber errors must not break recording.
+    if (this.onActivity) guarded("replay", this.onActivity);
     if (
       this.current.events.length > 0 &&
       event.timestamp - this.current.startedAtMs >= this.segmentDuration
     ) {
       const completed = this.current;
+      completed.images.completeLayout();
       const tooStale =
         event.timestamp - this.current.startedAtMs >= 2 * this.segmentDuration;
       this.previous = tooStale ? null : this.current;
@@ -157,17 +194,26 @@ export class SessionRecorder {
       // the last event included in the segment.
       if (this.onSegmentReady && completed.events.length > 0) {
         const lastTs = completed.events[completed.events.length - 1]!.timestamp;
-        try {
-          this.onSegmentReady({
+        // Subscriber errors must not break recording — rrweb keeps emitting.
+        guarded("replay", () =>
+          this.onSegmentReady!({
             events: completed.events,
             startedAt: completed.startedAt,
             endedAt: new Date(lastTs).toISOString(),
-          });
-        } catch {
-          // Subscriber errors must not break recording — rrweb keeps emitting.
-        }
+          }),
+        );
       }
     }
+    // An event that could not be masked is not kept: losing it costs part of the replay, keeping it could show
+    // what the page masks.
+    if (!guarded("mask", () => (maskEvent(event, this.node), true), false))
+      return;
+    // Every policy passes the segment: an image whose inline source is removed keeps its box.
+    const segment = this.current.images;
+    const encoded = this.inlineImages && !segment.overflowed &&
+      guarded("images", () => (this.images.inline(event, true, segment), true), false);
+    // An encoding failure can leave an event only partially processed. Scrub it in full before retention.
+    if (!encoded && !guarded("images", () => (this.images.sanitize(event, undefined, segment), true), false)) return;
     if (this.current.events.length === 0) {
       this.current.startedAtMs = event.timestamp;
       this.current.startedAt = new Date(event.timestamp).toISOString();
@@ -187,6 +233,7 @@ export class SessionRecorder {
   } | null {
     if (this.current.events.length === 0) return null;
     const completed = this.current;
+    completed.images.completeLayout();
     this.current = this.newSegment();
     const lastTs = completed.events[completed.events.length - 1]!.timestamp;
     return {
@@ -199,6 +246,7 @@ export class SessionRecorder {
   private newSegment(): Segment {
     const now = Date.now();
     return {
+      images: new ReplaySegmentImages(this.node),
       events: [],
       startedAt: new Date(now).toISOString(),
       startedAtMs: now,
@@ -206,6 +254,7 @@ export class SessionRecorder {
   }
 
   getSegments(): { events: eventWithTime[]; timestamp: string }[] {
+    this.current.images.completeLayout();
     const segments: { events: eventWithTime[]; timestamp: string }[] = [];
     if (this.previous && this.previous.events.length > 0) {
       segments.push({
@@ -232,6 +281,7 @@ export class SessionRecorder {
    * standalone without `previous`.
    */
   getClipEvents(): eventWithTime[] {
+    this.current.images.completeLayout();
     if (this.current.events.length > 0) return this.current.events;
     if (this.previous && this.previous.events.length > 0) {
       return this.previous.events;

@@ -1,10 +1,14 @@
 import type { ControlState, RingBuffer, SignalName } from "@tracewayapp/core";
+import { guarded } from "../guarded.js";
 import type { BufferedItem } from "../otel/router.js";
 import { BufferStore, serializeBuffer } from "./buffer-store.js";
 import { BUFFER_STORE, OUTBOX_STORE, replaceForToken } from "./idb.js";
 import type { StoredBatch } from "./idb.js";
 import { Outbox } from "./outbox.js";
 import type { SendResult } from "./outbox.js";
+
+/** 512 KiB of the origin's session storage at most (it holds UTF-16). */
+const MAX_CHECKPOINT_CHARS = 256 * 1024;
 
 /** Owns restoration and durable delivery; restored and new records share the same ring budget. */
 export class TelemetryPersistence {
@@ -70,7 +74,8 @@ export class TelemetryPersistence {
   configure(): void {
     const next =
       this.control.settings().buffer.persist &&
-      typeof indexedDB !== "undefined";
+      // The getter itself throws where site data is blocked (SecurityError), as in idb.ts.
+      guarded("storage", () => typeof indexedDB !== "undefined", false);
     if (!this.started || next === this.enabled) return;
     this.enabled = next;
     if (next) this.outbox.start();
@@ -110,11 +115,11 @@ export class TelemetryPersistence {
         this.token,
         sessionId,
       );
+      const checkpoint = JSON.stringify({ sessionId, entries });
       try {
-        sessionStorage.setItem(
-          this.checkpointKey(),
-          JSON.stringify({ sessionId, entries }),
-        );
+        // The origin's 5 MB of session storage are the app's too: a larger buffer is kept in IndexedDB only.
+        if (checkpoint.length > MAX_CHECKPOINT_CHARS) throw checkpoint.length;
+        sessionStorage.setItem(this.checkpointKey(), checkpoint);
       } catch {
         try {
           sessionStorage.removeItem(this.checkpointKey());

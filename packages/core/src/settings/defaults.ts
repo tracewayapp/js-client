@@ -1,5 +1,12 @@
-import type { Ceilings, Mode, SignalName, Settings, Trigger } from "./types.js";
-import { SIGNALS } from "./types.js";
+import type {
+  Ceilings,
+  Mode,
+  SignalName,
+  Settings,
+  TracewayImagePolicy,
+  Trigger,
+} from "./types.js";
+import { IMAGE_POLICIES, SIGNALS } from "./types.js";
 
 export const DEFAULT_EXCEPTION_TRIGGER_ID = "default-exception";
 
@@ -58,6 +65,7 @@ export function defaultSettings(
       mode: options.recordAllSessions ? "stream" : "buffer",
       sessionSampleRate: 1,
       maskAllInputs: true,
+      images: "wifi",
     },
     metrics: { enabled: true, sampleRate: 1, flushSeconds: 300 },
     buffer: {
@@ -84,6 +92,10 @@ export interface CeilingOptions {
   captureRouteTiming?: boolean;
   captureMetrics?: boolean;
   sessions?: boolean;
+  /** The most `replay.images` may allow. Default `always`; a value that is not a policy counts as `off`. */
+  replayImages?: TracewayImagePolicy;
+  /** The page set `replay.maskAllInputs: true` itself, which no remote setting may lower. */
+  maskAllInputs?: boolean;
 }
 
 export function ceilingsFrom(options: CeilingOptions = {}): Ceilings {
@@ -105,5 +117,12 @@ export function ceilingsFrom(options: CeilingOptions = {}): Ceilings {
     replay: allow(options.sessionRecording),
     sessions: options.sessions !== false,
     metrics: options.captureMetrics !== false,
+    replayImages:
+      options.replayImages == null
+        ? "always"
+        : IMAGE_POLICIES.includes(options.replayImages)
+          ? options.replayImages
+          : "off",
+    maskAllInputs: options.maskAllInputs === true,
   };
 }

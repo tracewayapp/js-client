@@ -1,4 +1,5 @@
 import { defineConfig } from "tsup";
+import { stripCommentsPlugin } from "../../scripts/strip-comments.mjs";
 
 export default defineConfig([
   {
@@ -7,6 +8,7 @@ export default defineConfig([
     dts: true,
     clean: true,
     sourcemap: true,
+    plugins: [stripCommentsPlugin()],
     platform: "browser",
   },
   {
@@ -16,6 +18,7 @@ export default defineConfig([
     platform: "browser",
     noExternal: [/.*/],
     sourcemap: true,
+    plugins: [stripCommentsPlugin()],
     minify: true,
   },
 ]);

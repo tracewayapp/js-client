@@ -34,6 +34,7 @@ vi.mock("web-vitals/attribution", () => {
   };
 });
 
+import { interactionTargets } from "./interaction-targets.js";
 import { WebVitalsInstrumentation, webVitalRecord } from "./web-vitals.js";
 
 function inp(
@@ -229,6 +230,8 @@ describe("WebVitalsInstrumentation", () => {
   });
 
   afterEach(() => {
+    // Gives back the page-wide interaction listeners, which the next test counts on.
+    instrumentation.disable();
     vi.unstubAllGlobals();
   });
 
@@ -321,6 +324,59 @@ describe("WebVitalsInstrumentation", () => {
       Array.from({ length: 10 }, (_, i) => entry(20 + i, 700 + i, i)),
     );
     expect(reportInp()).toBeUndefined();
+  });
+
+  it("stops observing and naming interactions when disabled, as shutdown() does, and starts again when enabled", () => {
+    const observers: Array<{ observing: boolean }> = [];
+    vi.stubGlobal(
+      "PerformanceObserver",
+      class {
+        static supportedEntryTypes = ["event"];
+        observing = false;
+        constructor() {
+          observers.push(this);
+        }
+        observe(): void {
+          this.observing = true;
+        }
+        takeRecords(): object[] {
+          return [];
+        }
+        disconnect(): void {
+          this.observing = false;
+        }
+      },
+    );
+    const added = vi.spyOn(globalThis, "addEventListener");
+    const removed = vi.spyOn(globalThis, "removeEventListener");
+    const pageshow = (calls: unknown[][]) => calls.filter(([type]) => type === "pageshow").map(([, listener]) => listener);
+    document.body.innerHTML = `<button data-testid="go">Go</button>`;
+    const named = () => {
+      const event = new Event("pointerup", { bubbles: true });
+      document.querySelector("button")!.dispatchEvent(event);
+      // An entry without a target: only the name taken while the event was dispatched is left.
+      return interactionTargets.of({ startTime: event.timeStamp });
+    };
+
+    instrumentation.enable();
+    expect(observers.map((o) => o.observing)).toEqual([true]);
+    expect(pageshow(added.mock.calls)).toHaveLength(1);
+    expect(named()).toBe('button[data-testid="go"]');
+
+    instrumentation.disable();
+    expect(observers.map((o) => o.observing)).toEqual([false]);
+    expect(pageshow(removed.mock.calls)).toEqual(pageshow(added.mock.calls));
+    expect(named()).toBeUndefined();
+
+    instrumentation.enable();
+    expect(observers.map((o) => o.observing)).toEqual([false, true]);
+    expect(pageshow(added.mock.calls)).toHaveLength(2);
+    expect(named()).toBe('button[data-testid="go"]');
+    // The library has no way to take its listeners back: they are not registered a second time.
+    expect(listeners.registered).toHaveLength(5);
+    instrumentation.disable();
+    expect(named()).toBeUndefined();
+    vi.restoreAllMocks();
   });
 
   it("collects nothing without PerformanceObserver", () => {

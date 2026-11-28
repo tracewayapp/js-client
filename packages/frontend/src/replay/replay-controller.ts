@@ -1,10 +1,14 @@
-import type { Mode } from "@tracewayapp/core";
+import type { Mode, TracewayImagePolicy } from "@tracewayapp/core";
+import { guarded } from "../guarded.js";
 import { SessionRecorder } from "../session-recorder.js";
 import type { SessionManager } from "../session/session-manager.js";
 import type {
   RecordingSegment,
   RecordingsTransport,
 } from "../transport/recordings.js";
+
+/** `[session id, bytes]` of pictures the session's recording carries, so the 4 MiB last across its pages. */
+const IMAGE_BYTES_KEY = "traceway:replay-image-bytes";
 
 interface BufferedSegment {
   segment: RecordingSegment;
@@ -14,6 +18,8 @@ interface BufferedSegment {
 
 export interface ReplayApplyOptions {
   maskAllInputs: boolean;
+  /** `replay.images`: `off` blanks pictures, `wifi` records their URLs, `always` also small copies. Default `wifi`. */
+  images?: TracewayImagePolicy;
   /** Whether this session falls inside `replay.sessionSampleRate`; sessions outside it never stream. */
   sessionSampled: boolean;
   maxBytes: number;
@@ -30,6 +36,7 @@ export class ReplayController {
   lastFlushSegments = 0;
   private mode: Mode = "off";
   private maskAllInputs = true;
+  private images: TracewayImagePolicy = "wifi";
   private buffered: BufferedSegment[] = [];
   private bufferedBytes = 0;
   private maxBytes = 8 * 1024 * 1024;
@@ -57,7 +64,12 @@ export class ReplayController {
     this.maxAgeMs = options.maxAgeMs;
     const effective: Mode =
       mode === "stream" && !options.sessionSampled ? "buffer" : mode;
-    if (effective === "off" || this.maskAllInputs !== options.maskAllInputs) {
+    const images = options.images ?? "wifi";
+    if (
+      effective === "off" ||
+      this.maskAllInputs !== options.maskAllInputs ||
+      this.images !== images
+    ) {
       this.transport.discard();
       this.recorder.stop();
       this.buffered = [];
@@ -65,9 +77,10 @@ export class ReplayController {
       this.currentIndex = null;
     }
     this.maskAllInputs = options.maskAllInputs;
+    this.images = images;
     if (effective !== "off" && !this.recorder.isRecording()) {
       void this.recorder
-        .start({ maskAllInputs: options.maskAllInputs })
+        .start({ maskAllInputs: options.maskAllInputs, images })
         .catch(() => undefined);
     }
     if (effective === "stream" && this.mode !== "stream") {
@@ -114,7 +127,12 @@ export class ReplayController {
       if (segment.sessionId || segment.exceptionId) out.push(segment);
     }
     if (out.length > 0)
-      this.lastFlushSegments = this.transport.send(out, { unloading });
+      this.lastFlushSegments = this.transport.send(out, {
+        unloading,
+        onAdmitted: segment => {
+          if (partial && segment.events === partial.events) partial.markExposed();
+        },
+      });
   }
 
   /** The session ended: the in-progress segment is closed out under it. */
@@ -124,7 +142,26 @@ export class ReplayController {
     this.currentIndex = null;
   }
 
+  /** Bytes of pictures this session's recording carries (`replay.images = "always"`). */
+  imageBytes(): number {
+    return this.recorder.images.bytes;
+  }
+
   onSessionStart(): void {
+    const id = this.session.current()?.id;
+    this.buffered = this.buffered.filter(entry => entry.segment.sessionId === id);
+    this.bufferedBytes = this.buffered.reduce((sum, entry) => sum + entry.bytes, 0);
+    this.recorder.images.clearCache();
+    this.recorder.images.bytes = guarded(
+      "images",
+      () => {
+        const [session, bytes] = JSON.parse(
+          sessionStorage.getItem(IMAGE_BYTES_KEY) ?? "[]",
+        );
+        return session === id && bytes > 0 ? +bytes : 0;
+      },
+      0,
+    );
     this.currentIndex = null;
     this.recorder.startFresh();
   }
@@ -152,6 +189,14 @@ export class ReplayController {
     if (!session || segment.events.length === 0) return;
     const index = this.currentIndex ?? this.session.nextSegmentIndex();
     this.currentIndex = null;
+    const imageBytes = this.recorder.images.bytes;
+    if (imageBytes)
+      guarded("images", () =>
+        sessionStorage.setItem(
+          IMAGE_BYTES_KEY,
+          JSON.stringify([session.id, imageBytes]),
+        ),
+      );
     const payload: RecordingSegment = {
       sessionId: session.id,
       segmentIndex: index,

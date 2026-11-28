@@ -11,11 +11,13 @@ export interface RecordingSegment {
 }
 
 interface Batch {
-  segments: RecordingSegment[];
+  segments: string[];
   attempts: number;
 }
 
 const MAX_SEGMENTS_PER_REQUEST = 100;
+/** Batches kept while uploads fail (offline, an outage): the oldest go first, counted as failed. */
+const MAX_QUEUED_BATCHES = 20;
 /**
  * Browsers cap all in-flight keepalive bodies of a page at 64 KiB. Replay takes what is left after the room
  * kept for the session's closing event, which must not be the request that is refused.
@@ -40,27 +42,43 @@ export class RecordingsTransport {
     private readonly url: string,
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
-    private readonly admit: (segment: RecordingSegment) => boolean = () => true,
+    private readonly admit: (segment: RecordingSegment, serialized: string) => boolean = () => true,
     private readonly onFailure: () => void = () => {},
   ) {}
 
   send(
     segments: RecordingSegment[],
-    options: { unloading?: boolean } = {},
+    options: { unloading?: boolean; onAdmitted?: (segment: RecordingSegment) => void } = {},
   ): number {
-    segments = segments.filter(this.admit);
-    for (let i = 0; i < segments.length; i += MAX_SEGMENTS_PER_REQUEST) {
+    const accepted: string[] = [];
+    for (const segment of segments) {
+      // Later events can take the embedded pictures out of the live segment. Queue the exact snapshot admitted here.
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(segment);
+      } catch {
+        this.recordFailure(1);
+        continue;
+      }
+      if (this.admit(segment, serialized)) {
+        accepted.push(serialized);
+        options.onAdmitted?.(segment);
+      }
+    }
+    for (let i = 0; i < accepted.length; i += MAX_SEGMENTS_PER_REQUEST) {
       this.queue.push({
-        segments: segments.slice(i, i + MAX_SEGMENTS_PER_REQUEST),
+        segments: accepted.slice(i, i + MAX_SEGMENTS_PER_REQUEST),
         attempts: 0,
       });
     }
+    while (this.queue.length > MAX_QUEUED_BATCHES)
+      this.recordFailure(this.queue.shift()!.segments.length);
     if (options.unloading) {
       this.drainKeepalive();
     } else {
       this.schedule(0);
     }
-    return segments.length;
+    return accepted.length;
   }
 
   discard(): void {
@@ -85,10 +103,14 @@ export class RecordingsTransport {
 
   private schedule(delayMs: number): void {
     if (this.timer !== null) return;
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      void this.drain();
-    }, delayMs);
+    this.timer = setTimeout(
+      () => {
+        this.timer = null;
+        void this.drain();
+      },
+      // A longer Retry-After would run at once: browsers wrap delays over 2^31 - 1 ms.
+      Math.min(delayMs, 2 ** 31 - 1),
+    );
   }
 
   private drain(): Promise<void> {
@@ -164,8 +186,8 @@ export class RecordingsTransport {
     this.onFailure();
   }
 
-  private encode(segments: RecordingSegment[]): Uint8Array {
-    return gzipSync(strToU8(JSON.stringify({ segments })));
+  private encode(segments: string[]): Uint8Array {
+    return gzipSync(strToU8('{"segments":[' + segments.join(",") + ']}'));
   }
 
   private request(body: Uint8Array, keepalive: boolean): Promise<Response> {

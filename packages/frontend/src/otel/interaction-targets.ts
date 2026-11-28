@@ -1,3 +1,4 @@
+import { guarded } from "../guarded.js";
 import { selectorOf } from "./selector.js";
 
 /** The events the browser groups into interactions. */
@@ -15,14 +16,16 @@ export class InteractionTargets {
   private readonly names = new Map<number, string>();
   private users = 0;
 
-  private readonly name = (event: Event): void => {
-    if (this.names.has(event.timeStamp)) return;
-    const target = selectorOf(event.target);
-    if (!target) return;
-    this.names.set(event.timeStamp, target);
-    if (this.names.size > NAMED_KEPT)
-      this.names.delete(this.names.keys().next().value!);
-  };
+  // Runs inside the page's input dispatch.
+  private readonly name = (event: Event): void =>
+    guarded("interactions", () => {
+      if (this.names.has(event.timeStamp)) return;
+      const target = selectorOf(event.target);
+      if (!target) return;
+      this.names.set(event.timeStamp, target);
+      if (this.names.size > NAMED_KEPT)
+        this.names.delete(this.names.keys().next().value!);
+    });
 
   /** Listens while anything that measures interactions is running. */
   retain(): void {

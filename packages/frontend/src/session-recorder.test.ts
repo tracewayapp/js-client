@@ -36,6 +36,7 @@ vi.mock("@rrweb/record", () => {
 import { record } from "@rrweb/record";
 import {
   BLOCK_SELECTOR,
+  IMAGE_SELECTOR,
   MASK_TEXT_SELECTOR,
   SessionRecorder,
 } from "./session-recorder.js";
@@ -155,13 +156,32 @@ describe("SessionRecorder privacy options", () => {
     expect(record).toHaveBeenCalledTimes(1);
     const options = vi.mocked(record).mock.calls[0]![0]!;
     expect(options).toMatchObject({
-      maskAllInputs: false,
       maskTextSelector: ".traceway-mask",
       blockSelector: BLOCK_SELECTOR,
     });
+    // rrweb then masks passwords only.
+    expect(options.maskInputOptions).toBeUndefined();
+    expect(options.maskAllInputs).toBeUndefined();
     expect(options.blockClass).toBeUndefined();
     expect(options.maskTextClass).toBeUndefined();
     expect(options.ignoreClass).toBeUndefined();
+    rec.stop();
+  });
+
+  it("starts rrweb with the policy and masking asked for last, also when they change while rrweb loads (§14.5)", async () => {
+    const rec = new SessionRecorder();
+    // A rule arrives while rrweb is still being loaded: the replay restarts with images off and inputs masked.
+    const first = rec.start({ maskAllInputs: false, images: "wifi" });
+    rec.stop();
+    const second = rec.start({ maskAllInputs: true, images: "off" });
+    await Promise.all([first, second]);
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(record).mock.calls[0]![0]).toMatchObject({
+      // rrweb's own `maskAllInputs: true` would replace this list with one that has no hidden or file inputs.
+      maskInputOptions: { text: true, textarea: true, select: true, password: true, hidden: true, file: true },
+      blockSelector: `${BLOCK_SELECTOR}, ${IMAGE_SELECTOR}`,
+    });
+    expect(vi.mocked(record).mock.calls[0]![0]!.maskAllInputs).toBeUndefined();
     rec.stop();
   });
 

@@ -1,50 +1,59 @@
 import type { App, InjectionKey } from "vue";
+import { debugLog, guarded } from "@tracewayapp/core";
 import * as traceway from "@tracewayapp/frontend";
+import { startTraceway } from "./types.js";
 import type { TracewayPluginOptions, TracewayContextValue } from "./types.js";
 
 export const TracewayKey: InjectionKey<TracewayContextValue> = Symbol("traceway");
 
+/** What the plugin provides, and what `useTraceway()` returns without it: the functions work wherever the SDK runs. */
+export const tracewayContext: TracewayContextValue = {
+  captureException: traceway.captureException,
+  captureExceptionWithAttributes: traceway.captureExceptionWithAttributes,
+  captureMessage: traceway.captureMessage,
+  recordAction: traceway.recordAction,
+};
+
 export function createTracewayPlugin(pluginOptions: TracewayPluginOptions) {
   return {
     install(app: App) {
-      traceway.init(pluginOptions.connectionString, pluginOptions.options);
+      // Inside the app's `app.use()`: a failure here (a build without its token) must not stop the app.
+      guarded("vue.install", () => startTraceway(pluginOptions));
 
-      const context: TracewayContextValue = {
-        captureException: traceway.captureException,
-        captureExceptionWithAttributes: traceway.captureExceptionWithAttributes,
-        captureMessage: traceway.captureMessage,
-        recordAction: traceway.recordAction,
-      };
+      app.provide(TracewayKey, tracewayContext);
 
-      app.provide(TracewayKey, context);
+      // On the server there is nothing to report to: the SDK only runs in the browser. A handler that swallowed
+      // render errors there would hide them from the framework, so Vue's own handling stays in place. The router
+      // is one per request there, and is not handed to the SDK.
+      if (typeof window === "undefined") return;
 
       // Vue Router is usually installed next to this plugin, before or after it: views are named by its route
       // patterns without the app calling `trackRouter`.
       const useRouter = () =>
-        traceway.trackRouter(app.config.globalProperties.$router);
+        guarded("vue.install", () =>
+          traceway.trackRouter(app.config.globalProperties.$router),
+        );
       useRouter();
       Promise.resolve().then(useRouter);
 
-      // On the server there is nothing to report to: the SDK only runs in the browser. A handler that swallowed
-      // render errors there would hide them from the framework, so Vue's own handling stays in place.
-      if (typeof window === "undefined") return;
-
-      const debug = pluginOptions.options?.debug === true;
       const previous = app.config.errorHandler;
 
       app.config.errorHandler = (err, instance, info) => {
-        if (err instanceof Error) {
-          traceway.captureException(err);
-        } else {
-          traceway.captureMessage(String(err));
-        }
-        if (debug) {
-          console.error("[Traceway] Vue error:", err);
-          console.error("[Traceway] Component:", instance);
-          console.error("[Traceway] Info:", info);
-        }
+        guarded("vue.errorHandler", () => {
+          if (err instanceof Error) {
+            traceway.captureException(err);
+          } else {
+            traceway.captureMessage(String(err));
+          }
+          // With debug on: the page's own console.warn, so the line is not recorded as a log of the app.
+          debugLog(`Vue error (${info})`, err);
+        });
         // A handler the app or its framework installed before this plugin keeps working.
-        previous?.(err, instance, info);
+        if (previous) return previous(err, instance, info);
+        // Without one, Vue's own handling must still happen: with an errorHandler set, Vue would only call it. Vue
+        // treats an error its errorHandler throws as unhandled and does what it does without a handler: logs it with
+        // console.error in production and rethrows it in development.
+        throw err;
       };
     },
   };

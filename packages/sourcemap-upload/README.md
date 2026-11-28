@@ -17,7 +17,7 @@ Uploads `.map` files (and their minified bundles) to your Traceway backend so th
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
-> **Version 2.0.0.** This package is versioned in lockstep with the Traceway browser SDK. The CLI itself is the same as in 1.x: same flags, same environment variables, same upload endpoint. It works with any version of the Traceway SDKs.
+> **Version 2.1.0.** This package is versioned in lockstep with the Traceway browser SDK. The flags, environment variables and upload endpoint are the same as in 1.x; since 2.1.0 `--url` is optional and defaults to Traceway Cloud. It works with any version of the Traceway SDKs.
 
 ## Features
 
@@ -42,7 +42,7 @@ This installs 2.x and provides the `traceway-sourcemaps` command; `@tracewayapp/
 3. In the **Source Map Upload** card, click **Generate Upload Token**
 4. Copy the token
 
-The upload token is separate from the project token in your connection string and only allows uploads for that project. **Regenerate** on the same card issues a new token and invalidates the current one immediately. Members with the `readonly` role do not see the card.
+The upload token is separate from the project token the SDK starts with and only allows uploads for that project. **Regenerate** on the same card issues a new token and invalidates the current one immediately. Members with the `readonly` role do not see the card.
 
 ## Quick Start
 
@@ -50,12 +50,11 @@ Run after your production build:
 
 ```bash
 npx @tracewayapp/sourcemap-upload \
-  --url https://traceway.example.com \
   --token YOUR_SOURCE_MAP_TOKEN \
   --directory dist/assets
 ```
 
-`--url` is the origin of your Traceway instance, not the SDK connection string: the CLI appends `/api/sourcemaps/upload` itself.
+The maps go to Traceway Cloud (`https://cloud.tracewayapp.com`). For a self-hosted server, add `--url https://traceway.mycompany.com` (or set `TRACEWAY_URL`): the address of the server, which the CLI reads like the SDK's `baseUrl` (`https://` added when there is no scheme, a trailing `/api` dropped) before it appends `/api/sourcemaps/upload`.
 
 The backend resolves each minified stack frame to its map by filename, so there is nothing to configure beyond pointing the CLI at your build output. Re-running the upload replaces the map for any filename it uploads; the most recent upload of each file wins.
 
@@ -65,20 +64,20 @@ Make sure the build actually emits `.map` files (Vite `build.sourcemap: true`, R
 
 | Flag | Env variable | Required | Description |
 |------|--------------|----------|-------------|
-| `--url <url>` | `TRACEWAY_URL` | Yes | Traceway backend URL (a trailing slash is ignored) |
+| `--url <url>` | `TRACEWAY_URL` | No | Traceway server URL, only for a self-hosted server (default: `https://cloud.tracewayapp.com`; a trailing slash is ignored) |
 | `--token <token>` | `TRACEWAY_SOURCEMAP_TOKEN` | Yes | Source map upload token from the dashboard |
 | `--directory <dir>` | — | No | Directory to search recursively for `.map` files and their bundles (default: `.`, the current directory) |
 | `--help`, `-h` | — | No | Print the usage and exit |
 
-A flag takes precedence over its environment variable. Write each flag and its value as two arguments (`--url https://...`); the `--url=https://...` form is not parsed.
+A flag takes precedence over its environment variable, and an empty value (an unset CI secret) counts as not given. Write each flag and its value as two arguments (`--url https://...`); the `--url=https://...` form is not parsed.
 
 ### Environment variables
 
 In CI/CD, prefer environment variables so the token is never on the command line:
 
 ```bash
-export TRACEWAY_URL=https://traceway.example.com
 export TRACEWAY_SOURCEMAP_TOKEN=$TRACEWAY_TOKEN_FROM_SECRETS
+# export TRACEWAY_URL=https://traceway.mycompany.com   # only for a self-hosted server
 
 npx @tracewayapp/sourcemap-upload \
   --directory dist/assets
@@ -88,8 +87,8 @@ npx @tracewayapp/sourcemap-upload \
 
 | Code | When |
 |------|------|
-| `0` | The upload succeeded (`Successfully uploaded N file(s)`), no `.map` file was found, or `--help` was printed |
-| `1` | `--url` or `--token` is missing, a file is larger than 50 MB (nothing is uploaded), the request failed, or the backend answered with a non-2xx status (`Upload failed (<status>): <body>`) |
+| `0` | The upload succeeded (`Successfully uploaded N file(s) to <endpoint>`), no `.map` file was found, or `--help` was printed |
+| `1` | `--token` is missing, a file is larger than 50 MB (nothing is uploaded), the request failed, or the backend answered with a non-2xx status (`Upload failed (<status>): <body>`) |
 
 ## CI/CD Integration
 
@@ -102,11 +101,10 @@ Add source-map upload as a step after your build, pointing it at your bundler's 
   run: npm run build
 
 - name: Upload source maps
-  run: |
-    npx @tracewayapp/sourcemap-upload \
-      --url ${{ secrets.TRACEWAY_URL }} \
-      --token ${{ secrets.TRACEWAY_SOURCEMAP_TOKEN }} \
-      --directory dist/assets
+  env:
+    TRACEWAY_SOURCEMAP_TOKEN: ${{ secrets.TRACEWAY_SOURCEMAP_TOKEN }}
+    # TRACEWAY_URL: ${{ vars.TRACEWAY_URL }}   # only for a self-hosted server
+  run: npx @tracewayapp/sourcemap-upload --directory dist/assets
 ```
 
 ### GitLab CI
@@ -115,11 +113,10 @@ Add source-map upload as a step after your build, pointing it at your bundler's 
 deploy:
   script:
     - npm run build
-    - npx @tracewayapp/sourcemap-upload
-        --url $TRACEWAY_URL
-        --token $TRACEWAY_SOURCEMAP_TOKEN
-        --directory dist/assets
+    - npx @tracewayapp/sourcemap-upload --directory dist/assets
 ```
+
+`TRACEWAY_SOURCEMAP_TOKEN` (and `TRACEWAY_URL` for a self-hosted server) come from the project's CI/CD variables.
 
 ## Limits
 

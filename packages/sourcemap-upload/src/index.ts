@@ -1,10 +1,5 @@
 import { upload } from "./upload.js";
-
-function getArg(args: string[], flag: string): string | undefined {
-  const idx = args.indexOf(flag);
-  if (idx === -1 || idx + 1 >= args.length) return undefined;
-  return args[idx + 1];
-}
+import { DEFAULT_URL, resolveOptions } from "./options.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -13,21 +8,15 @@ async function main() {
     console.log(`Usage: traceway-sourcemaps [options]
 
 Options:
-  --url <url>          Traceway backend URL (or TRACEWAY_URL env var)
+  --url <url>          Traceway server URL, only for a self-hosted server (or TRACEWAY_URL env var; default: ${DEFAULT_URL})
   --token <token>      Source map upload token (or TRACEWAY_SOURCEMAP_TOKEN env var)
   --directory <dir>    Directory to search for .map files (default: ".")
   --help, -h           Show this help message`);
     process.exit(0);
   }
 
-  const url = getArg(args, "--url") ?? process.env.TRACEWAY_URL;
-  const token = getArg(args, "--token") ?? process.env.TRACEWAY_SOURCEMAP_TOKEN;
-  const directory = getArg(args, "--directory") ?? ".";
+  const { url, token, directory } = resolveOptions(args, process.env);
 
-  if (!url) {
-    console.error("Error: --url is required (or set TRACEWAY_URL)");
-    process.exit(1);
-  }
   if (!token) {
     console.error(
       "Error: --token is required (or set TRACEWAY_SOURCEMAP_TOKEN)",

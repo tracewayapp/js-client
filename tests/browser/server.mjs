@@ -90,10 +90,6 @@ const server = createServer(async (req, res) => {
         }),
       );
     }
-    if (state.status && path !== "/api/report") {
-      res.statusCode = 404;
-      return res.end();
-    }
     return res.end("{}");
   }
   if (url.pathname.endsWith(".js")) {

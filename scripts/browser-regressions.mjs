@@ -13,6 +13,7 @@ const bundle = await readFile(
 const vendor = {
   "/vue.js": "../node_modules/vue/dist/vue.global.prod.js",
   "/vue-router.js": "../node_modules/vue-router/dist/vue-router.global.prod.js",
+  "/rrweb.js": "../node_modules/rrweb/dist/rrweb.umd.min.cjs",
 };
 let document = { schemaVersion: 1 };
 let failLogs = false;
@@ -86,6 +87,12 @@ const server = createServer(async (req, res) => {
       '<!doctype html><title>Traceway mask fixture</title>' +
         '<p class="traceway-mask">masked-paragraph-secret</p>' +
         '<div class="traceway-mask"><img src="/masked-image-secret.png" width="40" height="30"></div>' +
+        '<div class="traceway-mask"><iframe srcdoc="private inline note"></iframe></div>' +
+        '<img id="preview" src="data:image/png;base64,cHJldmlldw==" data-lazy-src="data:image/png;base64,bGF6eQ==">' +
+        '<style>.preview-card { background-image: url(data:image/png;base64,Y29sb3I=); color: blue; }' +
+        ' .tick { background-image: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27m3 8 3 3 7-7%27/%3E%3C/svg%3E"); }</style>' +
+        '<img id="pixel" alt="inline-pixel" style="width:64px;height:48px" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">' +
+        '<iframe srcdoc="&lt;img src=data:image/png;base64,Y2hpbGQ=&gt;"></iframe>' +
         '<div class="traceway-blank" style="width:120px;height:60px">blank-box-secret</div>' +
         '<p class="rr-mask">rr-mask-secret</p><p>visible-mask-fixture</p><script src="/sdk.js"></script>',
     );
@@ -278,6 +285,17 @@ try {
           }),
         );
         await maskPage.evaluate(() => Traceway.refreshConfig());
+        await maskPage.evaluate(async () => {
+          document.querySelector("iframe").srcdoc = "edited private inline note";
+          document.querySelector("#preview").srcset = "data:image/png;base64,dXBkYXRl 2x";
+          document.querySelector("p.rr-mask").after(document.createTextNode("updated public fixture"));
+          const code = document.createElement("code");
+          code.textContent = "initial public note";
+          document.body.append(code);
+          await new Promise(requestAnimationFrame);
+          code.firstChild.data = "literal data:image/png example in application text";
+          await new Promise(resolve => setTimeout(resolve, 50));
+        });
         const session = await maskPage.evaluate(() =>
           Traceway.currentSessionId(),
         );
@@ -289,6 +307,12 @@ try {
         assert(clip.length > 0, "expected a real rrweb clip");
         const body = JSON.stringify(clip);
         assert(body.includes("visible-mask-fixture"));
+        assert(body.includes("updated public fixture"));
+        assert(body.includes("literal data:image/png example in application text"));
+        for (const original of ["private inline note", "cHJldmlldw==", "bGF6eQ==", "dXBkYXRl", "Y29sb3I=", "Y2hpbGQ=", "R0lGODlhAQAB"])
+          assert(!body.includes(original), original);
+        // A vector icon of the page's CSS is kept under every policy.
+        assert(body.includes("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27"), "an svg icon was removed from the CSS");
         for (const secret of [
           "masked-paragraph-secret",
           "masked-image-secret",
@@ -315,11 +339,92 @@ try {
           );
         assert(box("div", "120px", "60px"), "traceway-blank is not a blocked box");
         assert(box("img", "40px", "30px"), "a masked image is not a blocked box");
+        assert(box("img", "64px", "48px"), "an image whose data: source was removed did not keep its box");
       } finally {
         await maskContext.close();
       }
     },
   );
+  await check("real Chromium thumbnails fall back to URL references in a playable segment above the image allowance", async () => {
+    const previousConfig = document;
+    document = { replay: { images: "always" } };
+    try {
+      for (const count of [1, 12]) {
+        const photoContext = await browser.newContext();
+        try {
+          const tab = await photoContext.newPage();
+          await tab.goto(origin);
+          const session = await tab.evaluate(async (count) => {
+            Traceway.init({ token: "browser", baseUrl: location.origin, collection: { replay: { images: "always" } } });
+            await Traceway.refreshConfig();
+            const canvas = document.createElement("canvas");
+            canvas.width = canvas.height = 256;
+            const ctx = canvas.getContext("2d");
+            const pixels = ctx.createImageData(256, 256);
+            for (let i = 0; i < pixels.data.length; i += 65536)
+              crypto.getRandomValues(pixels.data.subarray(i, i + 65536));
+            for (let i = 3; i < pixels.data.length; i += 4) pixels.data[i] = 255;
+            ctx.putImageData(pixels, 0, 0);
+            const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+            const url = URL.createObjectURL(blob);
+            const lazyImage = async name => {
+              const img = new Image();
+              img.alt = name;
+              document.body.append(img);
+              await new Promise(requestAnimationFrame);
+              img.src = url;
+              await img.decode();
+              await new Promise(requestAnimationFrame);
+              if (img.width !== 256 || img.height !== 256) throw Error("fixture image has the wrong size");
+            };
+            if (count > 1) await lazyImage("lazy-before-cap");
+            for (let i = 0; i < count; ++i) {
+              const img = new Image();
+              img.alt = "preview-" + i;
+              img.src = url;
+              await img.decode();
+              document.body.append(img);
+              await new Promise(requestAnimationFrame);
+            }
+            if (count > 1) await lazyImage("lazy-after-cap");
+            Traceway.captureException(new Error("image allowance fixture"));
+            await Traceway.flush();
+            URL.revokeObjectURL(url);
+            return Traceway.currentSessionId();
+          }, count);
+          const clip = recordings.filter(segment => segment.sessionId === session);
+          const body = JSON.stringify(clip);
+          assert(body.includes("SDK regression fixture") && body.includes("preview-" + (count - 1)));
+          const imageBytes = [...body.matchAll(/data:image\/jpeg;base64,[A-Za-z0-9+/=]+/g)]
+            .reduce((total, match) => total + match[0].length, 0);
+          console.log(`  ${count} photo(s): ${imageBytes} inline image bytes, ${Buffer.byteLength(body)} replay JSON bytes`);
+          if (count === 1) assert(body.includes("data:image/jpeg;base64,"), "an affordable thumbnail should be recorded");
+          else {
+            // Over the allowance the segment loses its copies and keeps what "wifi" records: the URLs.
+            assert(!body.includes("data:image/"), "image copies survived in a segment over its allowance");
+            assert(body.includes("blob:" + origin), "the URL references of the pictures were removed with their copies");
+            assert(!body.includes('"rr_width":"256px"'), "a picture that kept its URL was given a fixed box");
+            const playback = await photoContext.newPage();
+            await playback.addScriptTag({ url: origin + "/rrweb.js" });
+            const events = clip.flatMap(segment => segment.events);
+            const frame = await playback.evaluateHandle(events => {
+              const player = new rrweb.Replayer(events, { root: document.body, showWarning: false });
+              player.pause(events.at(-1).timestamp - events[0].timestamp + 1);
+              return player.iframe;
+            }, events);
+            const replayFrame = await frame.asElement().contentFrame();
+            await expect(replayFrame.getByRole("heading", { name: "SDK regression fixture" })).toBeVisible();
+            for (const label of ["preview-11", "lazy-before-cap", "lazy-after-cap"])
+              await expect(replayFrame.locator(`img[alt="${label}"]`)).toHaveAttribute("src", /^blob:/);
+          }
+        } finally {
+          await photoContext.close();
+        }
+      }
+    } finally {
+      document = previousConfig;
+    }
+  });
   await check(
     "zero lookback does not upload a previous replay clip",
     async () => {

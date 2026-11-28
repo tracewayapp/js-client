@@ -66,7 +66,7 @@ for (const kind of ["OLD", "NEW"]) {
           return response.json();
         };
         await page.goto(
-          `/${framework}?connection=${encodeURIComponent(`browser-test-token@${base}/api/report`)}`,
+          `/${framework}?token=browser-test-token&baseUrl=${encodeURIComponent(base!)}`,
         );
         await page.waitForFunction(() => (window as any).ready);
         await page.evaluate(() => (window as any).sdk.refreshConfig());

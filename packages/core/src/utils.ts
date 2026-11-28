@@ -12,29 +12,9 @@ export function generateUUID(): string {
   });
 }
 
-export interface ParsedConnectionString {
-  token: string;
-  apiUrl: string;
-}
-
-export function parseConnectionString(
-  connectionString: string,
-): ParsedConnectionString {
-  const atIndex = connectionString.indexOf("@");
-  if (atIndex === -1) {
-    throw new Error(
-      "Invalid connection string: must be in format {token}@{apiUrl}",
-    );
-  }
-  const token = connectionString.slice(0, atIndex);
-  const apiUrl = connectionString.slice(atIndex + 1);
-  if (!token || !apiUrl) {
-    throw new Error(
-      "Invalid connection string: token and apiUrl must not be empty",
-    );
-  }
-  return { token, apiUrl };
-}
+// The 2.0 connection string (`token@url`), read by the rules of CONTRACT §16.1; see connection.ts.
+export { parseConnectionString } from "./connection.js";
+export type { ParsedConnectionString } from "./connection.js";
 
 export function nowISO(): string {
   return new Date().toISOString();

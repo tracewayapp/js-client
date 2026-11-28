@@ -19,7 +19,7 @@ Error tracking for React Native and Expo apps. Capture exceptions with full stac
 
 This is the React Native counterpart to [`@tracewayapp/react`](https://www.npmjs.com/package/@tracewayapp/react) (web) and [`com.tracewayapp:traceway`](https://github.com/tracewayapp/traceway-android) (native Android). It sends its reports over Traceway's native report protocol, the same wire format the Android and Flutter SDKs use.
 
-> **Version 2.0.0.** `@tracewayapp/react-native` is versioned in lockstep with the browser packages, but it is not the OpenTelemetry browser SDK: its API, options and transport are the same as in 1.x (the source is unchanged), so upgrading from 1.x needs no code changes. Remote collection settings, OTLP export, performance metrics, `track()` / `metric()` / `count()` and session replay belong to the [browser SDK](https://docs.tracewayapp.com/client/js-sdk) and are not part of this package.
+> **Version 2.1.0.** `@tracewayapp/react-native` is versioned in lockstep with the browser packages, but it is not the OpenTelemetry browser SDK: its API, options and transport are the same as in 1.x (the source is unchanged), so upgrading from 1.x needs no code changes. Remote collection settings, OTLP export, performance metrics, `track()` / `metric()` / `count()` and session replay belong to the [browser SDK](https://docs.tracewayapp.com/client/js-sdk) and are not part of this package.
 
 > **No screen recording.** Unlike the browser SDK (`@tracewayapp/frontend`), this package does not record the screen. The `rrweb` recorder is intentionally absent — nothing in the bundle reaches into a DOM that doesn't exist.
 
@@ -54,7 +54,7 @@ import { TracewayProvider } from "@tracewayapp/react-native";
 
 export default function App() {
   return (
-    <TracewayProvider connectionString="your-token@https://your-traceway-instance.com/api/report">
+    <TracewayProvider connectionString="your-token@https://cloud.tracewayapp.com/api/report">
       <RootNavigator />
     </TracewayProvider>
   );
@@ -63,7 +63,7 @@ export default function App() {
 
 Copy the connection string from your project's **Connection** page in the dashboard as it is, including the `/api/report` path after the host: this package posts its reports to that exact URL.
 
-That's it. Every uncaught throw, render-time exception, and `fetch` call is captured automatically. If you want to replace a crashed subtree with a custom `fallback` UI, `TracewayErrorBoundary` is still exported in 2.0.0 for that purpose, but it has been deprecated since v1.1.0. Do not build new code around it.
+That's it. Every uncaught throw, render-time exception, and `fetch` call is captured automatically. If you want to replace a crashed subtree with a custom `fallback` UI, `TracewayErrorBoundary` is still exported in 2.1.0 for that purpose, but it has been deprecated since v1.1.0. Do not build new code around it.
 
 ## Manual Capture
 
@@ -309,7 +309,7 @@ The [`traceway-sourcemaps`](https://www.npmjs.com/package/@tracewayapp/sourcemap
 ```bash
 npm install -D @tracewayapp/sourcemap-upload
 
-export TRACEWAY_URL="https://traceway.example.com"
+export TRACEWAY_URL="https://cloud.tracewayapp.com"
 export TRACEWAY_SOURCEMAP_TOKEN="your-upload-token"
 
 npx traceway-sourcemaps --directory android/app/build/generated/sourcemaps/react/release
@@ -345,7 +345,7 @@ Then point it at your own Traceway backend:
 ```bash
 cd packages/react-native/examples/expo-demo
 npm install
-TRACEWAY_DSN="YOUR_TOKEN@https://your-traceway-instance.com/api/report" npx expo start
+TRACEWAY_DSN="YOUR_TOKEN@https://cloud.tracewayapp.com/api/report" npx expo start
 ```
 
 Then open it in **Expo Go** (scan the QR code), or press `i` / `a` for iOS simulator / Android emulator.

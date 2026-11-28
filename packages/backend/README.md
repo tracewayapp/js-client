@@ -49,7 +49,7 @@ import {
 } from "@tracewayapp/backend";
 
 // Initialize once at startup
-init("your-token@https://traceway.example.com/api/report", {
+init("your-token@https://cloud.tracewayapp.com/api/report", {
   version: "1.0.0",
   serverName: "api-1",
 });

@@ -10,7 +10,7 @@
 
 A throwaway Expo app that exercises every capture path of [`@tracewayapp/react-native`](https://www.npmjs.com/package/@tracewayapp/react-native): caught/uncaught throws, render errors inside a `TracewayErrorBoundary` (deprecated, still exported), automatic `fetch` capture, manual `captureMessage` / `recordAction` / `setDeviceAttributes`, and explicit `flush()`. It also has a button for the one path the SDK does not cover, an unhandled promise rejection.
 
-Built against **Expo SDK 54** (React 19.1, React Native 0.81, New Architecture on by default). The app depends on the workspace copy of the SDK (`file:../..`), which is `@tracewayapp/react-native` 2.0.0: the same API, options and native `/api/report` transport as 1.x.
+Built against **Expo SDK 54** (React 19.1, React Native 0.81, New Architecture on by default). The app depends on the workspace copy of the SDK (`file:../..`), which is `@tracewayapp/react-native` 2.1.0: the same API, options and native `/api/report` transport as 1.x.
 
 ## Run it
 
@@ -27,12 +27,12 @@ Then in this directory:
 ```bash
 cd packages/react-native/examples/expo-demo
 npm install
-TRACEWAY_DSN="<your-token>@http://<your-host>:8082/api/report" npx expo start --clear
+TRACEWAY_DSN="<your-token>@https://cloud.tracewayapp.com/api/report" npx expo start --clear
 ```
 
 `TRACEWAY_DSN` is the connection string from your project's **Connection** page, used as it is: the SDK posts to that exact URL, so keep the `/api/report` path. `app.config.ts` reads the variable when Expo starts and passes it to the app through `extra.tracewayDsn`, so restart `expo start` after changing it.
 
-If `TRACEWAY_DSN` is not set, the app falls back to a placeholder DSN that won't reach a real server — the buttons still fire so you can verify the UI.
+For a self-hosted server, use its address instead of `https://cloud.tracewayapp.com`. If `TRACEWAY_DSN` is not set, the app falls back to a placeholder token that the server rejects — the buttons still fire so you can verify the UI.
 
 Open the QR code in the **Expo Go** app on your phone, or press `i` / `a` to open the iOS simulator / Android emulator.
 

@@ -37,8 +37,13 @@ export type { EventBufferOptions } from "./event-buffer.js";
 // The 1.x wire types above stay exported for the React Native SDK, which
 // still speaks the native /api/report protocol.
 
-export { resolveEndpoints } from "./connection.js";
-export type { TracewayEndpoints } from "./connection.js";
+export {
+  resolveEndpoints,
+  normalizeBaseUrl,
+  startOptions,
+  DEFAULT_BASE_URL,
+} from "./connection.js";
+export type { TracewayEndpoints, StartFields } from "./connection.js";
 export { uuidv7, unitHash, bytesToUuid, uuidToBytes } from "./ids.js";
 
 export type {
@@ -60,8 +65,14 @@ export type {
   Settings,
   CollectionSettings,
   Ceilings,
+  TracewayImagePolicy,
 } from "./settings/types.js";
-export { MODES, SIGNALS, SEVERITIES } from "./settings/types.js";
+export {
+  MODES,
+  SIGNALS,
+  SEVERITIES,
+  IMAGE_POLICIES,
+} from "./settings/types.js";
 export {
   defaultSettings,
   defaultExceptionTrigger,
@@ -77,6 +88,7 @@ export {
   applyLimits,
   clampToCeilings,
   lowerMode,
+  lowerImagePolicy,
   modeRank,
 } from "./settings/merge.js";
 
@@ -104,3 +116,6 @@ export { encodeMetrics } from "./metrics/otlp.js";
 export type { MetricResource } from "./metrics/otlp.js";
 export { normalizePath, routeFromParams } from "./metrics/route.js";
 export type { RouteParams } from "./metrics/route.js";
+
+export { guarded, setGuardedDebug, debugLog, setupWarning } from "./guarded.js";
+export { safeJson, consoleText } from "./safe-json.js";

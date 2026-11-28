@@ -1,6 +1,6 @@
 # Traceway JavaScript Client
 
-## Version 2 (branch `v2`, unreleased)
+## Version 2
 
 2.x rebuilds the browser SDK (`@tracewayapp/frontend`) on OpenTelemetry and lets the Traceway server decide, per group
 of clients, what each one sends. Everything below this section describes 1.x and the packages 2.x leaves unchanged
@@ -16,8 +16,15 @@ keeps exporting).
 | Session replay | `POST /api/recordings` | `{segments, debugIds?}`, gzipped JSON, not OTLP |
 | Remote config | `POST /api/otel/v1/opamp` | OpAMP over plain HTTP (protobuf) |
 
-The connection string is unchanged (`<token>@<server>`, a trailing `/api/report` is stripped); `resolveEndpoints` in
-`core` derives every URL. All requests carry `Authorization: Bearer <project token>`.
+`init({ token, baseUrl, ...options })` starts the SDK (CONTRACT §16). `baseUrl` defaults to Traceway Cloud
+(`DEFAULT_BASE_URL`, `https://cloud.tracewayapp.com`), and `resolveEndpoints` in `core` derives every URL from it.
+`startOptions` (`core/src/connection.ts`) turns the deprecated forms, `init("token@https://host", options)` and the
+wrappers' `connectionString`, into the same options and logs one deprecation warning that names the new form
+(`setupWarning`, never the token). All requests carry `Authorization: Bearer <project token>`.
+
+The SDK always sends OTLP; `/api/report` is never called (2.0's legacy transport and its auto-probe are removed), and
+the `transport` option is ignored with one warning. A server without OpAMP (404, 405 or 501) turns remote config off
+and the local settings apply; telemetry is still sent. 401 or 403 stops the polling as well.
 
 Event names the backend acts on: `exception` (an issue; `traceway.exception.id` is a client UUID the replay clip uses,
 `traceway.debug_ids` a JSON map for source maps), `traceway.message` (a message issue), `session.start`,
@@ -28,7 +35,16 @@ the full attribute snapshot). `session.id` is a UUID on every record and span.
 
 The SDK builds its own `LoggerProvider` and `TracerProvider` (never the global ones, so an app's own OpenTelemetry is
 untouched) and registers the Browser SIG instrumentations from `@opentelemetry/browser-instrumentation` against them.
-Only the W3C propagator and the context manager are set globally, and only when the page has none. Versions are pinned
+No OpenTelemetry global is registered: the API refuses a second registration, so an app that set up its own
+OpenTelemetry after `init()` would lose its propagator and context manager. While the page has none, a W3C propagator
+and a stack context manager stand in for the API's no-op ones (`standInForGlobals` in `frontend/src/otel/instrumentations.ts`);
+once the app registers its own, the API uses those. The fetch instrumentation is subclassed so its span ends when the
+response arrives instead of after teeing and reading the body, and the app's `Request` is copied, not given a header.
+
+Crash safety (CONTRACT §13): SDK code in the page's control flow (public functions, listeners, timers, observers,
+the patched `console`/`fetch`/`history`, rrweb's `emit`) runs inside `guarded(where, fn, fallback?)` from
+`core/src/guarded.ts`, which contains a failure, logs one line per `where` with `debug`, and never reports it through
+Traceway. Tests: `crash-safety.test.ts(x)` in frontend, react, vue, svelte and jquery. Versions are pinned
 exactly to the line `browser-instrumentation` 0.9.0 uses (api 1.9.1, core/sdk-trace 2.12.0, sdk-logs/exporters
 0.223.0); mixing in OTel JS 3.0 would duplicate the API singletons.
 
@@ -36,6 +52,28 @@ Every record passes `TelemetryRouter` (`frontend/src/otel/router.ts`): stamp `se
 debug ids, default and global attributes, `ignoreErrors` on the `Type: message` line, `beforeCapture`), classify the
 signal, then route by the effective mode: **stream** to the OTLP batch exporter, **buffer** into the in-memory
 `RingBuffer`, **off** dropped. After routing, the trigger engine sees the record, so a flush it causes includes it.
+
+Screen context (CONTRACT §14.4): `enrichLog` stamps exceptions, messages, console lines, clicks and `traceway.action`
+records with the mobile `ScreenState` keys (`app.screen.name`, `.route`, `.previous`, `.duration_ms`, `viewport`) and
+navigation records with the name and route of the screen they arrive at, inside its own `guarded` so a failure only
+loses the keys. `ScreenState` (`frontend/src/screen-state.ts`) follows `location.pathname` lazily (each stamp, each
+`setRoute`, `recordNavigation`): a new path is a new screen whose route comes from a settled `findRoute`, `setRoute`
+or `recordNavigation`'s `route`; the name is the route, else the path. `recordNavigation` sets a screen that lasts
+until the address path changes, and `MetricsRecorder.navigated` starts a metrics view for every arrival but a
+`replace` of the same path. `remove` is no arrival (no `navigation.to`, the screen stays). A report is merged into the
+current automatic view (it renames the view; no extra page view) when that view has not been reported yet, is under
+1 s old, and either the reported path equals the view's address path (an address change the SDK follows, reported
+as well) or the view is the page's initial (load) view and `location.pathname` still equals the view's address path
+(a hash or memory router naming its landing screen, which so gets one page view per load, filed under the reported
+route with the load's vitals). Any other report closes the current view and starts a new one, so a real address
+change in the first second counts both pages. Hash-only changes are not followed, so hash and memory routers count
+views only through `recordNavigation`. `tracer()` is `tracerProvider.getTracer(SCOPE_NAME, SDK_VERSION)` of the SDK's own
+provider: its spans pass `ControlSpanProcessor` (session id, `network` routing) like interaction spans.
+
+Build: `scripts/strip-comments.mjs` is a tsup `renderChunk` plugin of every browser package. It removes the comments
+esbuild keeps in unminified output (doc comments of class members, `// src/…` markers) when nothing follows them on
+their line, leaving their line breaks so the source maps stay valid; legal comments, `@__PURE__` and bundler hints
+stay. The `.d.ts` files are built from the sources and keep every comment.
 
 `log(message, level?, attributes?)` emits a record without an event name, which `classifyLog` files under
 `console`, so the console mode, sample rate, `minSeverity` and the `captureLogs` ceiling apply to it exactly as to
@@ -238,9 +276,9 @@ started makes this tab upload its own lookback once (`traceway:local-captures-fl
 
 ### External telemetry destination
 
-Browser options accept `telemetry: { url?, headers?, logs?, traces?, metrics? }`. A base URL appends `/v1/logs`, `/v1/traces`, and `/v1/metrics`; per-signal `{ url, headers }` overrides use complete URLs. Unspecified signals retain their Traceway destination. External requests never inherit the Traceway token. When logs are redirected, `RoutingLogExporter` partitions the final enriched records: exceptions, message issues, and control/session metadata use a separate Traceway batch processor and durable queue; ordinary logs use the external exporter. Restored batches follow the same routing. OpAMP and replay remain on the connection-string server. Instrumentation excludes both destinations. Log/span persistence and pending metric batches are scoped by destination, preventing a collector change from forwarding previously queued telemetry to the new platform. External telemetry rejects legacy transport.
+Browser options accept `telemetry: { url?, headers?, logs?, traces?, metrics? }`. A base URL appends `/v1/logs`, `/v1/traces`, and `/v1/metrics`; per-signal `{ url, headers }` overrides use complete URLs. Unspecified signals retain their Traceway destination. External requests never inherit the Traceway token. When logs are redirected, `RoutingLogExporter` partitions the final enriched records: exceptions, message issues, and control/session metadata use a separate Traceway batch processor and durable queue; ordinary logs use the external exporter. Restored batches follow the same routing. OpAMP and replay remain on the Traceway server (`baseUrl`). Instrumentation excludes both destinations. Log/span persistence and pending metric batches are scoped by destination, preventing a collector change from forwarding previously queued telemetry to the new platform.
 
-`init({ telemetry, collection, ...options })` starts standalone mode, without a connection string. It requires a telemetry base or all three signal endpoints and forces OpAMP, legacy fallback, replay uploads, and session metadata off. Local session IDs still support sampling and correlation. `collection` is merged into the built-in defaults before constructing `ControlState`; remote overlays, when enabled in connected mode, are applied on top, and developer ceilings are applied last. `remoteConfig: false` skips both cached configuration and polling. The browser framework wrappers accept the same standalone object in their connection-string argument/prop. React Native remains on its separate native transport.
+`init({ telemetry, collection, ...options })` starts standalone mode, without a `token`. It requires a telemetry base or all three signal endpoints and forces OpAMP, replay uploads, and session metadata off. Local session IDs still support sampling and correlation. `collection` is merged into the built-in defaults before constructing `ControlState`; remote overlays, when enabled in connected mode, are applied on top, and developer ceilings are applied last. `remoteConfig: false` skips both cached configuration and polling. The browser framework wrappers run standalone the same way, with `telemetry` in their `options` and no `token`. React Native remains on its separate native transport.
 
 ### Breadcrumbs
 
@@ -288,14 +326,38 @@ segments, or keeps them in a byte- and age-bounded buffer; a flush uploads the b
 plus the in-progress segment as the clip of the triggering exception (it keeps its segment index, so the full segment
 later overwrites it on the server).
 
-`SessionRecorder` passes rrweb `maskAllInputs` from settings, `maskTextSelector: ".traceway-mask"` and a
+`SessionRecorder` turns the `maskAllInputs` setting into rrweb's `maskInputOptions` (`MASKED_INPUTS`: the types
+rrweb's own `maskAllInputs: true` covers plus `hidden` and `file`, which that switch leaves out; unset when the
+setting is off, so rrweb masks passwords only) and passes `maskTextSelector: ".traceway-mask"` and a
 `blockSelector` of `.traceway-blank` plus the `img`, `picture`, `video`, `canvas` and `svg` elements inside or
 carrying `.traceway-mask` (`BLOCK_SELECTOR` in `session-recorder.ts`). rrweb's `blockClass`, `maskTextClass` and
 `ignoreClass` keep their defaults, so `rr-block`, `rr-mask` and `rr-ignore` still work. A blocked element is
 serialized with only `class`, `rr_width` and `rr_height` and no children, and its input events are dropped; the
 player draws an empty box of that size. These are the browser's equivalents of the mobile `traceway-mask` /
-`traceway-blank` markers. Images outside a mask stay URL references (`inlineImages` is off); `replay.images` is
-ignored.
+`traceway-blank` markers. Every event then goes through `maskEvent` (`replay/mask.ts`) before it is kept: inside
+an element with class `traceway-mask` (found through the rrweb mirror, past shadow roots and same-origin frames) it
+masks text-carrying attribute values, typed values and text that rrweb's own `closest()` check misses (added or
+changed later in a shadow root or frame), drops `src`/`srcset`/`poster`/`rr_src` (where rrweb keeps the address of
+a frame it cannot read) and turns `url()` in inline styles into `none`; an event it cannot mask is dropped, never
+kept as it was. The text of a `<style>` is CSS, not text of the page: rrweb 2.1.7 puts no marker on a serialized
+text node, so both `maskEvent` and the image sanitiser tell it by its parent. `replay.images` (core settings, default
+`wifi`):
+`off` adds `img, picture, image, input[type=image]` to the block selector; `wifi` keeps URL references
+(`inlineImages` stays off); `always` runs `ImageInliner` (`replay/inline-images.ts`) on full snapshots and mutation
+adds, which sets rrweb's `rr_dataURL` on serialized `<img>` nodes from an offscreen canvas (displayed size; alpha
+scanned at every size, PNG ≤ 192 px with alpha, never JPEG, else JPEG 0.45 ≤ 384 px; ≤ 48 KiB after one half-size
+retry, LRU of 128, 4 MiB per session kept in
+sessionStorage across pages, 16 ms per event) and never touches the page's elements. `ReplaySegmentImages` holds a
+segment's allowance of 131,072 characters of copies; the copy that would go over it removes every `rr_dataURL` the
+segment has and stops the encoder until the next segment, and nothing else changes, so the segment is what `wifi`
+records. Under every policy `ImageInliner.sanitize` removes page-supplied `data:image/` values from attributes,
+`style`, `_cssText`, style text and CSSOM events, except `data:image/svg+xml` values of at most 4,096 characters;
+an `<img>` left without `src` and `srcset` by that gets `rr_width`/`rr_height` and a sized inline style (taken back
+by the attribute change that gives it a source again), and `srcdoc` and a `data:` `rr_src` are never kept. A policy
+change restarts rrweb
+like an input-masking change. `clampToCeilings` holds `replay.images` at the `replayImages` option
+(`Ceilings.replayImages`, `off` when the replay ceiling is off) and keeps `maskAllInputs` on when the page set
+`collection.replay.maskAllInputs: true` (`Ceilings.maskAllInputs`), so no remote overlay goes past either.
 
 ### Tests
 
@@ -311,6 +373,9 @@ custom events for `user.id = e2e-user`).
 
 # 1.x reference
 
+The browser snippets below use the 2.1 start call (`init({ token })`, the `token` prop or field of the wrappers),
+so they can be copied as they are; 1.x took a connection string. `@tracewayapp/backend` and `@tracewayapp/nestjs`
+still take one, see [Connection String Format](#connection-string-format).
 
 A monorepo containing JavaScript/TypeScript SDKs for Traceway error tracking.
 
@@ -345,7 +410,7 @@ import {
 @Module({
   imports: [
     TracewayModule.forRoot({
-      connectionString: "your-token@https://your-server.com/api/report",
+      connectionString: "your-token@https://cloud.tracewayapp.com/api/report",
       debug: true,
       onErrorRecording: ["url", "query", "body", "headers"],
     }),
@@ -404,7 +469,7 @@ import { TracewayProvider, TracewayErrorBoundary, useTraceway } from "@tracewaya
 
 function App() {
   return (
-    <TracewayProvider connectionString="your-token@https://your-server.com/api/report">
+    <TracewayProvider token={import.meta.env.VITE_TRACEWAY_TOKEN}>
       <TracewayErrorBoundary fallback={<div>Something went wrong</div>}>
         <MyApp />
       </TracewayErrorBoundary>
@@ -439,7 +504,7 @@ const app = createApp(App);
 
 app.use(
   createTracewayPlugin({
-    connectionString: "your-token@https://your-server.com/api/report",
+    token: import.meta.env.VITE_TRACEWAY_TOKEN,
   })
 );
 
@@ -475,7 +540,7 @@ function handleClick() {
   import { setupTraceway } from "@tracewayapp/svelte";
 
   setupTraceway({
-    connectionString: "your-token@https://your-server.com/api/report",
+    token: import.meta.env.VITE_TRACEWAY_TOKEN,
   });
 </script>
 
@@ -507,7 +572,8 @@ function handleClick() {
 import * as traceway from "@tracewayapp/frontend";
 
 // Initialize once at app startup
-traceway.init("your-token@https://your-server.com/api/report", {
+traceway.init({
+  token: import.meta.env.VITE_TRACEWAY_TOKEN,
   debug: true, // optional: log captured errors to console
 });
 
@@ -563,7 +629,7 @@ import {
 } from "@tracewayapp/backend";
 
 // Initialize once at app startup
-init("your-token@https://your-server.com/api/report", {
+init("your-token@https://cloud.tracewayapp.com/api/report", {
   debug: true,
   version: "1.0.0",
   serverName: "api-server-1",
@@ -669,7 +735,7 @@ If an error occurs during the lifecycle of a fetch call (in a `.then()` handler 
 ```ts
 import * as traceway from "@tracewayapp/frontend";
 
-traceway.init("token@https://traceway.example.com/api/report");
+traceway.init({ token: "YOUR_TOKEN" });
 
 // fetch calls are automatically instrumented — no extra code needed
 const res = await fetch("/api/orders", { method: "POST", body: JSON.stringify(order) });
@@ -723,7 +789,8 @@ The frontend SDK includes built-in session replay powered by [rrweb](https://git
 - **Flush behavior** — On sync, pending recordings are sent with the exception batch. Calling `flush()` stops the recorder and sends all remaining data.
 
 ```ts
-traceway.init("token@https://traceway.example.com/api/report", {
+traceway.init({
+  token: "YOUR_TOKEN",
   sessionRecording: true,               // default
   sessionRecordingSegmentDuration: 30000, // default: 30s
 });
@@ -765,7 +832,7 @@ Calling `init()` automatically:
 ```js
 import { init } from "@tracewayapp/jquery";
 
-init("your-token@https://your-server.com/api/report");
+init({ token: "YOUR_TOKEN" });
 
 // AJAX errors are captured automatically — no extra code needed
 $.ajax({ url: "/api/users", method: "GET" });
@@ -797,13 +864,13 @@ CLI tool for uploading JavaScript source maps to the Traceway backend so that st
 ```bash
 # Using flags
 traceway-sourcemaps \
-  --url https://traceway.example.com \
+  --url https://cloud.tracewayapp.com \
   --token sm_abc123 \
   --version 1.2.0 \
   --directory ./dist
 
 # Using environment variables
-TRACEWAY_URL=https://traceway.example.com \
+TRACEWAY_URL=https://cloud.tracewayapp.com \
 TRACEWAY_SOURCEMAP_TOKEN=sm_abc123 \
 traceway-sourcemaps --version 1.2.0 --directory ./dist
 ```
@@ -972,7 +1039,7 @@ The `frontend` and `jquery` packages include IIFE builds that work in plain `<sc
 <!-- Framework-agnostic -->
 <script src="https://cdn.jsdelivr.net/npm/@tracewayapp/frontend@2/dist/traceway.iife.global.js"></script>
 <script>
-  Traceway.init("your-token@https://your-server.com/api/report");
+  Traceway.init({ token: "YOUR_TOKEN" });
 </script>
 ```
 
@@ -981,7 +1048,7 @@ The `frontend` and `jquery` packages include IIFE builds that work in plain `<sc
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tracewayapp/jquery@2/dist/traceway-jquery.iife.global.js"></script>
 <script>
-  TracewayJQuery.init("your-token@https://your-server.com/api/report");
+  TracewayJQuery.init({ token: "YOUR_TOKEN" });
 </script>
 ```
 
@@ -991,51 +1058,34 @@ The IIFE builds are produced by tsup alongside the regular ESM/CJS builds. Each 
 
 ## Publishing
 
-### publish.sh
+Releases are made by the GitHub workflow `.github/workflows/publish.yml` (`scripts/release.mjs`), run by hand on
+`main`: see [docs/releases.md](docs/releases.md). It builds, runs the unit, release, browser and bundle-size checks,
+sets the version of all ten active packages and their internal dependencies in its own checkout (`core`, `opamp`,
+`frontend`, `react`, `react-native`, `vue`, `svelte`, `jquery`, `sourcemap-upload`, `bundler-plugin`), publishes them
+in dependency order with provenance and pushes the `vVERSION` tag. A dry run does everything but publish and tag.
 
-The `publish.sh` script handles the full release process for all `@tracewayapp/*` packages:
-
-```bash
-./publish.sh
-```
-
-**What it does:**
-
-1. Reads the current version from `packages/core/package.json`
-2. Prompts for the new version (validates semver format)
-3. Checks npm authentication (prompts `npm login` if needed)
-4. Shows a summary and asks for confirmation
-5. Bumps the version in all workspace `package.json` files
-6. Updates cross-package dependency references (e.g. `@tracewayapp/core` version in `@tracewayapp/frontend`)
-7. Runs `npm install` to sync `package-lock.json`
-8. Builds all packages (`npm run build`) — this produces ESM, CJS, and IIFE bundles
-9. Publishes all packages to npm (`npm publish --workspaces`)
-10. Creates a git commit (`v<version>`) and tag (`v<version>`)
-11. Prints a reminder to `git push && git push --tags`
-
-**After publish completes:**
-- All packages are live on npm
-- IIFE bundles are available on jsdelivr/unpkg CDN (within minutes)
-- The git tag marks the release point
-
-**Requirements:**
-- Must be logged in to npm with publish access to the `@tracewayapp` scope
-- Working directory should be clean (no uncommitted changes)
+`publish.sh` and `release-beta-2.0.0` are the scripts earlier releases were made with. They are kept for reference
+and must not be used for a release: `publish.sh` knows nine packages (not `@tracewayapp/opamp`, which
+`@tracewayapp/frontend` depends on at the exact version), runs no tests or size check, and its `npm version` step
+stops when the version it is given is the one the tree already has.
 
 ## Connection String Format
+
+The browser packages start with `token` and `baseUrl` (see Version 2 above). `@tracewayapp/backend`,
+`@tracewayapp/nestjs` and `@tracewayapp/react-native` take a connection string:
 
 ```
 <token>@<endpoint>
 ```
 
-Example:
+Example, in the form the dashboard's Connection page shows:
 ```
-abc123@https://traceway.example.com/api/report
+abc123@https://cloud.tracewayapp.com/api/report
 ```
 
 The connection string is parsed into:
 - **Token**: Authentication token for your project
-- **Endpoint**: URL where error reports are sent
+- **Endpoint**: URL where error reports are sent (a self-hosted server's own address instead of Traceway Cloud's)
 
 ## License
 

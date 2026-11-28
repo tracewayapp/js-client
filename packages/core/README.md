@@ -21,10 +21,10 @@ Shared types and utilities of the Traceway browser and React Native SDKs, plus t
 
 ## Features
 
-- Type definitions for Traceway's native `/api/report` wire format — exceptions, metrics, traces, spans, sessions, session recordings. The React Native SDK sends it, and the 2.x browser SDK uses it only when it falls back to a server from before OTLP
+- Type definitions for Traceway's native `/api/report` wire format — exceptions, metrics, traces, spans, sessions, session recordings. The React Native SDK sends it; the 2.x browser SDK sends OTLP only
 - Discriminated union for the timeline event types (logs, network, navigation, custom breadcrumbs)
 - A bounded rolling `EventBuffer<T>` keyed by time window + max size, used by the React Native SDK to keep the last ~10 seconds of activity
-- Connection-string parser, endpoint resolver, UUID v4 and v7 generators, ISO-8601 timestamp helper
+- Endpoint resolver for the browser SDK's `baseUrl`, the React Native SDK's connection-string parser, UUID v4 and v7 generators, ISO-8601 timestamp helper
 - Constants for built-in metric names (`mem.used`, `cpu.used_pcnt`, etc.)
 - The 2.x control plane of the browser SDK: the collection settings document and its defaults, overlay and ceilings; the on-device trigger engine and matcher; a byte- and age-bounded `RingBuffer`; exponential histograms and a metric aggregator with an OTLP/HTTP JSON encoder
 - Pure ESM + CJS dual output, full TypeScript declarations
@@ -39,20 +39,15 @@ npm install @tracewayapp/core
 
 ```ts
 import {
-  parseConnectionString,
   resolveEndpoints,
   nowISO,
   EventBuffer,
   type LogEvent,
 } from "@tracewayapp/core";
 
-const { token, apiUrl } = parseConnectionString(
-  "your-token@https://traceway.example.com/api/report",
-);
-
-// Every endpoint the 2.x browser SDK talks to, with or without the trailing /api/report:
-const endpoints = resolveEndpoints(apiUrl);
-// endpoints.logs === "https://traceway.example.com/api/otel/v1/logs"
+// Every endpoint the 2.x browser SDK talks to, from its baseUrl (default https://cloud.tracewayapp.com):
+const endpoints = resolveEndpoints();
+// endpoints.logs === "https://cloud.tracewayapp.com/api/otel/v1/logs"
 
 // Rolling buffer that drops entries older than 10s OR beyond 200 entries:
 const logs = new EventBuffer<LogEvent>({ windowMs: 10_000, maxSize: 200 });
@@ -89,7 +84,7 @@ const settings = clampToCeilings(
 
 ## Wire Types
 
-These types describe the native `/api/report` protocol. The 2.x browser SDK exports OTLP instead and builds these frames only for its legacy fallback.
+These types describe the native `/api/report` protocol, which the React Native SDK speaks. The 2.x browser SDK exports OTLP instead and never builds these frames.
 
 ### Reporting
 
@@ -106,7 +101,7 @@ These types describe the native `/api/report` protocol. The 2.x browser SDK expo
 
 ### Timeline (logs, actions, recordings)
 
-The React Native SDK ships a rolling timeline of logs and action breadcrumbs alongside each captured exception, and so does the 2.x browser SDK when it reports to an older server. (Otherwise the browser SDK sends breadcrumbs as OpenTelemetry log records and spans.) The wire types are defined here so dashboards and custom SDKs can share them.
+The React Native SDK ships a rolling timeline of logs and action breadcrumbs alongside each captured exception. (The browser SDK sends breadcrumbs as OpenTelemetry log records and spans.) The wire types are defined here so dashboards and custom SDKs can share them.
 
 | Type | Description |
 |------|-------------|
@@ -122,8 +117,8 @@ The React Native SDK ships a rolling timeline of logs and action breadcrumbs alo
 
 | Function | Description |
 |----------|-------------|
-| `parseConnectionString(str)` | Split `{token}@{apiUrl}` into `{ token, apiUrl }` (`ParsedConnectionString`); throws on malformed input |
-| `resolveEndpoints(apiUrl)` | Derive the server base and the OTLP logs, traces and metrics, OpAMP and recordings URLs (`TracewayEndpoints`); accepts the bare server URL and the 1.x form ending in `/api/report` |
+| `parseConnectionString(str)` | Split the React Native SDK's `{token}@{apiUrl}` into `{ token, apiUrl }` (`ParsedConnectionString`); throws on malformed input |
+| `resolveEndpoints(baseUrl?)` | Derive the server base and the OTLP logs, traces and metrics, OpAMP and recordings URLs (`TracewayEndpoints`) from the browser SDK's `baseUrl`, default `DEFAULT_BASE_URL` (`https://cloud.tracewayapp.com`); adds `https://` to a URL without a scheme and throws for a scheme other than HTTP(S) |
 | `generateUUID()` | Generate a UUID v4 string |
 | `uuidv7()` | Generate a UUID v7 string, used for the browser SDK's instance id |
 | `uuidToBytes(uuid)` / `bytesToUuid(bytes)` | Convert between a UUID string and its 16 bytes |
@@ -143,10 +138,10 @@ The parts of the 2.x browser SDK that do not need a browser. `@tracewayapp/front
 | `MODES`, `SIGNALS`, `SEVERITIES` | The allowed modes (`off`, `buffer`, `stream`), signal names and console severities (`trace` to `fatal`, also the levels of the browser SDK's `log()`) |
 | `defaultSettings(options?)` (`DefaultSettingsOptions`) | The built-in settings; `recordAllSessions` and `baselineSampleRate` change them |
 | `defaultExceptionTrigger()`, `DEFAULT_EXCEPTION_TRIGGER_ID` | The built-in `default-exception` trigger: 10 minutes of breadcrumbs and a 30-second replay clip with an error |
-| `ceilingsFrom(options?)` (`CeilingOptions`) | Ceilings from the `capture*`, `sessions` and `sessionRecording` options |
+| `ceilingsFrom(options?)` (`CeilingOptions`) | Ceilings from the `capture*`, `sessions`, `sessionRecording` and `replayImages` options, and the page's own `maskAllInputs: true` (a floor) |
 | `parseSettingsDocument(body)` | Parse a settings document (JSON text or bytes); throws `SettingsError` when it is not a JSON object or has an unsupported `schemaVersion` |
 | `applyOverlay(base, overlay)` | Lay a partial document over settings; unknown fields are ignored, malformed known fields skipped |
-| `applyLimits(...)`, `clampToCeilings(...)`, `lowerMode(a, b)`, `modeRank(mode)` | Hold modes at or below the plan's limits and the ceilings |
+| `applyLimits(...)`, `clampToCeilings(...)`, `lowerMode(a, b)`, `lowerImagePolicy(a, b)`, `modeRank(mode)` | Hold modes and `replay.images` at or below the plan's limits and the ceilings, and keep inputs masked when the page asked |
 | `parseMatcher(value)` | Parse one trigger matcher; `null` when it is invalid |
 | `ControlState` (`StreamOverride`) | The effective settings at any moment: defaults, remote overlay, ceilings, and temporary stream overrides from triggers and captures |
 | `TriggerEngine` (`ObservedEvent`, `FiredTrigger`) | Follows multi-step triggers on the device and reports the ones that fire |

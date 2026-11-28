@@ -24,7 +24,7 @@ const config: ExpoConfig = {
   extra: {
     tracewayDsn:
       process.env.TRACEWAY_DSN ??
-      "PLACEHOLDER_TOKEN@http://localhost:8082/api/report",
+      "PLACEHOLDER_TOKEN@https://cloud.tracewayapp.com/api/report",
   },
 };
 

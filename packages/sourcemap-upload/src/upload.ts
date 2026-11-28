@@ -1,6 +1,7 @@
 import { readFileSync, statSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { glob } from "glob";
+import { uploadEndpoint } from "./options.js";
 
 interface UploadOptions {
   url: string;
@@ -55,7 +56,7 @@ export async function upload(options: UploadOptions): Promise<void> {
     formData.append("files", blob, file);
   }
 
-  const endpoint = `${options.url.replace(/\/$/, "")}/api/sourcemaps/upload`;
+  const endpoint = uploadEndpoint(options.url);
 
   const response = await fetch(endpoint, {
     method: "POST",
@@ -71,5 +72,5 @@ export async function upload(options: UploadOptions): Promise<void> {
   }
 
   const result = (await response.json()) as { uploaded: number };
-  console.log(`Successfully uploaded ${result.uploaded} file(s)`);
+  console.log(`Successfully uploaded ${result.uploaded} file(s) to ${endpoint}`);
 }

@@ -1,9 +1,9 @@
 import * as sdk from "@tracewayapp/frontend";
 export { sdk };
 const params = new URLSearchParams(location.search);
-export const connectionString =
-  params.get("connection") ||
-  `browser@${location.origin}/case/${params.get("case")}/api/report`;
+export const token = params.get("token") || "browser";
+export const baseUrl =
+  params.get("baseUrl") || `${location.origin}/case/${params.get("case")}`;
 export const options = {
   exportDelayMs: 60000,
   captureWebVitals: false,

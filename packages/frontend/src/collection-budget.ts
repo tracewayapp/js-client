@@ -1,3 +1,5 @@
+import { debugLog } from "./guarded.js";
+
 export interface CollectionLimits {
   maxBytes: number;
   maxEvents: number;
@@ -50,6 +52,7 @@ export class CollectionBudget {
       this.events + events > this.limits.maxEvents
     ) {
       this.dropped += events;
+      debugLog("session upload budget used up (collectionLimits)", undefined, true);
       return false;
     }
     this.bytes += bytes;

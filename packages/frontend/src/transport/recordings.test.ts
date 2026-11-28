@@ -14,6 +14,24 @@ afterEach(() => {
 });
 
 describe("RecordingsTransport", () => {
+  it("sends the accepted partial recording unchanged, including on retry", async () => {
+    vi.useFakeTimers();
+    const uploaded: string[] = [];
+    const transport = new RecordingsTransport("u", "t", async (_url, init) => {
+      uploaded.push(strFromU8(gunzipSync(init!.body as Uint8Array)));
+      return response(uploaded.length === 1 ? 503 : 200);
+    });
+    const attributes = { rr_dataURL: "data:image/png;base64,AQ==" };
+    transport.send([{ sessionId: "s", events: [{ attributes }] }]);
+    attributes.rr_dataURL = "";
+    await transport.flush();
+    attributes.rr_dataURL = "later";
+    await vi.runAllTimersAsync();
+    expect(uploaded).toHaveLength(2);
+    expect(uploaded[0]).toContain("data:image/png;base64,AQ==");
+    expect(uploaded[1]).toBe(uploaded[0]);
+  });
+
   it("posts gzipped segments with the project token", async () => {
     const fetchImpl = vi.fn(async () => response(200));
     const transport = new RecordingsTransport(

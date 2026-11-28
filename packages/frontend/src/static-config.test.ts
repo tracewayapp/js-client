@@ -99,7 +99,9 @@ it("exports standalone logs and metrics without any Traceway requests, even if r
 
 it("applies local sampling, modes, triggers and ceilings before start; remote overlays retain local defaults", async () => {
   const logs = new InMemoryLogRecordExporter();
-  client = new TracewayFrontendClient("token@https://traceway.test", {
+  client = new TracewayFrontendClient({
+    token: "token",
+    baseUrl: "https://traceway.test",
     ...quiet,
     remoteConfig: false,
     sessionRecording: false,
@@ -137,7 +139,9 @@ it("routes exceptions and session metadata to Traceway, ordinary logs elsewhere,
     .spyOn(globalThis, "fetch")
     .mockResolvedValue(new Response("{}"));
   const logs = new InMemoryLogRecordExporter();
-  client = new TracewayFrontendClient("tw-token@https://traceway.test", {
+  client = new TracewayFrontendClient({
+    token: "tw-token",
+    baseUrl: "https://traceway.test",
     ...quiet,
     remoteConfig: false,
     sessionRecording: false,
@@ -191,7 +195,9 @@ it("uses per-signal headers and URLs for metrics and trace retries without forwa
   const requests = vi
     .spyOn(globalThis, "fetch")
     .mockResolvedValue(new Response("{}"));
-  client = new TracewayFrontendClient("tw-token@https://traceway.test", {
+  client = new TracewayFrontendClient({
+    token: "tw-token",
+    baseUrl: "https://traceway.test",
     ...quiet,
     captureNetwork: true,
     remoteConfig: false,
@@ -226,20 +232,22 @@ it("uses per-signal headers and URLs for metrics and trace retries without forwa
   ).toBe("yes");
 });
 
-it("rejects incomplete standalone and legacy split configurations", () => {
+it("rejects an incomplete standalone configuration, and ignores the transport option (CONTRACT §16)", () => {
   expect(
     () =>
       new TracewayFrontendClient({
         telemetry: { logs: { url: "https://logs.test/v1/logs" } },
       }),
   ).toThrow("all three");
-  expect(
-    () =>
-      new TracewayFrontendClient("token@https://traceway.test", {
-        transport: "legacy",
-        telemetry: { url: "https://collector.test" },
-      }),
-  ).toThrow("OTLP");
+  client = new TracewayFrontendClient({
+    ...quiet,
+    token: "token",
+    baseUrl: "https://traceway.test",
+    transport: "legacy",
+    telemetry: { url: "https://collector.test" },
+  });
+  expect(client.endpoints.logs).toBe("https://collector.test/v1/logs");
+  expect(client.endpoints.opamp).toBe("https://traceway.test/api/otel/v1/opamp");
 });
 
 it("ignores cached OpAMP policy when using static configuration", () => {
@@ -249,7 +257,9 @@ it("ignores cached OpAMP policy when using static configuration", () => {
       body: JSON.stringify({ signals: { custom: { mode: "off" } } }),
     }),
   );
-  client = new TracewayFrontendClient("tw-token@https://traceway.test", {
+  client = new TracewayFrontendClient({
+    token: "tw-token",
+    baseUrl: "https://traceway.test",
     ...quiet,
     remoteConfig: false,
     sessionRecording: false,
@@ -284,7 +294,9 @@ it("does not resend pending metrics to a newly configured destination", async ()
     },
   ]);
   localStorage.setItem(oldKey, pending);
-  client = new TracewayFrontendClient("tw-token@https://traceway.test", {
+  client = new TracewayFrontendClient({
+    token: "tw-token",
+    baseUrl: "https://traceway.test",
     ...quiet,
     remoteConfig: false,
     sessionRecording: false,

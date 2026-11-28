@@ -24,7 +24,7 @@ describe("setupTraceway", () => {
 
   it("should call setContext with TRACEWAY_KEY and context methods", () => {
     setupTraceway({
-      connectionString: "test-token@https://example.com/api/report",
+      token: "test-token", baseUrl: "https://example.com",
     });
 
     expect(setContext).toHaveBeenCalledWith(TRACEWAY_KEY, {
@@ -40,19 +40,41 @@ describe("setupTraceway", () => {
     (onMount as ReturnType<typeof vi.fn>).mockImplementation(() => {});
 
     setupTraceway({
-      connectionString: "test-token@https://example.com/api/report",
+      token: "test-token", baseUrl: "https://example.com",
       options: { debug: true },
     });
 
+    expect(traceway.init).toHaveBeenCalledWith({
+      token: "test-token",
+      baseUrl: "https://example.com",
+      debug: true,
+    });
+  });
+
+  it("passes the replay privacy limits through to init (§14.5)", () => {
+    setupTraceway({
+      token: "test-token",
+      options: { replayImages: "wifi", collection: { replay: { maskAllInputs: true } } },
+    });
     expect(traceway.init).toHaveBeenCalledWith(
-      "test-token@https://example.com/api/report",
-      { debug: true },
+      expect.objectContaining({
+        replayImages: "wifi",
+        collection: { replay: { maskAllInputs: true } },
+      }),
     );
+  });
+
+  it("still takes the deprecated connectionString field", () => {
+    setupTraceway({
+      connectionString: "test-token@https://example.com/api/report",
+      options: { debug: true },
+    });
+    expect(traceway.init).toHaveBeenCalledWith("test-token@https://example.com/api/report", { debug: true });
   });
 
   it("should return context value with capture methods", () => {
     const result = setupTraceway({
-      connectionString: "test-token@https://example.com/api/report",
+      token: "test-token", baseUrl: "https://example.com",
     });
 
     expect(result).toHaveProperty("captureException");

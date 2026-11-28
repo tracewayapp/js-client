@@ -118,7 +118,7 @@ describe("TracewayProvider", () => {
     init.mockImplementation(() => order.push("init"));
     const router = createMemoryRouter([{ path: "/", element: null }]);
     render(
-      <TracewayProvider connectionString="token@https://example.com" router={router}>
+      <TracewayProvider token="token" baseUrl="https://example.com" router={router}>
         <div />
       </TracewayProvider>,
     );
@@ -128,7 +128,7 @@ describe("TracewayProvider", () => {
 
   it("tracks no router when none is given", () => {
     render(
-      <TracewayProvider connectionString="token@https://example.com">
+      <TracewayProvider token="token" baseUrl="https://example.com">
         <div />
       </TracewayProvider>,
     );

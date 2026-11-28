@@ -17,7 +17,7 @@ Vite, Rollup, and webpack plugins that inject [ECMA-426 debug IDs](https://githu
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
-> **Version 2.0.0.** This package is versioned in lockstep with the Traceway browser SDK. The plugins themselves are the same as in 1.x: same entry points, same injected snippet, same debug ID format. Bundles built with either version work with both the 1.x and the 2.x browser SDK.
+> **Version 2.1.0.** This package is versioned in lockstep with the Traceway browser SDK. The plugins themselves are the same as in 1.x: same entry points, same injected snippet, same debug ID format. Bundles built with either version work with both the 1.x and the 2.x browser SDK.
 
 ## What It Does
 
@@ -97,7 +97,7 @@ Upload your build output with [`@tracewayapp/sourcemap-upload`](https://www.npmj
 
 ```bash
 npx @tracewayapp/sourcemap-upload \
-  --url https://traceway.example.com \
+  --url https://cloud.tracewayapp.com \
   --token YOUR_SOURCE_MAP_TOKEN \
   --directory dist/assets
 ```

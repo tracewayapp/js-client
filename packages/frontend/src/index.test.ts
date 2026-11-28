@@ -20,7 +20,9 @@ it("reports the running client's session and instance ids, and none before init"
   expect(currentSessionId()).toBeNull();
   expect(getInstanceId()).toBeNull();
 
-  init("tok_123@https://traceway.test", {
+  init({
+    token: "tok_123",
+    baseUrl: "https://traceway.test",
     logExporter: new InMemoryLogRecordExporter(),
     spanExporter: new InMemorySpanExporter(),
     captureWebVitals: false,
@@ -41,7 +43,9 @@ it("reports the running client's session and instance ids, and none before init"
 it("forwards log() to the running client and ignores it before init", async () => {
   expect(() => log("before init", "error")).not.toThrow();
 
-  init("tok_123@https://traceway.test", {
+  init({
+    token: "tok_123",
+    baseUrl: "https://traceway.test",
     logExporter: new InMemoryLogRecordExporter(),
     spanExporter: new InMemorySpanExporter(),
     captureWebVitals: false,

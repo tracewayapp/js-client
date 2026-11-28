@@ -12,17 +12,24 @@ vi.mock("@rrweb/record", () => {
   return { record };
 });
 
-import type { TracewayFrontendOptions, TracewayLogLevel } from "./client.js";
+import type {
+  TracewayCapturedError,
+  TracewayFrontendOptions,
+  TracewayInteraction,
+  TracewayLogLevel,
+} from "./client.js";
 import { TracewayFrontendClient } from "./client.js";
+import { startInteraction as startInteractionBeforeInit } from "./index.js";
+import { record } from "@rrweb/record";
 
 let client: TracewayFrontendClient;
 let logExporter: InMemoryLogRecordExporter;
 
 function start(options: TracewayFrontendOptions = {}): TracewayFrontendClient {
   logExporter = new InMemoryLogRecordExporter();
-  client = new TracewayFrontendClient(
-    "tok_123@https://traceway.test/api/report",
-    {
+  client = new TracewayFrontendClient({
+      token: "tok_123",
+      baseUrl: "https://traceway.test",
       logExporter,
       spanExporter: new InMemorySpanExporter(),
       captureWebVitals: false,
@@ -30,8 +37,7 @@ function start(options: TracewayFrontendOptions = {}): TracewayFrontendClient {
       sessionRecording: false,
       remoteConfig: false,
       ...options,
-    },
-  );
+  });
   client.start();
   return client;
 }
@@ -156,6 +162,77 @@ describe("TracewayFrontendClient", () => {
     expect(first.traceId).not.toBe(second.traceId);
   });
 
+  it("has the mobile SDKs' interaction: attributes, spanId, setAttribute, isEnded and end(failed) (JS2-13)", async () => {
+    const spans = new InMemorySpanExporter();
+    // Streamed, so the interaction that did not fail is uploaded too.
+    start({ spanExporter: spans, collection: { signals: { network: { mode: "stream" } } } });
+    const checkout: TracewayInteraction = client.startInteraction("checkout", {
+      "cart.size": 3,
+      "traceway.interaction": false,
+    });
+    expect(checkout.spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(checkout.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(checkout.isEnded).toBe(false);
+    checkout.setAttribute("payment.method", "card");
+    checkout.end(true);
+    expect(checkout.isEnded).toBe(true);
+    checkout.setAttribute("after.end", true);
+    checkout.end();
+    const search = client.startInteraction("search");
+    search.end();
+    await exported();
+    const [failed, ok] = ["checkout", "search"].map(
+      (name) => spans.getFinishedSpans().find((span) => span.name === name)!,
+    );
+    expect(failed.spanContext().spanId).toBe(checkout.spanId);
+    expect(failed.attributes).toMatchObject({
+      "cart.size": 3,
+      "traceway.interaction": true,
+      "payment.method": "card",
+    });
+    expect(failed.attributes["after.end"]).toBeUndefined();
+    expect(failed.status.code).toBe(2);
+    expect(ok.status.code).toBe(0);
+  });
+
+  it("returns an interaction with the same members before init(): it only runs the work", () => {
+    const idle = startInteractionBeforeInit("checkout", { step: 1 });
+    expect(idle.traceId).toBeNull();
+    expect(idle.spanId).toBeNull();
+    expect(idle.isEnded).toBe(false);
+    expect(() => idle.setAttribute("k", "v")).not.toThrow();
+    expect(idle.run(() => 42)).toBe(42);
+    idle.end(true);
+    expect(idle.isEnded).toBe(true);
+  });
+
+  it("hands beforeCapture the original error and isMessage, as the mobile SDKs do (JS2-14)", async () => {
+    const seen: TracewayCapturedError[] = [];
+    class PaymentDeclined extends Error {}
+    start({
+      beforeCapture: (e) => {
+        seen.push(e);
+        return !(e.error instanceof PaymentDeclined);
+      },
+    });
+    const declined = new PaymentDeclined("card declined");
+    client.captureException(declined);
+    client.captureException({ code: 7 });
+    client.captureMessage("slow checkout");
+    const thrown = new TypeError("page bug");
+    window.dispatchEvent(new ErrorEvent("error", { error: thrown, message: thrown.message }));
+    const messages = events(await exported(), "exception").map(
+      (r) => r.attributes["exception.message"],
+    );
+    expect(messages).toEqual(['{"code":7}', "page bug"]);
+    expect(seen.map((e) => [e.error, e.isMessage, e.message])).toEqual([
+      [declined, false, "card declined"],
+      [{ code: 7 }, false, '{"code":7}'],
+      [undefined, true, "slow checkout"],
+      [thrown, false, "page bug"],
+    ]);
+  });
+
   it("keeps healthy metadata without streaming healthy breadcrumbs, web vital events or replay", async () => {
     start({ captureWebVitals: true, sessionRecording: true });
     client.track("healthy");
@@ -242,9 +319,7 @@ describe("TracewayFrontendClient", () => {
   ])("rejects ambiguous telemetry base %s", (url) => {
     expect(
       () =>
-        new TracewayFrontendClient("tok@https://traceway.test", {
-          telemetry: { url },
-        }),
+        new TracewayFrontendClient({ token: "tok", baseUrl: "https://traceway.test", telemetry: { url } }),
     ).toThrow();
   });
 
@@ -337,6 +412,85 @@ describe("TracewayFrontendClient", () => {
       "number",
     );
     expect(events(records, "traceway.session.update")).toHaveLength(1);
+  });
+
+  it("tells the session which picture policy its replay records under (§14.5)", async () => {
+    start({ collection: { replay: { images: "off" } } });
+    const [sessionStart] = events(await exported(), "session.start");
+    expect(sessionStart!.attributes["traceway.replay.images"]).toBe("off");
+    expect(sessionStart!.attributes["traceway.replay.image_bytes"]).toBe(0);
+  });
+
+  describe("the app's replay privacy limits against rules (§14.5)", () => {
+    const rrwebOptions = () => vi.mocked(record).mock.lastCall?.[0];
+    const remote = (overlay: Record<string, unknown>) =>
+      (client as any).applyRemoteConfig({
+        configMap: {
+          traceway: {
+            body: new TextEncoder().encode(JSON.stringify(overlay)),
+          },
+        },
+        configHash: new Uint8Array([7]),
+      });
+
+    it("holds replay.images at the replayImages option, and the session reports what applies", async () => {
+      vi.mocked(record).mockClear();
+      start({
+        sessionRecording: true,
+        replayImages: "wifi",
+        collection: { replay: { images: "always" } },
+      });
+      expect(client.control.settings().replay.images).toBe("wifi");
+      const [sessionStart] = events(await exported(), "session.start");
+      expect(sessionStart!.attributes["traceway.replay.images"]).toBe("wifi");
+      expect(remote({ replay: { images: "always" } }).applied).toBe(true);
+      expect(client.control.settings().replay.images).toBe("wifi");
+      await vi.waitFor(() => expect(record).toHaveBeenCalled());
+      // URL references only: no copies of the page's pictures go into the recording.
+      expect((client as any).replay.recorder.inlineImages).toBe(false);
+      expect(String(rrwebOptions()?.blockSelector)).not.toContain("img, picture");
+    });
+
+    it("records pictures as empty boxes under replayImages: off, whatever a rule says", async () => {
+      vi.mocked(record).mockClear();
+      start({ sessionRecording: true, replayImages: "off" });
+      remote({ replay: { images: "always" } });
+      expect(client.control.settings().replay.images).toBe("off");
+      await vi.waitFor(() => expect(record).toHaveBeenCalled());
+      expect(String(rrwebOptions()?.blockSelector)).toContain("img, picture");
+      expect((client as any).replay.recorder.inlineImages).toBe(false);
+    });
+
+    it("leaves replay.images to the settings by default", () => {
+      start({ sessionRecording: true });
+      remote({ replay: { images: "always" } });
+      expect(client.control.settings().replay.images).toBe("always");
+    });
+
+    it("keeps inputs masked when the app set maskAllInputs: true and a rule switches it off", async () => {
+      vi.mocked(record).mockClear();
+      start({
+        sessionRecording: true,
+        collection: { replay: { maskAllInputs: true } },
+      });
+      await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+      expect(remote({ replay: { maskAllInputs: false } }).applied).toBe(true);
+      expect(client.control.settings().replay.maskAllInputs).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // Nothing changed, so rrweb was not restarted, and it still masks.
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(rrwebOptions()?.maskInputOptions).toMatchObject({ text: true, hidden: true });
+    });
+
+    it("still lets a rule switch input masking off when the app left maskAllInputs unset", async () => {
+      vi.mocked(record).mockClear();
+      start({ sessionRecording: true });
+      await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+      expect(rrwebOptions()?.maskInputOptions).toMatchObject({ text: true, hidden: true });
+      remote({ replay: { maskAllInputs: false } });
+      await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2));
+      expect(rrwebOptions()?.maskInputOptions).toBeUndefined();
+    });
   });
 
   it("keeps breadcrumbs on the device until the error trigger flushes them", async () => {
@@ -539,6 +693,10 @@ describe("TracewayFrontendClient", () => {
       items: 3,
       "log.source": "api",
       "session.id": client.currentSessionId(),
+      // Where the page was (§14.4).
+      "app.screen.name": location.pathname,
+      "app.screen.duration_ms": expect.any(Number),
+      viewport: `${innerWidth}x${innerHeight}`,
     });
   });
 

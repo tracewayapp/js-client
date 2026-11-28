@@ -30,7 +30,7 @@ describe("useTraceway", () => {
     const app = createApp(TestComponent);
     app.use(
       createTracewayPlugin({
-        connectionString: "test@https://example.com/api/report",
+        token: "test", baseUrl: "https://example.com",
       })
     );
     app.mount(document.createElement("div"));
@@ -41,19 +41,19 @@ describe("useTraceway", () => {
     expect(result!.captureMessage).toBeDefined();
   });
 
-  it("should throw when used outside plugin", () => {
+  // It used to throw; an app that calls init() itself would crash on it (CONTRACT §13).
+  it("returns the SDK's capture functions when used outside the plugin", () => {
+    let result: ReturnType<typeof useTraceway> | undefined;
     const TestComponent = defineComponent({
       setup() {
-        useTraceway();
+        result = useTraceway();
         return () => h("div");
       },
     });
 
     const app = createApp(TestComponent);
-    const container = document.createElement("div");
-
-    expect(() => {
-      app.mount(container);
-    }).toThrow("useTraceway must be used within a Vue app that has installed the Traceway plugin");
+    expect(() => app.mount(document.createElement("div"))).not.toThrow();
+    expect(result!.captureException).toBeDefined();
+    expect(result!.captureMessage).toBeDefined();
   });
 });
