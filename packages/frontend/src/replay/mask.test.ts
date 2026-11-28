@@ -19,7 +19,7 @@ describe("maskEvent", () => {
           childNodes: [
             { type: 2, id: 3, tagName: "span", attributes: { title: "Alice Smith", class: "x", style: "background: url(/a.jpg) no-repeat; color: red" }, childNodes: [{ type: 3, id: 4, textContent: "Alice" }] },
             { type: 2, id: 5, tagName: "input", attributes: { type: "image", src: "/b.jpg", value: "Go now" }, childNodes: [] },
-            { type: 2, id: 6, tagName: "style", attributes: {}, childNodes: [{ type: 3, id: 7, textContent: ".x { color: red }", isStyle: true }] },
+            { type: 2, id: 6, tagName: "style", attributes: {}, childNodes: [{ type: 3, id: 7, textContent: ".x { color: red }" }] },
             { type: 5, id: 8, textContent: "comment about Alice" },
           ],
         },
@@ -47,6 +47,7 @@ describe("maskEvent", () => {
       3: document.querySelector("#css")!.firstChild!,
       4: document.querySelector("#out")!,
       5: document.querySelector("#out")!.firstChild!,
+      6: document.querySelector("#css")!,
     };
     const live = (id: number) => nodes[id] ?? null;
     const mutation = {
@@ -56,6 +57,8 @@ describe("maskEvent", () => {
         { parentId: 1, nextId: null, node: { type: 2, id: 20, tagName: "span", attributes: { "aria-label": "Bob" }, childNodes: [] } },
         { parentId: 20, nextId: null, node: { type: 3, id: 21, textContent: "Bob Jones" } },
         { parentId: 4, nextId: null, node: { type: 3, id: 22, textContent: "Visible" } },
+        // New text of a <style> the page already had, as @rrweb/record 2.1.7 writes it: no marker on the node.
+        { parentId: 6, nextId: null, node: { type: 3, id: 23, textContent: ".c{color:red}" } },
       ],
       texts: [{ id: 2, value: "New secret" }, { id: 3, value: ".b{}" }, { id: 5, value: "Out text" }],
       attributes: [
@@ -65,7 +68,7 @@ describe("maskEvent", () => {
       removes: [],
     };
     maskEvent(event(3, mutation), live);
-    expect(mutation.adds.map((a: any) => a.node.attributes?.["aria-label"] ?? a.node.textContent)).toEqual(["***", "*** *****", "Visible"]);
+    expect(mutation.adds.map((a: any) => a.node.attributes?.["aria-label"] ?? a.node.textContent)).toEqual(["***", "*** *****", "Visible", ".c{color:red}"]);
     expect(mutation.texts.map((t) => t.value)).toEqual(["*** ******", ".b{}", "Out text"]);
     expect(mutation.attributes[0]!.attributes).toEqual({ title: "*****", style: { "background-image": "none", color: ["red", "important"] }, hidden: null });
     expect(mutation.attributes[1]!.attributes).toEqual({ title: "Open" });

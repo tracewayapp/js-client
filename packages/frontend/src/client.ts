@@ -326,7 +326,11 @@ export interface TracewayFrontendOptions {
 
   /** Report fetch/XHR responses with status >= 500 as message issues. Default false. */
   captureHttpServerErrors?: boolean;
-  /** Cross-origin URLs that receive the W3C `traceparent` header (same-origin requests always do). */
+  /**
+   * Cross-origin URLs that receive the W3C `traceparent` header (same-origin requests always do). A string names
+   * every URL that starts with it (`"https://api.example.com/"`), as `propagateTraceHeaderUrls` does on the mobile
+   * SDKs; a RegExp is tested against the whole URL. An empty string names none.
+   */
   propagateTraceHeaderCorsUrls?: Array<string | RegExp>;
   /**
    * Fetch collection settings from Traceway over OpAMP, so the dashboard can change what this app sends without a
@@ -382,6 +386,14 @@ interface LocalCapture {
   untilMs: number;
   signals: SignalSelector;
   replay: boolean;
+}
+
+function canonicalUrl(url: string): string {
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
 }
 
 function escapeRegExp(value: string): string {
@@ -812,8 +824,9 @@ export class TracewayFrontendClient {
       this.endpoints.opamp,
       this.endpoints.recordings,
     ];
+    // The instrumentations compare with the address as the browser writes it: host in lower case, no default port.
     const ownUrls = new RegExp(
-      `^(?:${telemetryUrls.map(escapeRegExp).join("|")})(?:[?#]|$)`,
+      `^(?:${telemetryUrls.map((url) => escapeRegExp(canonicalUrl(url))).join("|")})(?:[?#]|$)`,
     );
     const instrumentations: Instrumentation[] = [
       new ErrorsInstrumentation({
@@ -822,9 +835,16 @@ export class TracewayFrontendClient {
       }),
     ];
     if (this.options.captureNetwork !== false) {
+      const corsUrls = this.options.propagateTraceHeaderCorsUrls;
       const networkConfig = {
         ignoreUrls: [ownUrls],
-        propagateTraceHeaderCorsUrls: this.options.propagateTraceHeaderCorsUrls,
+        // A string names the URLs that start with it, as on the mobile SDKs; the instrumentation itself would
+        // only take the one URL equal to it.
+        propagateTraceHeaderCorsUrls: Array.isArray(corsUrls)
+          ? corsUrls
+              .filter((url) => url instanceof RegExp || (typeof url === "string" && url))
+              .map((url) => (typeof url === "string" ? new RegExp(`^${escapeRegExp(url)}`) : url))
+          : undefined,
       };
       instrumentations.push(
         new SafeFetchInstrumentation(networkConfig),

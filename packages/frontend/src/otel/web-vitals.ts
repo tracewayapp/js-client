@@ -35,9 +35,13 @@ const INP_DURATION_THRESHOLD_MS = 40;
 class SlowestInteractions {
   private readonly slowest = new ViewVitals();
   private observer: PerformanceObserver | null = null;
+  // web-vitals measures a page restored from the back/forward cache from scratch.
+  private readonly onPageShow = (event: Event): void => {
+    if ((event as PageTransitionEvent).persisted) this.slowest.restart();
+  };
 
   start(): void {
-    if (!supportsEntryType("event")) return;
+    if (this.observer || !supportsEntryType("event")) return;
     interactionTargets.retain();
     this.observer = new PerformanceObserver((list) =>
       guarded("web vitals", () => this.add(list.getEntries())),
@@ -47,10 +51,16 @@ class SlowestInteractions {
       buffered: true,
       durationThreshold: INP_DURATION_THRESHOLD_MS,
     } as PerformanceObserverInit);
-    // web-vitals measures a page restored from the back/forward cache from scratch.
-    addEventListener("pageshow", (event) => {
-      if ((event as PageTransitionEvent).persisted) this.slowest.restart();
-    });
+    addEventListener("pageshow", this.onPageShow);
+  }
+
+  stop(): void {
+    const observer = this.observer;
+    if (!observer) return;
+    this.observer = null;
+    removeEventListener("pageshow", this.onPageShow);
+    interactionTargets.release();
+    observer.disconnect();
   }
 
   private add(entries: PerformanceEntryList): void {
@@ -168,7 +178,8 @@ export function webVitalRecord(
 /**
  * LCP, INP, CLS, FCP and TTFB from the web-vitals library as `browser.web_vital` events. The Browser SIG's
  * instrumentation cannot pass `generateTarget` to the library, so it is replaced by this one. The library cannot
- * remove its listeners: they are registered once, and disabling only stops the records.
+ * remove its listeners: they are registered once, and disabling stops their records. The SDK's own observer and
+ * listeners are removed when it is disabled.
  */
 export class WebVitalsInstrumentation extends LogInstrumentation {
   private registered = false;
@@ -179,19 +190,23 @@ export class WebVitalsInstrumentation extends LogInstrumentation {
   }
 
   protected attach(): void {
-    if (this.registered || typeof PerformanceObserver === "undefined") return;
-    this.registered = true;
-    const options = { reportAllChanges: false, generateTarget };
-    const report = (metric: MetricWithAttribution) => this.report(metric);
-    onCLS(report, options);
-    onINP(report, options);
-    onLCP(report, options);
-    onFCP(report, options);
-    onTTFB(report, options);
+    if (typeof PerformanceObserver === "undefined") return;
+    if (!this.registered) {
+      this.registered = true;
+      const options = { reportAllChanges: false, generateTarget };
+      const report = (metric: MetricWithAttribution) => this.report(metric);
+      onCLS(report, options);
+      onINP(report, options);
+      onLCP(report, options);
+      onFCP(report, options);
+      onTTFB(report, options);
+    }
     this.interactions.start();
   }
 
-  protected detach(): void {}
+  protected detach(): void {
+    this.interactions.stop();
+  }
 
   private report(metric: MetricWithAttribution): void {
     if (!this.enabled || !this.logger) return;

@@ -213,7 +213,7 @@ See [Session Replay](https://docs.tracewayapp.com/client/js-sdk/session-replay) 
 
 ## Distributed Tracing
 
-Every `fetch` / `XHR` call is an OpenTelemetry CLIENT span, and same-origin requests carry the W3C `traceparent` header, so a backend instrumented with OpenTelemetry joins the same trace with no extra middleware. For an API on another origin, list it in `propagateTraceHeaderCorsUrls` (its CORS policy must allow the `traceparent` header). See [Distributed Tracing](https://docs.tracewayapp.com/client/js-sdk/distributed-tracing).
+Every `fetch` / `XHR` call is an OpenTelemetry CLIENT span, and same-origin requests carry the W3C `traceparent` header, so a backend instrumented with OpenTelemetry joins the same trace with no extra middleware. For an API on another origin, list it in `propagateTraceHeaderCorsUrls` (its CORS policy must allow the `traceparent` header): a string such as `"https://api.example.com/"` matches every URL that starts with it, a `RegExp` is tested against the URL. See [Distributed Tracing](https://docs.tracewayapp.com/client/js-sdk/distributed-tracing).
 
 To tie the steps of one user action together, `startInteraction(name, attributes?)` returns a `TracewayInteraction` with `run`, `bind`, `setAttribute`, `captureException` and `end(failed?)`; see the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#distributed-tracing).
 
@@ -244,7 +244,7 @@ The `telemetry` option sends logs, traces and metrics to any OTLP/HTTP endpoint,
 | `captureUserActions` | `true` | Allow clicks as breadcrumbs |
 | `captureMetrics` | `true` | Allow the performance metrics aggregated on the device |
 | `captureHttpServerErrors` | `false` | Report `fetch` / `XHR` responses with status >= 500 as message issues |
-| `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that also get the `traceparent` header (same-origin requests always do) |
+| `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that also get the `traceparent` header (same-origin requests always do): a string matches every URL that starts with it, a `RegExp` is tested against the URL |
 | `remoteConfig` | `true` | Fetch collection settings from Traceway, so the **Data Collection** page can change what the app sends without a release |
 | `collection.buffer.maxAgeSeconds` | `600` | Maximum age of buffered telemetry and replay in seconds |
 | `collection.buffer.maxBytes` | `2097152` | Byte limit for buffered telemetry (replay has its own, `collection.buffer.replayMaxBytes`) |

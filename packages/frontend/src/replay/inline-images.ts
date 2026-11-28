@@ -16,21 +16,21 @@ interface SerializedNode {
   attributes?: Record<string, unknown>;
   childNodes?: SerializedNode[];
   textContent?: string;
-  isStyle?: boolean;
 }
 
 /** Base64 data URLs are ASCII. Count the bytes the player receives, including repeated thumbnails. */
 const MAX_SEGMENT_IMAGE_BYTES = 128 * 1024;
+/** A vector icon (a checkbox tick, a close button, a select arrow) is no picture of the page's content. */
+const MAX_SVG_ICON_LENGTH = 4096;
 
-interface PictureReference {
+interface BoxedImage {
   attrs: Record<string, unknown>;
-  keys: readonly string[];
   mutation: boolean;
-  imageId?: number;
+  id: number;
   box?: { width: number; height: number; inline: boolean };
 }
 
-function imageBox(node: Node | null): PictureReference["box"] {
+function imageBox(node: Node | null): BoxedImage["box"] {
   if (node?.nodeName !== "IMG") return;
   const image = node as HTMLImageElement;
   // Before decoding, a source-less image can report the size of its alt text.
@@ -39,24 +39,22 @@ function imageBox(node: Node | null): PictureReference["box"] {
   return { width: image.width, height: image.height, inline };
 }
 
-const HTML_IMAGE_SOURCES = ["src", "srcset", "rr_dataURL"];
-const SVG_IMAGE_SOURCES = ["href", "xlink:href"];
-const MEDIA_TAGS = new Set(["img", "source", "input", "image", "video"]);
-
 /** References are to the serialized recording only, never to the live DOM. */
 export class ReplaySegmentImages {
-  layoutOnly = false;
+  /** Past the allowance the segment carries no copies: its pictures are URL references, as under `"wifi"`. */
+  overflowed = false;
   private bytes = 0;
   private exposedBytes = 0;
-  private pictures: PictureReference[] = [];
-  private pendingLayout: PictureReference[] = [];
+  private copies: Record<string, unknown>[] = [];
+  private pendingLayout: BoxedImage[] = [];
+  private readonly boxed = new Set<number>();
 
   constructor(private readonly element: (id: number) => Node | null = () => null) {}
 
   // A lazy source can finish decoding without generating an rrweb mutation.
   // Revisit its mirror ID when the clip is read, without retaining DOM nodes.
   completeLayout(): void {
-    this.pendingLayout = this.pendingLayout.filter(picture => !this.size(picture));
+    this.pendingLayout = this.pendingLayout.filter(image => !this.size(image));
   }
 
   // A partial segment may already have been uploaded by an earlier error.
@@ -64,57 +62,35 @@ export class ReplaySegmentImages {
     this.exposedBytes = this.bytes;
   }
 
-  track(
-    attrs: Record<string, unknown>,
-    tag: string | undefined,
-    live: Node | null,
-    mutation: boolean,
-    id?: number,
-  ): void {
-    const imageInput = tag === "input" &&
-      (attrs.type === "image" || (live as HTMLInputElement | null)?.type === "image");
-    let keys: readonly string[];
-    if (tag === "img" || tag === "source" || imageInput || (!tag && mutation))
-      keys = HTML_IMAGE_SOURCES;
-    else if (tag === "image") keys = SVG_IMAGE_SOURCES;
-    else if (tag === "video") keys = ["poster"];
-    else return;
-    if (!keys.some(key => key in attrs)) return;
-    const picture: PictureReference = {
-      attrs, keys, mutation,
-      imageId: tag === "img" ? id : undefined,
-      box: tag === "img" ? imageBox(live) : undefined,
-    };
-    if (this.layoutOnly) this.blank(picture);
-    else this.pictures.push(picture);
-  }
-
   /** Returns the adjustment to the session budget. Refund images removed before any partial export. */
   add(attrs: Record<string, unknown>, url: string): number {
-    if (this.layoutOnly) return 0;
+    if (this.overflowed) return 0;
     if (this.bytes + url.length <= MAX_SEGMENT_IMAGE_BYTES) {
       this.bytes += url.length;
       attrs.rr_dataURL = url;
+      this.copies.push(attrs);
       return url.length;
     }
-    this.layoutOnly = true;
-    for (const picture of this.pictures) this.blank(picture);
-    this.pictures = [];
+    this.overflowed = true;
+    for (const copy of this.copies) delete copy.rr_dataURL;
+    this.copies = [];
     return this.exposedBytes - this.bytes;
   }
 
-  private blank(picture: PictureReference): void {
-    const { attrs, keys, mutation } = picture;
-    for (const key of keys) {
-      if (!(key in attrs)) continue;
-      if (mutation) attrs[key] = null;
-      else delete attrs[key];
-    }
-    if (picture.imageId !== undefined && !this.size(picture)) this.pendingLayout.push(picture);
+  /** An `<img>` whose inline source was removed keeps the size it has on the page. */
+  box(attrs: Record<string, unknown>, id: number, live: Node | null, mutation: boolean): void {
+    const image: BoxedImage = { attrs, mutation, id, box: imageBox(live) };
+    this.boxed.add(id);
+    if (!this.size(image)) this.pendingLayout.push(image);
   }
 
-  private size({ attrs, imageId, box, mutation }: PictureReference): boolean {
-    const known = box ?? (imageId === undefined ? undefined : imageBox(this.element(imageId)));
+  /** Whether the image was given a size that its new source must not keep. */
+  unbox(id: number): boolean {
+    return this.boxed.delete(id);
+  }
+
+  private size({ attrs, id, box, mutation }: BoxedImage): boolean {
+    const known = box ?? imageBox(this.element(id));
     if (!known) return false;
     const width = known.width + "px";
     const height = known.height + "px";
@@ -138,12 +114,18 @@ export class ReplaySegmentImages {
 const DATA_IMAGE = /data\s*:\s*image\//i;
 const CSS_URL_OR_STRING = /url\((?:[^()"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/gis;
 
+/** One URL (a second one after a comma or a space is a `srcset` candidate) of an SVG document. */
+const svgIcon = (url: string): boolean =>
+  url.length <= MAX_SVG_ICON_LENGTH && /^data:image\/svg\+xml[;,]/i.test(url) && !/[\s,]data:/i.test(url);
+
 function stripCssImages(css: string): string {
   if (!DATA_IMAGE.test(css)) return css;
   const safe = css.replace(CSS_URL_OR_STRING, (part) =>
-    DATA_IMAGE.test(part) ? (part[0] === '"' || part[0] === "'" ? '""' : "none") : part,
+    !DATA_IMAGE.test(part) || svgIcon(part.replace(/^(?:url\()?\s*["']?|["']?\s*\)?$/gi, ""))
+      ? part
+      : part[0] === '"' || part[0] === "'" ? '""' : "none",
   );
-  return DATA_IMAGE.test(safe) ? "" : safe;
+  return DATA_IMAGE.test(css.replace(CSS_URL_OR_STRING, " ")) ? "" : safe;
 }
 
 function stripStyleAttribute(value: unknown): void {
@@ -155,6 +137,8 @@ function stripStyleAttribute(value: unknown): void {
       declaration[0] = stripCssImages(declaration[0]);
   }
 }
+
+const isStyle = (node: Node | null | undefined): boolean => /^style$/i.test(node?.nodeName ?? "");
 
 /**
  * `replay.images = "always"`: puts a small copy of each `<img>` of the page into the recording, as rrweb's
@@ -170,7 +154,8 @@ export class ImageInliner {
   private readonly resources = new WeakMap<HTMLImageElement, object>();
   private readonly encoded = new Map<object, { key: string; url: string }>();
   private canvas: HTMLCanvasElement | null = null;
-  private readonly styleTextIds = new Set<number>();
+  /** The `<style>` elements of the recording and their text nodes: rrweb does not mark the text as CSS. */
+  private readonly styleIds = new Set<number>();
 
   constructor(
     private readonly element: (id: number) => Node | null,
@@ -192,7 +177,7 @@ export class ImageInliner {
 
   clearCache(): void {
     this.encoded.clear();
-    this.styleTextIds.clear();
+    this.styleIds.clear();
     this.canvas = null;
   }
 
@@ -207,41 +192,55 @@ export class ImageInliner {
     captureImage?: (node: SerializedNode, src: string) => void,
     segment?: ReplaySegmentImages,
   ): void {
-    const visit = (node: SerializedNode | undefined) => {
+    const visit = (node: SerializedNode | undefined, css: boolean) => {
       if (!node) return;
-      if (node.attributes) {
-        const src = node.attributes.src;
-        if (segment && node.tagName && MEDIA_TAGS.has(node.tagName))
-          segment.track(node.attributes, node.tagName, this.element(node.id), false, node.id);
-        this.stripInline(node.attributes, node.tagName, false);
-        if (!segment?.layoutOnly && node.tagName === "img" && typeof src === "string") captureImage?.(node, src);
+      const attrs = node.attributes;
+      if (attrs) {
+        const src = attrs.src;
+        const image = node.tagName === "img";
+        const sourced = image && ("src" in attrs || "srcset" in attrs);
+        this.stripInline(attrs, node.tagName, false);
+        if (sourced && !("src" in attrs || "srcset" in attrs))
+          segment?.box(attrs, node.id, this.element(node.id), false);
+        if (!segment?.overflowed && image && typeof src === "string") captureImage?.(node, src);
       }
-      if (node.isStyle && typeof node.textContent === "string") {
-        this.styleTextIds.add(node.id);
+      if (node.tagName === "style") this.styleIds.add(node.id);
+      else if (css && typeof node.textContent === "string") {
+        this.styleIds.add(node.id);
         node.textContent = stripCssImages(node.textContent);
       }
-      node.childNodes?.forEach(visit);
+      node.childNodes?.forEach((child) => visit(child, node.tagName === "style"));
     };
     const data = event.data as any;
     if (event.type === 2) {
-      this.styleTextIds.clear();
-      visit(data?.node);
+      this.styleIds.clear();
+      visit(data?.node, false);
     } else if (event.type === 3 && data?.source === 0) {
-      for (const removed of data.removes ?? []) this.styleTextIds.delete(removed.id);
-      data.adds?.forEach((add: { node: SerializedNode }) => visit(add.node));
+      for (const removed of data.removes ?? []) this.styleIds.delete(removed.id);
+      // rrweb adds one node at a time: the parent is in the page, or was recorded before.
+      data.adds?.forEach((add: { parentId: number; node: SerializedNode }) =>
+        visit(add.node, this.styleIds.has(add.parentId) || isStyle(this.element(add.parentId))));
       for (const text of data.texts ?? []) {
         if (typeof text.value !== "string" || !DATA_IMAGE.test(text.value)) continue;
         const parent = this.element(text.id)?.parentNode;
-        if (parent ? parent.nodeName === "STYLE" : this.styleTextIds.has(text.id))
+        if (parent ? isStyle(parent) : this.styleIds.has(text.id))
           text.value = stripCssImages(text.value);
       }
       for (const change of data.attributes ?? []) {
+        const attrs = change.attributes;
         const live = this.element(change.id);
         const tag = live?.nodeName.toLowerCase();
-        segment?.track(change.attributes, tag, live, true, change.id);
-        this.stripInline(change.attributes, tag, true);
-        if (tag === "img" && ("src" in change.attributes || "srcset" in change.attributes))
-          change.attributes.rr_dataURL = null;
+        const sourced = tag === "img" && (typeof attrs.src === "string" || typeof attrs.srcset === "string");
+        this.stripInline(attrs, tag, true);
+        if (tag === "img" && ("src" in attrs || "srcset" in attrs)) attrs.rr_dataURL = null;
+        if (!sourced) continue;
+        if (typeof attrs.src !== "string" && typeof attrs.srcset !== "string") segment?.box(attrs, change.id, live, true);
+        else if (segment?.unbox(change.id)) {
+          // The size comes from the page again, with the inline style it has now.
+          attrs.rr_width = attrs.rr_height = null;
+          const style = (live as Element).getAttribute("style");
+          attrs.style = style === null ? null : stripCssImages(style);
+        }
       }
     } else if (event.type === 3 && data?.source === 8) {
       for (const added of data.adds ?? []) added.rule = stripCssImages(added.rule);
@@ -261,17 +260,19 @@ export class ImageInliner {
     if (typeof attrs.style === "string") attrs.style = stripCssImages(attrs.style);
     else stripStyleAttribute(attrs.style);
     if (typeof attrs._cssText === "string") attrs._cssText = stripCssImages(attrs._cssText);
-    // rrweb records a same-origin iframe's child DOM independently. Its raw source would bypass all child masking.
-    if ("srcdoc" in attrs) {
-      if (mutation) attrs.srcdoc = null;
-      else delete attrs.srcdoc;
-    }
     for (const [name, value] of Object.entries(attrs)) {
-      if (typeof value !== "string") continue;
+      if (typeof value !== "string" || name === "style" || name === "_cssText") continue;
       // Lazy-loading libraries commonly copy sources into application-defined data attributes.
       const imageSource = /^(src|srcset|poster|background)$/.test(name) ||
         ((name === "href" || name === "xlink:href") && (!tag || tag === "image"));
-      if (name === "rr_dataURL" || DATA_IMAGE.test(value) || (imageSource && /(?:^|[\s,])data:/i.test(value))) {
+      if (
+        // rrweb records a same-origin iframe's child DOM independently. Its raw source would bypass all child
+        // masking; a frame it cannot read has its address in `rr_src`, a whole document when that is a data: URL.
+        name === "srcdoc" ||
+        name === "rr_dataURL" ||
+        ((DATA_IMAGE.test(value) || ((imageSource || name === "rr_src") && /(?:^|[\s,])data:/i.test(value))) &&
+          !svgIcon(value.trim()))
+      ) {
         if (mutation) attrs[name] = null;
         else delete attrs[name];
       }

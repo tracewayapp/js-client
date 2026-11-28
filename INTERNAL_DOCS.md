@@ -1,6 +1,6 @@
 # Traceway JavaScript Client
 
-## Version 2 (branch `v2`, unreleased)
+## Version 2
 
 2.x rebuilds the browser SDK (`@tracewayapp/frontend`) on OpenTelemetry and lets the Traceway server decide, per group
 of clients, what each one sends. Everything below this section describes 1.x and the packages 2.x leaves unchanged
@@ -60,10 +60,14 @@ loses the keys. `ScreenState` (`frontend/src/screen-state.ts`) follows `location
 `setRoute`, `recordNavigation`): a new path is a new screen whose route comes from a settled `findRoute`, `setRoute`
 or `recordNavigation`'s `route`; the name is the route, else the path. `recordNavigation` sets a screen that lasts
 until the address path changes, and `MetricsRecorder.navigated` starts a metrics view for every arrival but a
-`replace` of the same path. `remove` is no arrival (no `navigation.to`, the screen stays). A report within a second
-of a view the SDK started itself (an address change it follows, or the landing view after `init()`) takes that view
-over instead of starting a second one. Hash-only changes are not followed, so hash and memory routers count views
-only through `recordNavigation`. `tracer()` is `tracerProvider.getTracer(SCOPE_NAME, SDK_VERSION)` of the SDK's own
+`replace` of the same path. `remove` is no arrival (no `navigation.to`, the screen stays). A report is merged into the
+current automatic view (it renames the view; no extra page view) when that view has not been reported yet, is under
+1 s old, and either the reported path equals the view's address path (an address change the SDK follows, reported
+as well) or the view is the page's initial (load) view and `location.pathname` still equals the view's address path
+(a hash or memory router naming its landing screen, which so gets one page view per load, filed under the reported
+route with the load's vitals). Any other report closes the current view and starts a new one, so a real address
+change in the first second counts both pages. Hash-only changes are not followed, so hash and memory routers count
+views only through `recordNavigation`. `tracer()` is `tracerProvider.getTracer(SCOPE_NAME, SDK_VERSION)` of the SDK's own
 provider: its spans pass `ControlSpanProcessor` (session id, `network` routing) like interaction spans.
 
 Build: `scripts/strip-comments.mjs` is a tsup `renderChunk` plugin of every browser package. It removes the comments
@@ -322,7 +326,9 @@ segments, or keeps them in a byte- and age-bounded buffer; a flush uploads the b
 plus the in-progress segment as the clip of the triggering exception (it keeps its segment index, so the full segment
 later overwrites it on the server).
 
-`SessionRecorder` passes rrweb `maskAllInputs` from settings, `maskTextSelector: ".traceway-mask"` and a
+`SessionRecorder` turns the `maskAllInputs` setting into rrweb's `maskInputOptions` (`MASKED_INPUTS`: the types
+rrweb's own `maskAllInputs: true` covers plus `hidden` and `file`, which that switch leaves out; unset when the
+setting is off, so rrweb masks passwords only) and passes `maskTextSelector: ".traceway-mask"` and a
 `blockSelector` of `.traceway-blank` plus the `img`, `picture`, `video`, `canvas` and `svg` elements inside or
 carrying `.traceway-mask` (`BLOCK_SELECTOR` in `session-recorder.ts`). rrweb's `blockClass`, `maskTextClass` and
 `ignoreClass` keep their defaults, so `rr-block`, `rr-mask` and `rr-ignore` still work. A blocked element is
@@ -331,14 +337,24 @@ player draws an empty box of that size. These are the browser's equivalents of t
 `traceway-blank` markers. Every event then goes through `maskEvent` (`replay/mask.ts`) before it is kept: inside
 an element with class `traceway-mask` (found through the rrweb mirror, past shadow roots and same-origin frames) it
 masks text-carrying attribute values, typed values and text that rrweb's own `closest()` check misses (added or
-changed later in a shadow root or frame), drops `src`/`srcset`/`poster` and turns `url()` in inline styles into
-`none`; an event it cannot mask is dropped, never kept as it was. `replay.images` (core settings, default `wifi`):
+changed later in a shadow root or frame), drops `src`/`srcset`/`poster`/`rr_src` (where rrweb keeps the address of
+a frame it cannot read) and turns `url()` in inline styles into `none`; an event it cannot mask is dropped, never
+kept as it was. The text of a `<style>` is CSS, not text of the page: rrweb 2.1.7 puts no marker on a serialized
+text node, so both `maskEvent` and the image sanitiser tell it by its parent. `replay.images` (core settings, default
+`wifi`):
 `off` adds `img, picture, image, input[type=image]` to the block selector; `wifi` keeps URL references
 (`inlineImages` stays off); `always` runs `ImageInliner` (`replay/inline-images.ts`) on full snapshots and mutation
 adds, which sets rrweb's `rr_dataURL` on serialized `<img>` nodes from an offscreen canvas (displayed size; alpha
 scanned at every size, PNG ≤ 192 px with alpha, never JPEG, else JPEG 0.45 ≤ 384 px; ≤ 48 KiB after one half-size
 retry, LRU of 128, 4 MiB per session kept in
-sessionStorage across pages, 16 ms per event) and never touches the page's elements. A policy change restarts rrweb
+sessionStorage across pages, 16 ms per event) and never touches the page's elements. `ReplaySegmentImages` holds a
+segment's allowance of 131,072 characters of copies; the copy that would go over it removes every `rr_dataURL` the
+segment has and stops the encoder until the next segment, and nothing else changes, so the segment is what `wifi`
+records. Under every policy `ImageInliner.sanitize` removes page-supplied `data:image/` values from attributes,
+`style`, `_cssText`, style text and CSSOM events, except `data:image/svg+xml` values of at most 4,096 characters;
+an `<img>` left without `src` and `srcset` by that gets `rr_width`/`rr_height` and a sized inline style (taken back
+by the attribute change that gives it a source again), and `srcdoc` and a `data:` `rr_src` are never kept. A policy
+change restarts rrweb
 like an input-masking change. `clampToCeilings` holds `replay.images` at the `replayImages` option
 (`Ceilings.replayImages`, `off` when the replay ceiling is off) and keeps `maskAllInputs` on when the page set
 `collection.replay.maskAllInputs: true` (`Ceilings.maskAllInputs`), so no remote overlay goes past either.
@@ -1042,36 +1058,16 @@ The IIFE builds are produced by tsup alongside the regular ESM/CJS builds. Each 
 
 ## Publishing
 
-### publish.sh
+Releases are made by the GitHub workflow `.github/workflows/publish.yml` (`scripts/release.mjs`), run by hand on
+`main`: see [docs/releases.md](docs/releases.md). It builds, runs the unit, release, browser and bundle-size checks,
+sets the version of all ten active packages and their internal dependencies in its own checkout (`core`, `opamp`,
+`frontend`, `react`, `react-native`, `vue`, `svelte`, `jquery`, `sourcemap-upload`, `bundler-plugin`), publishes them
+in dependency order with provenance and pushes the `vVERSION` tag. A dry run does everything but publish and tag.
 
-The `publish.sh` script handles the full release process for all `@tracewayapp/*` packages:
-
-```bash
-./publish.sh
-```
-
-**What it does:**
-
-1. Reads the current version from `packages/core/package.json`
-2. Prompts for the new version (validates semver format)
-3. Checks npm authentication (prompts `npm login` if needed)
-4. Shows a summary and asks for confirmation
-5. Bumps the version in all workspace `package.json` files
-6. Updates cross-package dependency references (e.g. `@tracewayapp/core` version in `@tracewayapp/frontend`)
-7. Runs `npm install` to sync `package-lock.json`
-8. Builds all packages (`npm run build`) — this produces ESM, CJS, and IIFE bundles
-9. Publishes all packages to npm (`npm publish --workspaces`)
-10. Creates a git commit (`v<version>`) and tag (`v<version>`)
-11. Prints a reminder to `git push && git push --tags`
-
-**After publish completes:**
-- All packages are live on npm
-- IIFE bundles are available on jsdelivr/unpkg CDN (within minutes)
-- The git tag marks the release point
-
-**Requirements:**
-- Must be logged in to npm with publish access to the `@tracewayapp` scope
-- Working directory should be clean (no uncommitted changes)
+`publish.sh` and `release-beta-2.0.0` are the scripts earlier releases were made with. They are kept for reference
+and must not be used for a release: `publish.sh` knows nine packages (not `@tracewayapp/opamp`, which
+`@tracewayapp/frontend` depends on at the exact version), runs no tests or size check, and its `npm version` step
+stops when the version it is given is the one the tree already has.
 
 ## Connection String Format
 

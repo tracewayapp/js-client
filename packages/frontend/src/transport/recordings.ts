@@ -52,7 +52,7 @@ export class RecordingsTransport {
   ): number {
     const accepted: string[] = [];
     for (const segment of segments) {
-      // Later events can turn the live segment into a wireframe. Queue the exact snapshot admitted here.
+      // Later events can take the embedded pictures out of the live segment. Queue the exact snapshot admitted here.
       let serialized: string;
       try {
         serialized = JSON.stringify(segment);

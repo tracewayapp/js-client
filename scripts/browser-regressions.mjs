@@ -89,7 +89,9 @@ const server = createServer(async (req, res) => {
         '<div class="traceway-mask"><img src="/masked-image-secret.png" width="40" height="30"></div>' +
         '<div class="traceway-mask"><iframe srcdoc="private inline note"></iframe></div>' +
         '<img id="preview" src="data:image/png;base64,cHJldmlldw==" data-lazy-src="data:image/png;base64,bGF6eQ==">' +
-        '<style>.preview-card { background-image: url(data:image/png;base64,Y29sb3I=); color: blue; }</style>' +
+        '<style>.preview-card { background-image: url(data:image/png;base64,Y29sb3I=); color: blue; }' +
+        ' .tick { background-image: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27m3 8 3 3 7-7%27/%3E%3C/svg%3E"); }</style>' +
+        '<img id="pixel" alt="inline-pixel" style="width:64px;height:48px" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">' +
         '<iframe srcdoc="&lt;img src=data:image/png;base64,Y2hpbGQ=&gt;"></iframe>' +
         '<div class="traceway-blank" style="width:120px;height:60px">blank-box-secret</div>' +
         '<p class="rr-mask">rr-mask-secret</p><p>visible-mask-fixture</p><script src="/sdk.js"></script>',
@@ -307,8 +309,10 @@ try {
         assert(body.includes("visible-mask-fixture"));
         assert(body.includes("updated public fixture"));
         assert(body.includes("literal data:image/png example in application text"));
-        for (const original of ["private inline note", "cHJldmlldw==", "bGF6eQ==", "dXBkYXRl", "Y29sb3I=", "Y2hpbGQ="])
-          assert(!body.includes(original));
+        for (const original of ["private inline note", "cHJldmlldw==", "bGF6eQ==", "dXBkYXRl", "Y29sb3I=", "Y2hpbGQ=", "R0lGODlhAQAB"])
+          assert(!body.includes(original), original);
+        // A vector icon of the page's CSS is kept under every policy.
+        assert(body.includes("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27"), "an svg icon was removed from the CSS");
         for (const secret of [
           "masked-paragraph-secret",
           "masked-image-secret",
@@ -335,12 +339,13 @@ try {
           );
         assert(box("div", "120px", "60px"), "traceway-blank is not a blocked box");
         assert(box("img", "40px", "30px"), "a masked image is not a blocked box");
+        assert(box("img", "64px", "48px"), "an image whose data: source was removed did not keep its box");
       } finally {
         await maskContext.close();
       }
     },
   );
-  await check("real Chromium thumbnails fall back to a playable DOM segment above the image allowance", async () => {
+  await check("real Chromium thumbnails fall back to URL references in a playable segment above the image allowance", async () => {
     const previousConfig = document;
     document = { replay: { images: "always" } };
     try {
@@ -395,8 +400,10 @@ try {
           console.log(`  ${count} photo(s): ${imageBytes} inline image bytes, ${Buffer.byteLength(body)} replay JSON bytes`);
           if (count === 1) assert(body.includes("data:image/jpeg;base64,"), "an affordable thumbnail should be recorded");
           else {
-            assert(!body.includes("data:image/") && !body.includes("blob:" + origin), "oversized image data survived in the wireframe");
-            assert(body.includes('"rr_width":"256px"'), "missing image placeholder");
+            // Over the allowance the segment loses its copies and keeps what "wifi" records: the URLs.
+            assert(!body.includes("data:image/"), "image copies survived in a segment over its allowance");
+            assert(body.includes("blob:" + origin), "the URL references of the pictures were removed with their copies");
+            assert(!body.includes('"rr_width":"256px"'), "a picture that kept its URL was given a fixed box");
             const playback = await photoContext.newPage();
             await playback.addScriptTag({ url: origin + "/rrweb.js" });
             const events = clip.flatMap(segment => segment.events);
@@ -407,14 +414,8 @@ try {
             }, events);
             const replayFrame = await frame.asElement().contentFrame();
             await expect(replayFrame.getByRole("heading", { name: "SDK regression fixture" })).toBeVisible();
-            const placeholder = replayFrame.locator('img[alt="preview-11"]');
-            await expect(placeholder).toHaveCSS("width", "256px");
-            await expect(placeholder).toHaveCSS("height", "256px");
-            for (const label of ["lazy-before-cap", "lazy-after-cap"]) {
-              const lazy = replayFrame.locator(`img[alt="${label}"]`);
-              await expect(lazy).toHaveCSS("width", "256px");
-              await expect(lazy).toHaveCSS("height", "256px");
-            }
+            for (const label of ["preview-11", "lazy-before-cap", "lazy-after-cap"])
+              await expect(replayFrame.locator(`img[alt="${label}"]`)).toHaveAttribute("src", /^blob:/);
           }
         } finally {
           await photoContext.close();

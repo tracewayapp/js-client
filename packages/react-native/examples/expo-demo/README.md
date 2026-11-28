@@ -10,7 +10,7 @@
 
 A throwaway Expo app that exercises every capture path of [`@tracewayapp/react-native`](https://www.npmjs.com/package/@tracewayapp/react-native): caught/uncaught throws, render errors inside a `TracewayErrorBoundary` (deprecated, still exported), automatic `fetch` capture, manual `captureMessage` / `recordAction` / `setDeviceAttributes`, and explicit `flush()`. It also has a button for the one path the SDK does not cover, an unhandled promise rejection.
 
-Built against **Expo SDK 54** (React 19.1, React Native 0.81, New Architecture on by default). The app depends on the workspace copy of the SDK (`file:../..`), which is `@tracewayapp/react-native` 2.0.0: the same API, options and native `/api/report` transport as 1.x.
+Built against **Expo SDK 54** (React 19.1, React Native 0.81, New Architecture on by default). The app depends on the workspace copy of the SDK (`file:../..`), which is `@tracewayapp/react-native` 2.1.0: the same API, options and native `/api/report` transport as 1.x.
 
 ## Run it
 

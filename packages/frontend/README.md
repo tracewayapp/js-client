@@ -206,9 +206,15 @@ until the address changes. A `route` also names the page for metrics, like `setR
 Every arrival starts a new metrics view (a page view), as on the mobile SDKs; a `"replace"` of the same path does
 not. `"remove"` is not an arrival: the record has no `navigation.to` and the screen stays as it was. The SDK does
 not follow a change of the hash alone, so for a hash or memory router, a modal or a wizard step `recordNavigation`
-is what counts the page views, one per arrival. A report of a change the SDK already follows from the address (a
-`history.pushState` to a new path less than a second before) counts as the same view, not a second one, and the
-first screen reported within a second of `init()` is the landing view itself.
+is what counts the page views, one per arrival.
+
+A report is merged into the view the SDK started itself (it renames that view, and no extra page view is counted)
+when no report has named that view yet, the view is less than a second old, and either the reported path is the
+view's address path (a `history.pushState` the SDK already follows, reported as well), or the view is the page's
+landing view and the address has not changed since: a hash or memory router naming its landing screen. So a hash or
+memory router gets one page view per page load, filed under the route it reports, with the load's web vitals. Any
+other report closes the current view and starts a new one: when the address really changes in the first second,
+both pages are counted.
 
 ## Options
 
@@ -241,7 +247,7 @@ first screen reported within a second of `init()` is the landing view itself.
 | `metricDimensions` | none | Up to two dimensions of your own on every performance metric, e.g. `{ plan: "pro" }`; never a user id |
 | `detectRoutes` | `true` | Name each view by the route template of the app's router when the router can be read from the page; see [Route names](#route-names) |
 | `captureHttpServerErrors` | `false` | Report fetch / XHR responses with status >= 500 as message issues |
-| `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that get the W3C `traceparent` header (same-origin requests always do) |
+| `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that get the W3C `traceparent` header (same-origin requests always do): a string matches every URL that starts with it, a `RegExp` is tested against the URL |
 | `logExporter`, `spanExporter` | none | Advanced: replace the OTLP/HTTP exporter of logs or spans, e.g. with an in-memory exporter in tests |
 
 The `capture*`, `sessionRecording`, `replayImages` and `sessions` options are **ceilings**: collection settings, local or remote, can switch
@@ -290,7 +296,7 @@ in the browser, before anything is uploaded.
 
 | Class | What the replay shows |
 |-------|-----------------------|
-| `traceway-mask` | The element and its layout. Text inside it is recorded with every character except whitespace replaced by `*`, and so are the values of its attributes that carry text (`title`, `alt`, `aria-*`, `data-*`, `placeholder`, `label`, `href`, `value`, the label of an `<input type="submit">`) and what is typed into its fields, even with `maskAllInputs` off. `img`, `picture`, `video`, `canvas` and `svg` elements inside it, or carrying the class themselves, are recorded as empty boxes of their size, without their source URL or content; `src`, `srcset` and `poster` attributes are left out and pictures in a `style` attribute (`background-image: url(…)`) become `none` |
+| `traceway-mask` | The element and its layout. Text inside it is recorded with every character except whitespace replaced by `*`, and so are the values of its attributes that carry text (`title`, `alt`, `aria-*`, `data-*`, `placeholder`, `label`, `href`, `value`, the label of an `<input type="submit">`) and what is typed into its fields, even with `maskAllInputs` off. `img`, `picture`, `video`, `canvas` and `svg` elements inside it, or carrying the class themselves, are recorded as empty boxes of their size, without their source URL or content; `src`, `srcset` and `poster` attributes are left out, and so is the address of an `iframe` of another origin; pictures in a `style` attribute (`background-image: url(…)`) become `none` |
 | `traceway-blank` | An empty box of the element's size. Nothing inside it is recorded: no text, no images, no input values or input events |
 
 ```html
@@ -300,8 +306,10 @@ in the browser, before anything is uploaded.
 <div class="traceway-blank"><canvas id="signature"></canvas></div>
 ```
 
-A masked iframe’s inline document (`srcdoc`) is omitted from snapshots and updates. The mask reaches into shadow roots and same-origin iframes inside it, also for text they render or change after
-recording started. What it does not hide, so keep it inside `traceway-blank` when it is private: pictures that a
+An iframe's inline document (`srcdoc`, or a `data:` URL as its `src`) is never recorded, inside a mask or outside
+one: a same-origin frame is recorded through its own DOM, where the masks apply, and one the page cannot read (a
+sandboxed `srcdoc`, a `data:` document) replays empty. The mask reaches into shadow roots and same-origin iframes
+inside it, also for text they render or change after recording started. What it does not hide, so keep it inside `traceway-blank` when it is private: pictures that a
 stylesheet sets (a class with `background-image`), which the replay loads by their URL, and the content an element
 had before it was given the class while recording, until the next full snapshot (every 30 seconds). Masked `data-*`
 and `aria-*` values can change how the masked area looks in the replay when the page's CSS selects on them.
@@ -310,7 +318,10 @@ rrweb's own classes keep working next to them: `rr-mask` masks text like `tracew
 are, `rr-block` records an empty box like `traceway-blank`, and `rr-ignore` stops recording an input's events.
 
 Input values follow `maskAllInputs` (on by default; set it in `collection.replay` or with a remote rule): with it on,
-the value of every `input`, `textarea` and `select` is recorded as `*`; with it off, only passwords are. Set to `true`
+the value of every `textarea`, `select` and `input` that holds one is recorded as `*`: text, e-mail, number, date and
+the other typed fields, passwords, hidden inputs (tokens, state the page posts back) and the name of a chosen file.
+Buttons keep their labels and checkboxes and radio buttons their checked state. With it off, only passwords are
+masked. Set to `true`
 in `collection.replay`, it is a floor: a remote rule with `maskAllInputs: false` leaves inputs masked. Left out of
 `collection`, it is on by default and a rule can switch it off; set to `false`, a rule can switch it on. A field that
 must stay hidden whatever the settings say belongs inside `traceway-mask` or `traceway-blank`.
@@ -332,7 +343,7 @@ outside a mask:
 |-------|-----------------------|
 | `"off"` | Every `img`, `picture`, SVG `image` and `<input type="image">` as an empty box of its size, without its URL |
 | `"wifi"` (default) | The pictures, loaded from their URLs when the replay plays; no pixels are uploaded |
-| `"always"` | The same, plus a small copy of each picture the page may read (its own origin, or another one that serves it with CORS) in the recording, so the replay shows it even when the URL no longer works |
+| `"always"` | The same, plus a small copy of each picture the page may read (its own origin, or another one that serves it with CORS) in the recording, so the replay shows it even when the URL no longer works. It never shows fewer pictures than `"wifi"` |
 
 The `replayImages` option is its ceiling in code (default `"always"`): the lower of the two applies
 (`off` < `wifi` < `always`), as with the mobile SDKs' `replayImages`. With `replayImages: "off"` no rule can put
@@ -340,7 +351,13 @@ pictures in the replay, and with `"wifi"` no rule can add copies of them. Withou
 or the plan's limits) the policy is `"off"`. A `replayImages` value other than these three counts as `"off"`, with
 one warning.
 
-The recorder removes page-supplied inline images from source attributes, source sets and stylesheets. With `"always"` a loaded `<img>` is drawn at its displayed size: a picture with transparency as PNG at most 192 px
+Under every policy, a `data:image/...` value the page itself supplies is removed from markup and CSS (source
+attributes, source sets, `data-*` attributes, `style` attributes and stylesheets): it is pixels the policy did not
+allow. The exception is a `data:image/svg+xml` value of at most 4,096 characters, which is kept under every policy:
+vector icons such as checkbox ticks, close buttons and select arrows. An `<img>` whose `data:` source is removed
+keeps its box size in the replay, so the layout does not shift.
+
+With `"always"` a loaded `<img>` is drawn at its displayed size: a picture with transparency as PNG at most 192 px
 on the longest side (never JPEG, which would replay its transparent pixels as black), any other as JPEG at quality
 0.45 at most 384 px. One larger than 48 KiB is tried once at half the size and otherwise left as a URL. The SDK keeps up to 128 pictures for the next snapshots (the one used longest
 ago makes room), adds at most 4 MiB of them to a session's recording, and spends at most 16 ms on them per
@@ -350,7 +367,11 @@ let the page read stay URL references: the SDK never changes the page's own `<im
 browser has no network type check: `"wifi"` behaves like the mobile SDKs on a metered network. Session events
 carry `traceway.replay.images` (the policy that applies, ceiling included) and `traceway.replay.image_bytes`.
 
-A replay segment allows up to 128 KiB of embedded raster data, counting each occurrence of a base64 image URL in a snapshot or update. On overflow, the segment keeps the DOM, image dimensions and interactions and drops its embedded pictures. External background URLs stay in the page’s CSS. A partial clip already queued for an earlier exception keeps the pictures it held at the time. The next segment gets a fresh allowance.
+With `"always"`, a replay segment holds at most 128 KiB (131,072 characters) of these copies, counting every
+occurrence of a copy in a snapshot or update. A segment that would go over it loses the copies and nothing else:
+the URL references (`src`, `srcset`, `poster`, SVG `href`) stay, so that segment replays exactly as it would under
+`"wifi"`. A partial clip already queued for an earlier exception keeps the copies it held at the time. The next
+segment starts with its own allowance.
 
 ## Custom Attributes (global scope)
 
@@ -380,9 +401,19 @@ The auto-collected defaults are: `url`, `path`, `referrer`, `userAgent`, `langua
 ## Distributed Tracing
 
 Every `fetch` / `XHR` is an OpenTelemetry CLIENT span, and same-origin requests carry the W3C `traceparent` header, so
-a backend instrumented with OpenTelemetry joins the same trace. List cross-origin API hosts in
-`propagateTraceHeaderCorsUrls` (their CORS policy must allow the `traceparent` header). Axios and other libraries are
-covered because they use fetch or XHR. 1.x's `traceway-trace-id` header, `getActiveDistributedTraceId()` and
+a backend instrumented with OpenTelemetry joins the same trace. List cross-origin APIs in
+`propagateTraceHeaderCorsUrls` (their CORS policy must allow the `traceparent` header): a string matches every
+request URL that starts with it, as `propagateTraceHeaderUrls` does on the mobile SDKs, and a `RegExp` is tested
+against the URL. End a host with a slash, so that a longer host name does not match it too:
+
+```ts
+init({
+  token: 'YOUR_TOKEN',
+  propagateTraceHeaderCorsUrls: ['https://api.example.com/', /^https:\/\/[a-z]+\.internal\.example\.com\//],
+});
+```
+
+An empty string matches nothing. Axios and other libraries are covered because they use fetch or XHR. 1.x's `traceway-trace-id` header, `getActiveDistributedTraceId()` and
 `createAxiosInterceptor()` are gone.
 
 To tie several steps of one user action together, `startInteraction(name, attributes?)` starts a span and returns a
@@ -460,7 +491,7 @@ profile is counted once per UTC day, and once per day for each kind of trouble (
 a failed request). No user or device id is sent; a browser without `localStorage` is left out of those counts.
 `metricDimensions` in `init()` sets the dimensions of your own from the start.
 
-**Elements regroup once.** Versions before 2.1.0 named the element with the web-vitals library's selector, which keeps
+**Elements regroup once.** Versions before 2.0.3 named the element with the web-vitals library's selector, which keeps
 generated ids and every class. After upgrading, web vitals attributed to an element (`browser.web_vital.target` and
 the `browser.web_vital.attribution` counter) start new groups once, and from then on stay the same across renders
 and releases.
@@ -486,7 +517,8 @@ name set with `setRoute` wins over it:
 | Anything else | `setRoute("/orders/:id")`, or nothing: id-like path segments are replaced (`/orders/8841` becomes `/orders/:id`) |
 
 `trackRouter(router)` takes a React Router data router, a TanStack Router, a Vue Router or the Next.js Pages Router
-and may be called before `init()`. `routeFromParams(pathname, params)` is what `useTracewayRoute` uses to rebuild
+and may be called before `init()`. On the server it does nothing: an app rendered there has one router per request,
+and none is kept. `routeFromParams(pathname, params)` is what `useTracewayRoute` uses to rebuild
 a template from a path and its params. A view is only named after a route the router is showing for that view's
 path. A match with an unreported base or locale prefix is provisional and checked again as the router catches up. `detectRoutes: false` in `init()` switches the
 reading of routers off.
@@ -633,7 +665,7 @@ For exact build-to-map matching, add [`@tracewayapp/bundler-plugin`](https://www
 | `removeAttribute(key)` / `clearAttributes()` | Drop global attributes |
 | `refreshConfig()` | Fetch remote settings now, e.g. right after login |
 | `flush(timeoutMs?)` | Send what is queued, including pending metrics; buffered telemetry stays on the device |
-| `shutdown()` | Flush, remove all instrumentation and stop recording; `init()` may be called again afterwards |
+| `shutdown()` | Flush, remove all instrumentation (the SDK's patches, observers and listeners) and stop recording; `init()` may be called again afterwards |
 | `getInstanceId()` | This browser profile's id (`service.instance.id`), which the dashboard can capture |
 | `currentSessionId()` | The current session's id (`session.id`), or `null` before `init()` and between sessions |
 | `getClient()` | The running `TracewayFrontendClient`, or `null` before `init()` and on the server |
@@ -660,7 +692,8 @@ Nothing the SDK does may break the page: a failure of its own code, in a public 
 timer, a `console.*` or `fetch` wrapper or the replay recorder, is contained and the page's own call goes on as it
 would without the SDK (`debug: true` logs it). The page's own uncaught errors and rejections reach the page's
 handlers unchanged. `console.*` arguments are written without running the page's getters or `toJSON`, at most six
-levels deep and a thousand values per call. Replay uploads that keep failing wait in a bounded queue (the oldest
+levels deep and a thousand values per call; an `Error` is written as its name, message and stack (at most 4,096
+characters of it). Replay uploads that keep failing wait in a bounded queue (the oldest
 are dropped and counted in `traceway.replay.failed_segments`), and a buffer checkpoint larger than 512 KiB is kept
 in IndexedDB only, not in the origin's session storage.
 
@@ -681,7 +714,7 @@ What differs:
   `captureHttpServerErrors` and `bind` on an interaction (`startInteraction(name).bind`) exist only here.
 - **Only in the apps**: process-ending crash capture with native symbolication,
   `reportFullyDisplayed()` and the `app.*` performance metrics (app start, slow and frozen frames, hangs), the mask API (`TracewayMask`, `View.tracewayMask`, `UIView.tracewayMask`, `.tracewayMask(_:)`)
-  with its blur and blank modes, and the frame options (`screenCapture`, `fps`, `maxBufferFrames`).
+  with its blur and blank modes, and the frame options (`fps`, `maxBufferFrames`).
 - **Same feature, browser idiom**: the start call is `init({ token, baseUrl })` (Flutter `Traceway.run`, Android
   `Traceway.init`, iOS `Traceway.initialize`, with the same `token` and `baseUrl`);
   the apps' `sampleRate` and `persistToDisk` options are collection settings here:
@@ -689,12 +722,16 @@ What differs:
   `beforeCapture` gets a `TracewayCapturedError` whose stack is `stack` (the apps: `stackTrace`);
   `getInstanceId()` and `currentSessionId()` are functions (iOS has the properties `instanceId` and
   `currentSessionId`); `flush(timeoutMs?)` takes milliseconds (Swift `flush(timeout:)` takes seconds);
-  cross-origin trace headers are set with `propagateTraceHeaderCorsUrls` (apps: `propagateTraceHeaderUrls`);
+  cross-origin trace headers are set with `propagateTraceHeaderCorsUrls` (apps: `propagateTraceHeaderUrls`), where
+  a string matches the URLs that start with it on every platform (the browser, like Flutter, also takes a `RegExp`);
+  the switch that allows replay at all is `sessionRecording` here, on by default (apps: `screenCapture`, off by
+  default), so a page that must not be recorded sets `sessionRecording: false`;
   `tracer()` is a function (`Traceway.tracer` on the apps). `app.screen.name` is the route template when one is
   known and the path otherwise (the apps name a screen by its path or class and put the template in
   `app.screen.route`), `viewport` is in CSS pixels, and the first screen's time counts from `init()`.
   `replay.images`: `"wifi"` records URL references and never pixels, since the browser has no reliable network
-  type; `"always"` adds small copies of same-origin pictures; `"off"` blanks pictures as on the apps. The
+  type; `"always"` adds small copies of same-origin pictures, up to 128 KiB a segment, past which that segment
+  keeps the URL references only; `"off"` blanks pictures as on the apps. The
   `replayImages` ceiling works as on the apps. `maskAllInputs` is a collection setting here, and a local `true` is a
   floor no rule lowers; the apps have no local switch (inputs are masked unless a rule says otherwise).
 

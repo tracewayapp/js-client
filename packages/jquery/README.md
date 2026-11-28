@@ -62,7 +62,7 @@ init({ token: import.meta.env.VITE_TRACEWAY_TOKEN, jQuery: $ });
 
 That's it. `init()` runs the underlying `@tracewayapp/frontend` `init(...)` (so you also get the `window.onerror` and `unhandledrejection` handlers, `console.*`, `fetch` / `XHR`, History API and click instrumentation, and rrweb recording), then attaches a global `$(document).ajaxError(...)` handler that captures failed `$.ajax` calls.
 
-The handler binds to the `jQuery` option. Without it, it binds to `window.jQuery`, or to `window.$` when that has `$.ajax`, which is where a `<script>` tag puts jQuery. A bundled jQuery never lands on `window`, so pass it. When there is neither, `init()` warns once: `Traceway: jQuery was not found on window, so failed $.ajax calls are not reported. Pass it as the jQuery option: init(…, { jQuery: $ })`. The rest of the SDK works either way.
+The handler binds to the `jQuery` option. Without it, it binds to `window.jQuery`, or to `window.$` when that has `$.ajax`, which is where a `<script>` tag puts jQuery. A bundled jQuery never lands on `window`, so pass it. When there is neither, `init()` warns once: `Traceway: jQuery was not found on window, so failed $.ajax calls are not reported. Pass it as the jQuery option: init({ token, jQuery: $ })`. The rest of the SDK works either way.
 
 Call `init()` once, after jQuery is on the page. The SDK itself starts once per page (a second `init()` does not restart it until `await shutdown()`), and the `ajaxError` handler is bound once per page. `shutdown()` does not unbind it; it reports nothing while the SDK is stopped.
 
@@ -176,7 +176,7 @@ With `captureHttpServerErrors: true` the base SDK reports every `fetch` / `XHR` 
 
 ## Distributed Tracing
 
-`$.ajax()` goes through `XMLHttpRequest`, which the SDK records as an OpenTelemetry CLIENT span, and same-origin requests carry the W3C `traceparent` header, so a backend instrumented with OpenTelemetry joins the same trace with no extra middleware. For an API on another origin, list it in `propagateTraceHeaderCorsUrls` (its CORS policy must allow the `traceparent` header). See [Distributed Tracing](https://docs.tracewayapp.com/client/js-sdk/distributed-tracing).
+`$.ajax()` goes through `XMLHttpRequest`, which the SDK records as an OpenTelemetry CLIENT span, and same-origin requests carry the W3C `traceparent` header, so a backend instrumented with OpenTelemetry joins the same trace with no extra middleware. For an API on another origin, list it in `propagateTraceHeaderCorsUrls` (its CORS policy must allow the `traceparent` header): a string such as `"https://api.example.com/"` matches every URL that starts with it, a `RegExp` is tested against the URL. See [Distributed Tracing](https://docs.tracewayapp.com/client/js-sdk/distributed-tracing).
 
 To tie the steps of one user action together, `startInteraction(name, attributes?)` returns a `TracewayInteraction` with `run`, `bind`, `setAttribute`, `captureException` and `end(failed?)`; see the [`@tracewayapp/frontend` README](https://www.npmjs.com/package/@tracewayapp/frontend#distributed-tracing).
 
@@ -210,7 +210,7 @@ The `telemetry` option sends logs, traces and metrics to any OTLP/HTTP endpoint,
 | `captureUserActions` | `true` | Allow clicks as breadcrumbs |
 | `captureMetrics` | `true` | Allow the performance metrics aggregated on the device |
 | `captureHttpServerErrors` | `false` | Report `fetch` / `XHR` responses with status >= 500 as message issues. A 5xx `$.ajax()` response is then reported twice, see above |
-| `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that also get the `traceparent` header (same-origin requests always do) |
+| `propagateTraceHeaderCorsUrls` | none | Cross-origin URLs that also get the `traceparent` header (same-origin requests always do): a string matches every URL that starts with it, a `RegExp` is tested against the URL |
 | `remoteConfig` | `true` | Fetch collection settings from Traceway, so the **Data Collection** page can change what the app sends without a release |
 
 The `capture*`, `sessionRecording`, `replayImages` and `sessions` options are ceilings: remote settings can restrict a signal further, but never turn on what you turned off here. The 1.x options `debounceMs`, `retryDelayMs`, `eventsWindowMs` and `eventsMaxCount` no longer exist.

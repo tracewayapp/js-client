@@ -97,7 +97,7 @@ describe("the jQuery option", () => {
     init({ token: "tok" });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]![0]).toBe(
-      "Traceway: jQuery was not found on window, so failed $.ajax calls are not reported. Pass it as the jQuery option: init(…, { jQuery: $ })",
+      "Traceway: jQuery was not found on window, so failed $.ajax calls are not reported. Pass it as the jQuery option: init({ token, jQuery: $ })",
     );
   });
 });

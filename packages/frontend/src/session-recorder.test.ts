@@ -156,10 +156,12 @@ describe("SessionRecorder privacy options", () => {
     expect(record).toHaveBeenCalledTimes(1);
     const options = vi.mocked(record).mock.calls[0]![0]!;
     expect(options).toMatchObject({
-      maskAllInputs: false,
       maskTextSelector: ".traceway-mask",
       blockSelector: BLOCK_SELECTOR,
     });
+    // rrweb then masks passwords only.
+    expect(options.maskInputOptions).toBeUndefined();
+    expect(options.maskAllInputs).toBeUndefined();
     expect(options.blockClass).toBeUndefined();
     expect(options.maskTextClass).toBeUndefined();
     expect(options.ignoreClass).toBeUndefined();
@@ -175,9 +177,11 @@ describe("SessionRecorder privacy options", () => {
     await Promise.all([first, second]);
     expect(record).toHaveBeenCalledTimes(1);
     expect(vi.mocked(record).mock.calls[0]![0]).toMatchObject({
-      maskAllInputs: true,
+      // rrweb's own `maskAllInputs: true` would replace this list with one that has no hidden or file inputs.
+      maskInputOptions: { text: true, textarea: true, select: true, password: true, hidden: true, file: true },
       blockSelector: `${BLOCK_SELECTOR}, ${IMAGE_SELECTOR}`,
     });
+    expect(vi.mocked(record).mock.calls[0]![0]!.maskAllInputs).toBeUndefined();
     rec.stop();
   });
 

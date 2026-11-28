@@ -479,12 +479,23 @@ export class MetricsRecorder implements PerformanceSink {
 
   /**
    * `recordNavigation`: the app shows `path`, which the address may not show (a memory or hash router, a modal).
-   * Every arrival is a view, as on the mobile SDKs, except the path replaced by itself. A matching automatic arrival in the previous second is counted once.
+   * Every arrival is a view, as on the mobile SDKs, except the path replaced by itself. A view the SDK started
+   * itself less than a second ago, which no report has named yet, is the one reported when the report is of its
+   * own address (a route change the app reports as well), or when it is the page's landing view and the address
+   * has not changed since: a hash or memory router naming its landing screen. That view is renamed, not counted
+   * twice.
    */
   navigated(path: string, type: string, template: string | null): void {
     let view = this.view;
-    const sameArrival = !view.reported && path === view.raw && Date.now() - view.startMs < 1000;
-    if (!sameArrival && (type !== "replace" || path !== view.raw)) {
+    if (
+      !view.reported &&
+      Date.now() - view.startMs < 1000 &&
+      (path === view.raw || (view === this.initialView && location.pathname === view.raw))
+    ) {
+      view.raw = path;
+      view.path = normalizePath(path);
+      view.detected = null;
+    } else if (type !== "replace" || path !== view.raw) {
       this.closeView();
       view = this.view = this.newView(true, path);
       this.watchRoute(view);

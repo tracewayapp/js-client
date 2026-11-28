@@ -25,6 +25,16 @@ export const BLOCK_SELECTOR = [
   ]),
 ].join(", ");
 
+/**
+ * `maskAllInputs`: the fields whose value is recorded as `*`. rrweb's own switch of that name covers the first
+ * sixteen and leaves out hidden fields (tokens, state the page posts back) and the name of a chosen file.
+ */
+export const MASKED_INPUTS: Record<string, true> = Object.fromEntries(
+  "color date datetime-local email month number range search tel text time url week textarea select password hidden file"
+    .split(" ")
+    .map((type) => [type, true]),
+);
+
 /** With `replay.images = "off"`: every picture is recorded as an empty box of its size. */
 export const IMAGE_SELECTOR = "img, picture, image, input[type=image]";
 
@@ -111,7 +121,8 @@ export class SessionRecorder {
             // No rrweb `errorHandler`: its proxies run the page's own insertRule/setProperty inside the same try,
             // so swallowing would also swallow the page's own errors (an invalid rule, a feature test).
             emit: (event) => guarded("replay", () => this.onEvent(event)),
-            maskAllInputs: this.maskAllInputs,
+            // Unset, rrweb masks passwords only.
+            maskInputOptions: this.maskAllInputs ? MASKED_INPUTS : undefined,
             maskTextSelector: MASK_TEXT_SELECTOR,
             blockSelector: this.blockImages
               ? `${BLOCK_SELECTOR}, ${IMAGE_SELECTOR}`
@@ -197,11 +208,12 @@ export class SessionRecorder {
     // what the page masks.
     if (!guarded("mask", () => (maskEvent(event, this.node), true), false))
       return;
-    const segmentImages = this.inlineImages ? this.current.images : undefined;
-    const encoded = segmentImages && !segmentImages.layoutOnly &&
-      guarded("images", () => (this.images.inline(event, true, segmentImages), true), false);
+    // Every policy passes the segment: an image whose inline source is removed keeps its box.
+    const segment = this.current.images;
+    const encoded = this.inlineImages && !segment.overflowed &&
+      guarded("images", () => (this.images.inline(event, true, segment), true), false);
     // An encoding failure can leave an event only partially processed. Scrub it in full before retention.
-    if (!encoded && !guarded("images", () => (this.images.sanitize(event, undefined, segmentImages), true), false)) return;
+    if (!encoded && !guarded("images", () => (this.images.sanitize(event, undefined, segment), true), false)) return;
     if (this.current.events.length === 0) {
       this.current.startedAtMs = event.timestamp;
       this.current.startedAt = new Date(event.timestamp).toISOString();

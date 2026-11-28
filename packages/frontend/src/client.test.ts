@@ -479,17 +479,17 @@ describe("TracewayFrontendClient", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       // Nothing changed, so rrweb was not restarted, and it still masks.
       expect(record).toHaveBeenCalledTimes(1);
-      expect(rrwebOptions()?.maskAllInputs).toBe(true);
+      expect(rrwebOptions()?.maskInputOptions).toMatchObject({ text: true, hidden: true });
     });
 
     it("still lets a rule switch input masking off when the app left maskAllInputs unset", async () => {
       vi.mocked(record).mockClear();
       start({ sessionRecording: true });
       await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(1));
-      expect(rrwebOptions()?.maskAllInputs).toBe(true);
+      expect(rrwebOptions()?.maskInputOptions).toMatchObject({ text: true, hidden: true });
       remote({ replay: { maskAllInputs: false } });
       await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2));
-      expect(rrwebOptions()?.maskAllInputs).toBe(false);
+      expect(rrwebOptions()?.maskInputOptions).toBeUndefined();
     });
   });
 

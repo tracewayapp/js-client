@@ -170,6 +170,50 @@ describe("SessionRecorder with the real recorder", () => {
   });
 });
 
+describe("maskAllInputs with the real recorder", () => {
+  const page = `<form>
+      <input id="name" value="Alice Smith">
+      <input id="csrf" type="hidden" name="csrf_token" value="csrf-initial-token">
+      <input id="upload" type="file">
+      <input type="submit" value="Send order">
+    </form><p>before</p>`;
+
+  async function record(options: { maskAllInputs?: boolean }): Promise<string> {
+    document.body.innerHTML = page;
+    // jsdom cannot pick a file: the value a browser reports once the user has.
+    Object.defineProperty(document.querySelector("#upload")!, "value", { configurable: true, value: "C:\\fakepath\\passport-alice.pdf" });
+    recorder = new SessionRecorder();
+    await recorder.start(options);
+    const csrf = document.querySelector<HTMLInputElement>("#csrf")!;
+    // rrweb records a value set from script as an input event, and a changed attribute as a mutation.
+    csrf.value = "csrf-script-token";
+    document.querySelector("#upload")!.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(recorder!.getClipEvents().filter((event) =>
+      event.type === EventType.IncrementalSnapshot && event.data.source === IncrementalSource.Input)).toHaveLength(2));
+    csrf.setAttribute("value", "csrf-attribute-token");
+    document.querySelector("p")!.textContent = "change observed";
+    await vi.waitFor(() => expect(JSON.stringify(recorder!.getClipEvents())).toContain("change observed"));
+    const events = recorder.getClipEvents();
+    expect(events.some((event) =>
+      event.type === EventType.IncrementalSnapshot && event.data.source === IncrementalSource.Input)).toBe(true);
+    return JSON.stringify(events);
+  }
+
+  it("records hidden and file inputs as * like every other field, and keeps a button's label", async () => {
+    const json = await record({});
+    for (const secret of ["Alice Smith", "csrf-initial-token", "csrf-script-token", "csrf-attribute-token", "passport-alice"])
+      expect(json, secret).not.toContain(secret);
+    expect(json).toContain("*".repeat("csrf-initial-token".length));
+    expect(json).toContain("Send order");
+  });
+
+  it("off: records them as they are", async () => {
+    const json = await record({ maskAllInputs: false });
+    for (const value of ["Alice Smith", "csrf-initial-token", "csrf-script-token", "csrf-attribute-token", "passport-alice"])
+      expect(json, value).toContain(value);
+  });
+});
+
 describe("replay.images with the real recorder (§14.5)", () => {
   const page = `
     <img id="photo" src="https://app.test/photo.jpg">
@@ -233,7 +277,7 @@ describe("replay.images with the real recorder (§14.5)", () => {
     expect(JSON.stringify(recorder.getClipEvents())).not.toContain("YXBwUGl4ZWxz");
   });
 
-  it("keeps exactly 128 KiB of images, then exports the full segment as a wireframe after an image mutation", async ({ onTestFinished }) => {
+  it("keeps exactly 128 KiB of copies; past that the segment keeps the URLs only, and the next one starts afresh", async ({ onTestFinished }) => {
     // Exercise the byte limit regardless of jsdom's first computed-style lookup.
     // The encoder's per-event time limit has a separate regression.
     vi.spyOn(performance, "now").mockReturnValue(0);
@@ -250,29 +294,75 @@ describe("replay.images with the real recorder (§14.5)", () => {
       img.src = "https://app.test/avatar.jpg";
       return img;
     };
-    document.body.innerHTML = "<p>Order details</p>";
+    // Pictures of another origin that the page has not loaded: URL references under every policy.
+    document.body.innerHTML = `<p>Order details</p>
+      <img id="cdn" src="https://cdn.other.test/banner.jpg" srcset="https://cdn.other.test/banner@2x.jpg 2x">
+      <picture><source srcset="https://cdn.other.test/art.webp"><img src="https://cdn.other.test/art.jpg"></picture>
+      <video poster="https://cdn.other.test/poster.jpg"></video>
+      <svg><image href="https://cdn.other.test/map.png"></image></svg>`;
     document.body.append(photo());
     recorder = new SessionRecorder();
     await recorder.start({ images: "always" });
     const images = () => serializedElements(recorder!.getClipEvents()).filter(n => n.tagName === "img");
+    const copies = () => images().filter(n => n.attributes.rr_dataURL);
     document.body.append(photo());
-    await vi.waitFor(() => expect(images().filter(n => n.attributes.rr_dataURL)).toHaveLength(2));
+    await vi.waitFor(() => expect(copies()).toHaveLength(2));
+    expect(recorder.images.bytes).toBe(128 * 1024);
 
     document.body.append(photo());
-    await vi.waitFor(() => expect(images()).toHaveLength(3));
+    await vi.waitFor(() => expect(images()).toHaveLength(5));
     const exported = JSON.stringify(recorder.peekCurrent()?.events);
     expect(exported).toContain("Order details");
     expect(exported).not.toContain(thumbnail.slice(0, 80));
-    expect(exported).not.toContain("avatar.jpg");
-    expect(images()[0]!.attributes.rr_width).toBe("60px");
-    expect(images()[0]!.attributes.rr_height).toBe("40px");
-    for (const image of images())
-      expect(image.attributes.style).toContain("width:60px;height:40px");
+    expect(copies()).toEqual([]);
+    expect(recorder.images.bytes).toBe(0);
+    // What "wifi" records of the same page.
+    expect(images().filter(n => n.attributes.src === "https://app.test/avatar.jpg")).toHaveLength(3);
+    for (const url of ["banner.jpg", "banner@2x.jpg 2x", "art.webp", "art.jpg", "poster.jpg", "map.png"])
+      expect(exported, url).toContain("https://cdn.other.test/" + url);
+    for (const image of images()) {
+      expect(image.attributes.rr_width).toBeUndefined();
+      expect(image.attributes.style).toBeUndefined();
+    }
 
     document.body.replaceChildren(photo());
     recorder.startFresh();
     expect(images()).toHaveLength(1);
     expect(images()[0]!.attributes.rr_dataURL).toBe(thumbnail);
+    expect(images()[0]!.attributes.src).toBe("https://app.test/avatar.jpg");
+  });
+
+  it.each(["wifi", "always", "off"] as const)("%s: keeps small svg data URLs (vector icons) and the box of an <img> whose data: source it removes", async (images) => {
+    const tick = "data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20viewBox=%270%200%2016%2016%27%3E%3Cpath%20d=%27m6%2010%203%203%206-6%27/%3E%3C/svg%3E";
+    const large = "data:image/svg+xml,%3Csvg%20id=%27large%27%3E" + "a".repeat(4096);
+    const photo = "data:image/png;base64,cGhvdG9QaXhlbHM=";
+    document.body.innerHTML = `<style>.check:checked { background-image: url("${tick}"); } .hero { background-image: url("${large}"); }</style>
+      <div id="close" style="background: url('${tick}') no-repeat"></div>
+      <p id="logo-row"><img id="logo" src="${photo}"></p><input class="check" type="checkbox" checked><p>before update</p>`;
+    loaded(document.querySelector<HTMLImageElement>("#logo")!, 240, 80);
+    // No canvas in jsdom: under "always" the picture gets no copy, as one the page may not read.
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    recorder = new SessionRecorder();
+    await recorder.start({ images });
+    canvas.mockRestore();
+    document.querySelector<HTMLElement>("#logo-row")!.style.backgroundImage = `url("${tick}")`;
+    document.querySelector("p:last-child")!.textContent = "after update";
+    await vi.waitFor(() => expect(JSON.stringify(recorder!.getClipEvents())).toContain("after update"));
+    const events = recorder.getClipEvents();
+    const json = JSON.stringify(events);
+    expect(json).not.toContain("cGhvdG9QaXhlbHM=");
+    expect(json).not.toContain("id=%27large%27");
+    const elements = serializedElements(events);
+    expect(String(elements.find((node) => node.tagName === "style")!.attributes._cssText)).toContain(tick);
+    expect(String(elements.find((node) => node.attributes.id === "close")!.attributes.style)).toContain(tick);
+    const mutated = events.flatMap((event) =>
+      event.type === EventType.IncrementalSnapshot && event.data.source === IncrementalSource.Mutation ? event.data.attributes : []);
+    expect(JSON.stringify(mutated)).toContain(tick);
+    const logo = elements.find((node) => node.tagName === "img")!;
+    expect(logo.attributes.src).toBeUndefined();
+    // "off": rrweb's own box, which jsdom measures as 0 by 0.
+    expect(logo.attributes.rr_width).toBe(images === "off" ? "0px" : "120px");
+    expect(logo.attributes.rr_height).toBe(images === "off" ? "0px" : "40px");
   });
 
   it("always: adds small copies of the page's pictures, never of masked ones, and leaves the page's images as they are", async () => {
@@ -325,6 +415,53 @@ describe("traceway-mask beyond rrweb's own masking (JS-13, JS-16)", () => {
     document.querySelector("p")!.textContent = "change observed";
     await vi.waitFor(() => expect(JSON.stringify(recorder!.getClipEvents())).toContain("change observed"));
     expect(JSON.stringify(recorder.getClipEvents())).not.toMatch(/private initial note|private changed note/);
+  });
+
+  it("leaves out the source of a masked iframe that rrweb cannot read, and an inline document given as a data: source", async () => {
+    document.body.innerHTML = `<div class="traceway-mask"><iframe id="viewer" src="https://docs.vendor.test/view?file=contract&sig=initial-signature"></iframe></div>
+      <iframe id="inline" src="data:text/html,<p class='traceway-mask'>inline private note</p>"></iframe>
+      <iframe id="widget" src="https://widgets.vendor.test/chat"></iframe><p>before</p>`;
+    // A frame of another origin, or with an opaque origin (data:), has no contentDocument for the page.
+    for (const frame of document.querySelectorAll("iframe"))
+      Object.defineProperty(frame, "contentDocument", { configurable: true, value: null });
+    recorder = new SessionRecorder();
+    await recorder.start();
+    // rrweb 2.1.7 records such a frame's address as `rr_src`.
+    expect(JSON.stringify(recorder.getClipEvents())).toContain('"rr_src":"https://widgets.vendor.test/chat"');
+    document.querySelector("#viewer")!.setAttribute("src", "https://docs.vendor.test/view?file=contract&sig=changed-signature");
+    document.querySelector("#inline")!.setAttribute("src", "data:text/html,<p class='traceway-mask'>inline changed note</p>");
+    document.querySelector("#widget")!.setAttribute("src", "https://widgets.vendor.test/chat?open=1");
+    document.querySelector("p")!.textContent = "change observed";
+    await vi.waitFor(() => expect(JSON.stringify(recorder!.getClipEvents())).toContain("change observed"));
+    const json = JSON.stringify(recorder.getClipEvents());
+    expect(json).toContain('"rr_src":"https://widgets.vendor.test/chat?open=1"');
+    for (const secret of ["initial-signature", "changed-signature", "docs.vendor.test", "inline private note", "inline changed note"])
+      expect(json, secret).not.toContain(secret);
+  });
+
+  it("keeps the CSS a page writes into a <style> it already had inside traceway-mask, and takes inline pixels out of it anywhere", async () => {
+    const photo = "data:image/jpeg;base64,cGhvdG9QaXhlbHM=";
+    document.body.innerHTML = `<style id="theme">.avatar { color: blue; }</style>
+      <div class="traceway-mask"><style id="scoped">.card { color: blue; }</style><b>Card owner</b></div><p>before</p>`;
+    recorder = new SessionRecorder();
+    await recorder.start();
+    document.querySelector("#theme")!.textContent = `.avatar { color: red; background: url(${photo}); }`;
+    document.querySelector("#scoped")!.textContent = `.card { color: green; background: url(${photo}); }`;
+    document.querySelector("p")!.textContent = "change observed";
+    await vi.waitFor(() => expect(JSON.stringify(recorder!.getClipEvents())).toContain("change observed"));
+    const added = recorder.getClipEvents().flatMap((event) =>
+      event.type === EventType.IncrementalSnapshot && event.data.source === IncrementalSource.Mutation
+        ? event.data.adds.map((add) => add.node as unknown as Record<string, unknown>)
+        : []);
+    // What rrweb 2.1.7 writes for the new text: a bare text node, with nothing that says it is CSS.
+    expect(added.filter((node) => node.type === 3 && "isStyle" in node)).toEqual([]);
+    expect(added.map((node) => node.textContent)).toEqual(expect.arrayContaining([
+      ".avatar { color: red; background: none; }",
+      ".card { color: green; background: none; }",
+    ]));
+    const json = JSON.stringify(recorder.getClipEvents());
+    expect(json).not.toContain("cGhvdG9QaXhlbHM=");
+    expect(json).not.toContain("Card owner");
   });
 
   it("masks text that a shadow root inside traceway-mask renders or changes later (JS-13)", async () => {

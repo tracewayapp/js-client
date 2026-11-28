@@ -183,7 +183,9 @@ describe("startOptions", () => {
 
   it("still rejects a connection string it cannot read", async () => {
     const { startOptions } = await load();
-    expect(() => startOptions("no-at-sign")).toThrow("Invalid connection string");
+    expect(() => startOptions("no-at-sign")).toThrow(
+      'Invalid connection string: expected token@url. Pass init({ token: "YOUR_TOKEN" }) instead',
+    );
     expect(() => startOptions("tok@ftp://x")).toThrow("HTTP(S)");
     expect(() => startOptions("tok@ftp://x")).not.toThrow("tok@");
   });

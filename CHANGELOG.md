@@ -31,8 +31,9 @@ All ten workspace packages move to 2.1.0 together, as the repo releases them: th
 - New in this release: the `traceway-mask` class hides text (`*`) and pictures (placeholder boxes) in the replay, and
   `traceway-blank` records an empty box of the element's size. Inside them it also hides attribute values that carry
   text (`title`, `alt`, `aria-*`, `data-*`, `placeholder`, `label`, `href`, `value`), what is typed into fields with
-  `maskAllInputs` off, `src`/`srcset`/`poster` and pictures in `style` attributes, and text that shadow roots and
-  same-origin frames inside them render or change after recording started. rrweb's `rr-mask`, `rr-block` and
+  `maskAllInputs` off, `src`/`srcset`/`poster`, the address of an iframe of another origin and pictures in `style`
+  attributes, and text that shadow roots and same-origin frames inside them render or change after recording
+  started. rrweb's `rr-mask`, `rr-block` and
   `rr-ignore` keep working.
 - Exceptions, messages, log lines (`console.*`, `log()`) and actions (`recordAction`, clicks) carry the screen keys of
   the mobile SDKs: `app.screen.name` (the route template, else the path), `app.screen.route`, `app.screen.previous`,
@@ -43,7 +44,9 @@ All ten workspace packages move to 2.1.0 together, as the repo releases them: th
   `navigation.from`, `app.screen.name`, `app.screen.route`). Each arrival is a page view of the performance metrics
   (memory and hash routers, modals, wizard steps), `"replace"` of the same path is not, and `"remove"` is not an
   arrival: no `navigation.to`, the screen stays, as on Android. A route change the SDK follows from the address that
-  the app also reports counts once.
+  the app also reports counts once, and the first screen a hash or memory router reports within a second of the page
+  load names the landing view (one page view per load, filed under the reported route with the load's web vitals).
+  When the address really changes in the first second, both pages are counted.
 - `tracer()` returns the SDK's OpenTelemetry tracer for spans of your own (`undefined` before `init()`); they carry the
   session id and nest under the interaction whose `run()` they start in. The SDK still registers no OpenTelemetry
   globals.
@@ -57,7 +60,10 @@ All ten workspace packages move to 2.1.0 together, as the repo releases them: th
   `"wifi"` keeps URL references, `"always"` also adds small copies of the pictures the page may read (displayed size,
   at most 384 px, JPEG 0.45, at most 48 KiB each, 128 kept, 4 MiB per session) without touching the page's own
   `<img>` elements. A picture with transparency is never JPEG, which would replay it as a black box: it is PNG at
-  most 192 px. Session events carry `traceway.replay.images` and `traceway.replay.image_bytes`.
+  most 192 px. A replay segment holds at most 128 KiB (131,072 characters) of copies: a segment that would go over
+  it loses its copies and keeps the URL references (`src`, `srcset`, `poster`, SVG `href`), so it replays exactly as
+  under `"wifi"`, and the next segment starts with its own allowance. `"always"` never shows fewer pictures than
+  `"wifi"`. Session events carry `traceway.replay.images` and `traceway.replay.image_bytes`.
 - `replayImages` (`"off" | "wifi" | "always"`, `TracewayImagePolicy`, default `"always"`; in the React, Vue, Svelte
   and jQuery options too) is the ceiling of `replay.images`, as on the mobile SDKs: the lower of the two applies
   (`off` < `wifi` < `always`), so no Data Collection rule can put pictures into the replay that the code ruled out.
@@ -78,7 +84,7 @@ All ten workspace packages move to 2.1.0 together, as the repo releases them: th
 - The SDK no longer records its own uploads as resource timing entries, which kept a streaming `resourceTiming`
   signal sending a batch a second.
 - The published JavaScript no longer contains comments (the `.d.ts` files keep the documentation); the ESM bundle is
-  43.1 KB gzipped.
+  45.7 KB gzipped.
 
 ### Wrappers
 
@@ -121,6 +127,28 @@ All ten workspace packages move to 2.1.0 together, as the repo releases them: th
 - The replay upload queue holds at most 20 batches; dropped ones are counted in `traceway.replay.failed_segments`.
   Checkpoints over 512 KiB go to IndexedDB only, not to session storage.
 - `metric()` ignores NaN, negative and non-number values.
+- The replay no longer records `data:image/...` values the page supplies, under any `replay.images` policy: they
+  are removed from source attributes, source sets, `data-*` attributes, `style` attributes and stylesheets (also
+  from CSS text and rules added later), because they are pixels the policy did not allow. `data:image/svg+xml`
+  values of at most 4,096 characters are kept under every policy (vector icons: checkbox ticks, close buttons,
+  select arrows). An `<img>` whose `data:` source is removed keeps its box size, so the layout does not shift.
+- The replay never records an iframe's inline document: `srcdoc` and a `data:` URL as the frame's source are left
+  out, inside a mask or outside one. A same-origin frame is still recorded through its own DOM, where masks apply;
+  one the page cannot read (a sandboxed `srcdoc`, a `data:` document) replays empty.
+- `maskAllInputs` also masks hidden inputs (CSRF tokens, view state) and the file name of a file input, in
+  snapshots, attribute changes and input events; 2.0 recorded them as they were. Buttons keep their labels and
+  checkboxes and radio buttons their checked state.
+- A string in `propagateTraceHeaderCorsUrls` matches every URL that starts with it, as `propagateTraceHeaderUrls`
+  does on the mobile SDKs; in 2.0 it had to equal the whole request URL, so `"https://api.example.com"` matched
+  nothing. A `RegExp` works as before. An empty string matches nothing.
+- `console.error(err)` and other console calls with an Error are recorded with its name, message and stack (at most
+  4,096 characters of it), not as `{}`.
+- The SDK's own uploads are no longer traced as requests of the app when `baseUrl` is written with capital letters
+  in the host or with the default port (an explicit `:443` or `:80`).
+- `shutdown()` also removes the web vitals instrumentation's observer and listeners; the next `init()` adds them
+  again.
+- `trackRouter()` keeps nothing on the server, where the Vue plugin and the React provider's `router` prop handed it
+  one router per rendered request.
 - A rule with `replay.maskAllInputs: false` no longer unmasks the inputs of a page that set
   `collection.replay.maskAllInputs: true`. A page that leaves it out of `collection` is unchanged: masked by default,
   and a rule can switch it off.

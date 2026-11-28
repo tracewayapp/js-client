@@ -75,7 +75,7 @@ function installJQueryErrorHandler(given: JQueryLike | undefined): void {
           : null;
   if (!jq) {
     setupWarning(
-      "jQuery was not found on window, so failed $.ajax calls are not reported. Pass it as the jQuery option: init(…, { jQuery: $ })",
+      "jQuery was not found on window, so failed $.ajax calls are not reported. Pass it as the jQuery option: init({ token, jQuery: $ })",
     );
     return;
   }

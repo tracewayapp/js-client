@@ -2,6 +2,7 @@
   "name": "@tracewayapp/react-native",
   "version": "2.1.0",
   "description": "Traceway React Native SDK — error tracking with last-10s session context for iOS, Android and Expo apps",
+  "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",

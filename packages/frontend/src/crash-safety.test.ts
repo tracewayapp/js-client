@@ -396,6 +396,22 @@ describe("console.* (JS-3)", () => {
   });
 });
 
+describe("console.* with an Error", () => {
+  it("records its name, message and stack, not {}", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    init({ ...CS, ...options() });
+    getClient()!.control.applyRemote({
+      signals: { console: { mode: "stream", minSeverity: "trace" } },
+    });
+    console.error("save failed", new TypeError("cart is undefined"));
+    const body = String(
+      (await exported()).find((r) => r.eventName === "browser.console")?.body,
+    );
+    expect(body.split("\n")[0]).toBe("save failed TypeError: cart is undefined");
+    expect(body).toContain("crash-safety.test");
+  });
+});
+
 describe("listeners and timers contain SDK failures (JS-8)", () => {
   afterEach(() => {
     delete (document as any).visibilityState;
@@ -642,6 +658,46 @@ describe("the fetch instrumentation (JS-12, JS-15, JS-10)", () => {
     expect(sent.headers.get("traceparent")).toMatch(
       /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/,
     );
+  });
+
+  it("sends traceparent to another origin for a URL that starts with a listed string or matches a listed RegExp", async () => {
+    init({
+      ...CS,
+      ...options({
+        // An empty entry (an environment variable left unset) names no URL.
+        propagateTraceHeaderCorsUrls: ["https://api.shop.test/", /^https:\/\/img\.shop\.test\/v2\//, ""],
+      }),
+    });
+    const traced = async (url: string): Promise<boolean> => {
+      await fetch(url);
+      const [, sent] = network.mock.calls.at(-1)! as [string, RequestInit | undefined];
+      return new Headers(sent?.headers).has("traceparent");
+    };
+    expect(await traced("https://api.shop.test/orders/42?expand=items")).toBe(true);
+    expect(await traced("https://api.shop.test")).toBe(true);
+    expect(await traced("https://img.shop.test/v2/a.png")).toBe(true);
+    expect(await traced("https://img.shop.test/v1/a.png")).toBe(false);
+    expect(await traced("https://other.test/?next=https://api.shop.test/")).toBe(false);
+    expect(await traced(`${location.origin}/same-origin`)).toBe(true);
+  });
+
+  it.each([
+    "https://traceway.test",
+    "https://Traceway.Test",
+    "https://traceway.test:443/",
+    "HTTPS://TRACEWAY.TEST/api/report",
+    "Traceway.Test",
+  ])("does not trace the SDK's own requests when baseUrl is written as %s", async (baseUrl) => {
+    init({ token: "tok_123", baseUrl, ...options() });
+    getClient()!.control.applyRemote({ signals: { network: { mode: "stream" } } });
+    // The URLs the SDK posts to, as it writes them: its uploads go through the page's fetch like the app's.
+    const endpoints = (getClient() as any).endpoints as Record<string, string>;
+    const own = ["logs", "traces", "metrics", "opamp", "recordings"].map((kind) => endpoints[kind]!);
+    for (const url of own) await fetch(url, { method: "POST" });
+    await fetch("https://traceway.test/api/recordings?batch=1", { method: "POST" });
+    await fetch(`${location.origin}/app-request`);
+    await flush();
+    expect(spans.getFinishedSpans().map((span) => span.attributes["url.full"])).toEqual([`${location.origin}/app-request`]);
   });
 
   it("lets the app register its own propagator and context manager after init(), and keeps working", async () => {

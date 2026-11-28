@@ -31,6 +31,12 @@ describe("parseConnectionString", () => {
     );
   });
 
+  it("names no call of the browser SDK: React Native and Node start from the connection string", () => {
+    expect(() => parseConnectionString("notokenhere")).toThrow(
+      /^Invalid connection string: expected token@url$/,
+    );
+  });
+
   it("should throw on empty token", () => {
     expect(() => parseConnectionString("@https://example.com")).toThrow(
       "Invalid connection string",

@@ -162,7 +162,7 @@ describe("ReplayController", () => {
     emit!({ type: 2, timestamp: Date.now(), data: { secret: "private" } });
     replay.apply("buffer", { ...options, maskAllInputs: true });
     await vi.waitFor(() =>
-      expect(vi.mocked(record).mock.lastCall?.[0]?.maskAllInputs).toBe(true),
+      expect(vi.mocked(record).mock.lastCall?.[0]?.maskInputOptions).toMatchObject({ text: true, hidden: true }),
     );
     replay.flush(600_000);
     expect(sent).toHaveLength(0);

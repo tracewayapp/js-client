@@ -72,9 +72,7 @@ export function parseConnectionString(
   const token = at < 0 ? "" : text.slice(0, at).trim();
   const apiUrl = at < 0 ? "" : text.slice(at + 1).trim();
   if (!token || !apiUrl)
-    throw new Error(
-      'Invalid connection string: expected token@url. Pass init({ token: "YOUR_TOKEN" }) instead',
-    );
+    throw new Error("Invalid connection string: expected token@url");
   return { token, apiUrl, baseUrl: normalizeBaseUrl(apiUrl) };
 }
 
@@ -105,7 +103,14 @@ export function startOptions<T extends StartFields>(
 ): T {
   let start: T;
   if (typeof given === "string") {
-    const { token, baseUrl: base } = parseConnectionString(given);
+    let parsed: ParsedConnectionString;
+    try {
+      parsed = parseConnectionString(given);
+    } catch (error) {
+      // The browser's own start call; React Native and Node, which read the same string, have no such form.
+      throw new Error(`${(error as Error).message}. Pass init({ token: "YOUR_TOKEN" }) instead`);
+    }
+    const { token, baseUrl: base } = parsed;
     setupWarning(
       `connection strings are deprecated: use init({ token: "…"${
         base === DEFAULT_BASE_URL ? "" : `, baseUrl: "${base}"`
